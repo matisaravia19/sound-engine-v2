@@ -7,3 +7,4 @@ edition = "2024"
 ash = "0.38.0"
 realfft = "3.5.0"
 vk-mem = "0.5.0"
+vkfft-rs = { path = "../vkfft-rs" }

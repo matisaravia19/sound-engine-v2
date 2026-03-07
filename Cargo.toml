@@ -1,0 +1,6 @@
+﻿[workspace]
+members = [
+    "vkfft-rs",
+    "sound-engine",
+    "sandbox",
+]
