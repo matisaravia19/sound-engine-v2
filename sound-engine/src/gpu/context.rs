@@ -1,11 +1,8 @@
-use crate::gpu::buffer::GpuBuffer;
+use crate::gpu::buffer::{BufferContext, GpuBuffer};
 use crate::gpu::errors::GpuError;
-use ash::vk::{self, Buffer, CommandPool, DeviceSize, PhysicalDevice, Queue};
+use ash::vk::{self, CommandPool, DeviceSize, PhysicalDevice, Queue};
 use ash::{Device, Entry, Instance};
-use std::error::Error;
 use std::ffi::CString;
-use std::sync::Arc;
-use vk_mem::{Alloc, Allocation, AllocationCreateFlags, Allocator, MemoryUsage};
 
 pub struct GpuContext {
     entry: Entry,
@@ -22,33 +19,26 @@ struct QueueContext {
     compute_command_pool: CommandPool,
 }
 
-const STAGING_BUFFER_INITIAL_SIZE: DeviceSize = 16 * 1024 * 1024; // 16 MB
-
-struct BufferContext {
-    allocator: Allocator,
-    staging_buffer: Buffer,
-    staging_buffer_allocation: Allocation,
-    staging_buffer_size: DeviceSize,
-}
-
 impl GpuContext {
-    pub fn init() -> Result<Arc<Self>, GpuError> {
+    pub fn init() -> Result<Self, GpuError> {
         let entry = unsafe { Entry::load()? };
         let instance = Self::create_instance(&entry)?;
         let (physical_device, compute_family_index) = Self::select_physical_device_and_queue_family(&instance)?;
         let (device, queues) = Self::create_device_and_queues(&instance, physical_device, compute_family_index)?;
         let buffers = BufferContext::init(&instance, physical_device, &device)?;
 
-        let context = Self {
+        Ok(Self {
             entry,
             instance,
             physical_device,
             device,
             queues,
             buffers,
-        };
+        })
+    }
 
-        Ok(Arc::new(context))
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 
     pub fn immediate_submit<F>(&self, record: F) -> Result<(), GpuError>
@@ -99,49 +89,15 @@ impl GpuContext {
         result
     }
 
-    pub fn create_buffer(self: &Arc<Self>, size: DeviceSize) -> Result<GpuBuffer, GpuError> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(
-                vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-            )
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let create_info = vk_mem::AllocationCreateInfo {
-            usage: MemoryUsage::AutoPreferDevice,
-            ..Default::default()
-        };
-
-        let (buffer, allocation) = unsafe { self.buffers.allocator.create_buffer(&buffer_info, &create_info)? };
-
-        Ok(GpuBuffer::new(Arc::downgrade(self), size, buffer, allocation))
+    pub fn create_buffer(&self, size: DeviceSize) -> Result<GpuBuffer, GpuError> {
+        self.buffers.create_buffer(size)
     }
 
-    // pub fn upload_to_buffer<T: Copy>(&self, buffer: &GpuBuffer, data: &[T]) -> Result<(), GpuError> {
-    //     let bytes = as_bytes(data);
-    //
-    //     if bytes.len() as u64 > dst.size {
-    //         return Err(GpuError::SizeMismatch {
-    //             expected: dst.size as usize,
-    //             actual: bytes.len(),
-    //         });
-    //     }
-    //
-    //     let mapped_ptr = self.allocator.get_allocation_info(&dst.allocation).mapped_data;
-    //     if mapped_ptr.is_null() {
-    //         return Err(GpuError::BufferNotMapped);
-    //     }
-    //
-    //     unsafe {
-    //         std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped_ptr.as_ptr() as *mut u8, bytes.len());
-    //     }
-    //
-    //     self.allocator
-    //         .flush_allocation(&dst.allocation, 0, bytes.len() as u64)?;
-    //     Ok(())
-    // }
+    pub fn upload_to_buffer(&mut self, buffer: &GpuBuffer, data: &[u8]) -> Result<(), GpuError> {
+        self.buffers.upload_to_staging(data)?;
+        self.buffers.copy_from_staging(self, buffer, data.len() as u64)?;
+        Ok(())
+    }
 
     fn create_instance(entry: &Entry) -> Result<Instance, GpuError> {
         let app_name = CString::new("sound-engine")?;
@@ -241,60 +197,6 @@ impl GpuContext {
         };
 
         Ok((device, queue_context))
-    }
-}
-
-impl BufferContext {
-    fn init(instance: &Instance, physical_device: PhysicalDevice, device: &Device) -> Result<BufferContext, GpuError> {
-        let allocator_create_info = vk_mem::AllocatorCreateInfo::new(&instance, &device, physical_device);
-        let allocator = unsafe { Allocator::new(allocator_create_info)? };
-
-        let (buffer, allocation) = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
-
-        Ok(BufferContext {
-            allocator,
-            staging_buffer: buffer,
-            staging_buffer_allocation: allocation,
-            staging_buffer_size: STAGING_BUFFER_INITIAL_SIZE,
-        })
-    }
-
-    fn create_staging_buffer(allocator: &Allocator, size: DeviceSize) -> Result<(Buffer, Allocation), GpuError> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(STAGING_BUFFER_INITIAL_SIZE)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let create_info = vk_mem::AllocationCreateInfo {
-            usage: MemoryUsage::AutoPreferHost,
-            flags: AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
-            ..Default::default()
-        };
-
-        let (buffer, allocation) = unsafe { allocator.create_buffer(&buffer_info, &create_info)? };
-
-        Ok((buffer, allocation))
-    }
-
-    fn ensure_staging_capacity(&mut self, required_size: DeviceSize) -> Result<(), GpuError> {
-        if self.staging_buffer_size >= required_size {
-            return Ok(());
-        }
-
-        let new_size = std::cmp::max(self.staging_buffer_size * 2, required_size);
-
-        unsafe {
-            self.allocator
-                .destroy_buffer(self.staging_buffer, &mut self.staging_buffer_allocation);
-        }
-
-        let (buffer, allocation) = Self::create_staging_buffer(&self.allocator, new_size)?;
-
-        self.staging_buffer = buffer;
-        self.staging_buffer_allocation = allocation;
-        self.staging_buffer_size = new_size;
-
-        Ok(())
     }
 }
 
