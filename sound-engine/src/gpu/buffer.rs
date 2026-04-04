@@ -1,8 +1,7 @@
-﻿use crate::gpu::context::GpuContext;
+use crate::gpu::context::GpuContext;
 use crate::gpu::errors::GpuError;
 use ash::vk::{Buffer, DeviceSize, PhysicalDevice};
-use ash::{Device, Instance, vk};
-use std::sync::{Arc, Weak};
+use ash::{vk, Device, Instance};
 use vk_mem::{Alloc, Allocation, AllocationCreateFlags, Allocator, MemoryUsage};
 
 const STAGING_BUFFER_INITIAL_SIZE: DeviceSize = 16 * 1024 * 1024; // 16 MB
@@ -19,20 +18,41 @@ pub(super) struct BufferContext {
 }
 
 impl GpuBuffer {
-    pub fn new(context: Weak<GpuContext>, size: DeviceSize, buffer: Buffer, allocation: Allocation) -> Self {
-        Self {
-            buffer,
-            allocation,
-            size,
-        }
-    }
-
     pub fn size(&self) -> DeviceSize {
         self.size
     }
 
     pub fn buffer(&self) -> Buffer {
         self.buffer
+    }
+}
+
+impl GpuContext {
+    pub fn create_buffer(&self, size: DeviceSize) -> Result<GpuBuffer, GpuError> {
+        self.buffers_ref()?.create_buffer(size)
+    }
+
+    pub fn destroy_buffer(&self, buffer: GpuBuffer) {
+        if let Ok(buffers) = self.buffers_ref() {
+            buffers.destroy_buffer(buffer);
+        }
+    }
+
+    pub fn upload_to_buffer(&mut self, buffer: &GpuBuffer, data: &[u8]) -> Result<(), GpuError> {
+        {
+            let buffers = self.buffers_mut()?;
+            buffers.upload_to_staging(data)?;
+        }
+
+        self.buffers_ref()?
+            .copy_from_staging(self, buffer, data.len() as u64)?;
+
+        Ok(())
+    }
+
+    pub fn download_from_buffer(&mut self, buffer: &GpuBuffer, size: usize) -> Result<Vec<u8>, GpuError> {
+        self.buffers_ref()?.copy_to_staging(self, buffer, size as u64)?;
+        self.buffers_ref()?.download_from_staging(size)
     }
 }
 
@@ -77,6 +97,13 @@ impl BufferContext {
         })
     }
 
+    pub fn destroy_buffer(&self, mut buffer: GpuBuffer) {
+        unsafe {
+            self.allocator
+                .destroy_buffer(buffer.buffer, &mut buffer.allocation);
+        }
+    }
+
     pub fn upload_to_staging(&mut self, data: &[u8]) -> Result<(), GpuError> {
         self.ensure_staging_capacity(data.len() as DeviceSize)?;
 
@@ -86,7 +113,7 @@ impl BufferContext {
             .mapped_data;
 
         if mapped_ptr.is_null() {
-            return Err("Failed to map staging buffer memory".into());
+            return Err(std::io::Error::other("Failed to map staging buffer memory").into());
         }
 
         unsafe {
@@ -122,15 +149,59 @@ impl BufferContext {
         Ok(())
     }
 
+    pub fn copy_to_staging(&self, context: &GpuContext, source: &GpuBuffer, size: u64) -> Result<(), GpuError> {
+        context.immediate_submit(|cmd| {
+            let copy_region = vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size,
+            };
+
+            unsafe {
+                context.device().cmd_copy_buffer(
+                    cmd,
+                    source.buffer,
+                    self.staging_buffer.buffer,
+                    std::slice::from_ref(&copy_region),
+                );
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    pub fn download_from_staging(&self, size: usize) -> Result<Vec<u8>, GpuError> {
+        let mapped_ptr = self
+            .allocator
+            .get_allocation_info(&self.staging_buffer.allocation)
+            .mapped_data;
+
+        if mapped_ptr.is_null() {
+            return Err(std::io::Error::other("Failed to map staging buffer memory").into());
+        }
+
+        self.allocator
+            .invalidate_allocation(&self.staging_buffer.allocation, 0, size as u64)?;
+
+        let mut data = vec![0u8; size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, data.as_mut_ptr(), size);
+        }
+
+        Ok(data)
+    }
+
     fn create_staging_buffer(allocator: &Allocator, size: DeviceSize) -> Result<GpuBuffer, GpuError> {
         let buffer_info = vk::BufferCreateInfo::default()
-            .size(STAGING_BUFFER_INITIAL_SIZE)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .size(size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let create_info = vk_mem::AllocationCreateInfo {
             usage: MemoryUsage::AutoPreferHost,
-            flags: AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            flags: AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_RANDOM,
             ..Default::default()
         };
 
@@ -149,14 +220,25 @@ impl BufferContext {
         }
 
         let new_size = std::cmp::max(self.staging_buffer.size * 2, required_size);
+        let mut old_staging = std::mem::replace(
+            &mut self.staging_buffer,
+            Self::create_staging_buffer(&self.allocator, new_size)?,
+        );
 
+        unsafe {
+            self.allocator
+                .destroy_buffer(old_staging.buffer, &mut old_staging.allocation);
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for BufferContext {
+    fn drop(&mut self) {
         unsafe {
             self.allocator
                 .destroy_buffer(self.staging_buffer.buffer, &mut self.staging_buffer.allocation);
         }
-
-        self.staging_buffer = Self::create_staging_buffer(&self.allocator, new_size)?;
-
-        Ok(())
     }
 }

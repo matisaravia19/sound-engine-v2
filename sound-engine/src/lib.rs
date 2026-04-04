@@ -1,6 +1,6 @@
 pub mod core;
 pub mod auralization;
-mod gpu;
+pub mod gpu;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

@@ -1,6 +1,7 @@
-use crate::gpu::buffer::{BufferContext, GpuBuffer};
+use crate::gpu::buffer::BufferContext;
 use crate::gpu::errors::GpuError;
-use ash::vk::{self, CommandPool, DeviceSize, PhysicalDevice, Queue};
+use crate::gpu::shader::ShaderModule;
+use ash::vk::{self, CommandPool, PhysicalDevice, Queue};
 use ash::{Device, Entry, Instance};
 use std::ffi::CString;
 
@@ -10,7 +11,8 @@ pub struct GpuContext {
     physical_device: PhysicalDevice,
     device: Device,
     queues: QueueContext,
-    buffers: BufferContext,
+    buffers: Option<BufferContext>,
+    shaders: Vec<ShaderModule>,
 }
 
 struct QueueContext {
@@ -33,12 +35,52 @@ impl GpuContext {
             physical_device,
             device,
             queues,
-            buffers,
+            buffers: Some(buffers),
+            shaders: Vec::new(),
         })
     }
 
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn physical_device(&self) -> &PhysicalDevice {
+        &self.physical_device
+    }
+
+    pub fn compute_queue(&self) -> &Queue {
+        &self.queues.compute_queue
+    }
+
+    pub fn compute_command_pool(&self) -> &CommandPool {
+        &self.queues.compute_command_pool
+    }
+
+    pub fn create_fence(&self) -> Result<vk::Fence, GpuError> {
+        let fence_info = vk::FenceCreateInfo::default();
+        let fence = unsafe { self.device.create_fence(&fence_info, None)? };
+        Ok(fence)
+    }
+
+    pub fn reset_fence(&self, fence: vk::Fence) -> Result<(), GpuError> {
+        unsafe {
+            self.device.reset_fences(std::slice::from_ref(&fence))?;
+        }
+        Ok(())
+    }
+
+    pub fn wait_for_fence(&self, fence: vk::Fence) -> Result<(), GpuError> {
+        unsafe {
+            self.device
+                .wait_for_fences(std::slice::from_ref(&fence), true, u64::MAX)?;
+        }
+        Ok(())
+    }
+
+    pub fn destroy_fence(&self, fence: vk::Fence) {
+        unsafe {
+            self.device.destroy_fence(fence, None);
+        }
     }
 
     pub fn immediate_submit<F>(&self, record: F) -> Result<(), GpuError>
@@ -89,14 +131,24 @@ impl GpuContext {
         result
     }
 
-    pub fn create_buffer(&self, size: DeviceSize) -> Result<GpuBuffer, GpuError> {
-        self.buffers.create_buffer(size)
+    pub(super) fn buffers_ref(&self) -> Result<&BufferContext, GpuError> {
+        self.buffers
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Buffer context is not available").into())
     }
 
-    pub fn upload_to_buffer(&mut self, buffer: &GpuBuffer, data: &[u8]) -> Result<(), GpuError> {
-        self.buffers.upload_to_staging(data)?;
-        self.buffers.copy_from_staging(self, buffer, data.len() as u64)?;
-        Ok(())
+    pub(super) fn buffers_mut(&mut self) -> Result<&mut BufferContext, GpuError> {
+        self.buffers
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Buffer context is not available").into())
+    }
+
+    pub(super) fn shaders_ref(&self) -> &Vec<ShaderModule> {
+        &self.shaders
+    }
+
+    pub(super) fn shaders_mut(&mut self) -> &mut Vec<ShaderModule> {
+        &mut self.shaders
     }
 
     fn create_instance(entry: &Entry) -> Result<Instance, GpuError> {
@@ -202,6 +254,16 @@ impl GpuContext {
 
 impl Drop for GpuContext {
     fn drop(&mut self) {
+        for shader in self.shaders.drain(..) {
+            unsafe {
+                self.device.destroy_shader_module(shader.handle(), None);
+            }
+        }
+
+        if let Some(buffers) = self.buffers.take() {
+            drop(buffers);
+        }
+
         unsafe {
             self.device.destroy_command_pool(self.queues.compute_command_pool, None);
             self.device.destroy_device(None);
