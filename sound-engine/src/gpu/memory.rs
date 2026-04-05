@@ -30,7 +30,7 @@ pub(crate) struct UploadSlice {
 }
 
 impl GpuAllocator {
-    pub fn new(device_context: Arc<VkDeviceContext>) -> Result<Self, GpuError> {
+    pub(super) fn new(device_context: Arc<VkDeviceContext>) -> Result<Self, GpuError> {
         let allocator_info = vk_mem::AllocatorCreateInfo::new(
             &device_context.instance,
             &device_context.device,

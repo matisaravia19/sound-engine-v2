@@ -1,7 +1,7 @@
+use crate::gpu::GpuError;
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::shader::ShaderLibrary;
 use crate::gpu::sync::SyncContext;
-use crate::gpu::GpuError;
 use ash::vk;
 use ash::{Device, Entry, Instance};
 use std::ffi::CString;
@@ -15,14 +15,14 @@ pub(crate) struct VkBackend {
     device: Arc<VkDeviceContext>,
 }
 
-pub(crate) struct VkDeviceContext {
+pub(super) struct VkDeviceContext {
     pub instance: ash::Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
     pub queues: QueueSet,
 }
 
-pub(crate) struct QueueSet {
+pub(super) struct QueueSet {
     pub compute_queue: vk::Queue,
     pub compute_family: u32,
     pub compute_command_pool: vk::CommandPool,
@@ -50,13 +50,13 @@ impl VkBackend {
         Ok(Self {
             entry,
             memory,
-            shaders: ShaderLibrary,
-            sync: SyncContext,
+            shaders: ShaderLibrary::new(device.clone()),
+            sync: SyncContext::new(device.clone()),
             device,
         })
     }
 
-    pub fn device(&self) -> &VkDeviceContext {
+    pub(super) fn device(&self) -> &VkDeviceContext {
         self.device.as_ref()
     }
 
@@ -96,9 +96,7 @@ impl VkBackend {
         Ok(instance)
     }
 
-    fn select_physical_device_and_compute_family(
-        instance: &Instance,
-    ) -> Result<(vk::PhysicalDevice, u32), GpuError> {
+    fn select_physical_device_and_compute_family(instance: &Instance) -> Result<(vk::PhysicalDevice, u32), GpuError> {
         let physical_devices = unsafe { instance.enumerate_physical_devices()? };
 
         physical_devices
@@ -110,9 +108,7 @@ impl VkBackend {
             })
             .max_by_key(|(score, _, _)| *score)
             .map(|(_, physical_device, compute_family)| (physical_device, compute_family))
-            .ok_or_else(|| {
-                std::io::Error::other("No Vulkan physical device with compute support was found").into()
-            })
+            .ok_or_else(|| std::io::Error::other("No Vulkan physical device with compute support was found").into())
     }
 
     fn create_device_and_queues(
@@ -120,8 +116,8 @@ impl VkBackend {
         physical_device: vk::PhysicalDevice,
         compute_family: u32,
     ) -> Result<(Device, QueueSet), GpuError> {
-        let transfer_family = Self::find_queue_family(instance, physical_device, vk::QueueFlags::TRANSFER)
-            .unwrap_or(compute_family);
+        let transfer_family =
+            Self::find_queue_family(instance, physical_device, vk::QueueFlags::TRANSFER).unwrap_or(compute_family);
 
         let queue_priorities = [1.0_f32];
         let mut queue_infos = vec![
@@ -213,8 +209,7 @@ impl Drop for VkDeviceContext {
             let _ = self.device.device_wait_idle();
             self.device
                 .destroy_command_pool(self.queues.transfer_command_pool, None);
-            self.device
-                .destroy_command_pool(self.queues.compute_command_pool, None);
+            self.device.destroy_command_pool(self.queues.compute_command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
