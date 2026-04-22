@@ -1,6 +1,6 @@
 use ash::{Entry, vk};
 use std::{error::Error, ffi::CString};
-use vkfft_rs::plan::{DeviceHandles, PlanBuilder};
+use vkfft_rs::plan::{DeviceHandles, FFTPlanBuilder};
 
 const N: usize = 8;
 
@@ -24,13 +24,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let instance = unsafe { entry.create_instance(&instance_info, None)? };
 
     let physical_devices = unsafe { instance.enumerate_physical_devices()? };
-    let physical_device = *physical_devices
-        .first()
-        .ok_or("No Vulkan physical device found")?;
+    let physical_device = *physical_devices.first().ok_or("No Vulkan physical device found")?;
 
-    let queue_family_props = unsafe {
-        instance.get_physical_device_queue_family_properties(physical_device)
-    };
+    let queue_family_props = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
     let compute_queue_family_index = queue_family_props
         .iter()
         .enumerate()
@@ -94,9 +90,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let expected = circular_convolution(&signal_real, &kernel_real);
 
     {
-        let mapped = unsafe {
-            device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())?
-        };
+        let mapped = unsafe { device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())? };
         let slice = unsafe { std::slice::from_raw_parts_mut(mapped.cast::<f32>(), element_count) };
         slice.fill(0.0);
         for i in 0..N {
@@ -106,9 +100,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     {
-        let mapped = unsafe {
-            device.map_memory(kernel_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())?
-        };
+        let mapped = unsafe { device.map_memory(kernel_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())? };
         let slice = unsafe { std::slice::from_raw_parts_mut(mapped.cast::<f32>(), element_count) };
         slice.fill(0.0);
         for i in 0..N {
@@ -125,7 +117,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         fence,
     };
 
-    let mut kernel_builder = PlanBuilder::new(DeviceHandles { ..device_handles })
+    let mut kernel_builder = FFTPlanBuilder::new(DeviceHandles { ..device_handles })
         .map_err(|e| format!("kernel PlanBuilder::new failed: {e:?}"))?;
     kernel_builder
         .with_dimensions(&[N as u64])
@@ -135,7 +127,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         .build()
         .map_err(|e| format!("kernel PlanBuilder::build failed: {e:?}"))?;
 
-    let mut signal_builder = PlanBuilder::new(DeviceHandles { ..device_handles })
+    let mut signal_builder = FFTPlanBuilder::new(DeviceHandles { ..device_handles })
         .map_err(|e| format!("signal PlanBuilder::new failed: {e:?}"))?;
     signal_builder
         .with_dimensions(&[N as u64])
@@ -156,10 +148,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
 
     signal_plan
-        .launch(command_buffer)
+        .append(command_buffer)
         .map_err(|e| format!("signal forward launch failed: {e:?}"))?;
     kernel_plan
-        .launch(command_buffer)
+        .append(command_buffer)
         .map_err(|e| format!("kernel forward launch failed: {e:?}"))?;
 
     unsafe { device.end_command_buffer(command_buffer)? };
@@ -170,12 +162,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     unsafe { device.wait_for_fences(std::slice::from_ref(&fence), true, u64::MAX)? };
 
     {
-        let mapped_signal = unsafe {
-            device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())?
-        };
-        let mapped_kernel = unsafe {
-            device.map_memory(kernel_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())?
-        };
+        let mapped_signal = unsafe { device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())? };
+        let mapped_kernel = unsafe { device.map_memory(kernel_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())? };
 
         let signal_slice = unsafe { std::slice::from_raw_parts_mut(mapped_signal.cast::<f32>(), element_count) };
         let kernel_slice = unsafe { std::slice::from_raw_parts(mapped_kernel.cast::<f32>(), element_count) };
@@ -197,7 +185,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())? };
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
     signal_plan
-        .launch_inverse(command_buffer)
+        .append_inverse(command_buffer)
         .map_err(|e| format!("signal inverse launch failed: {e:?}"))?;
     unsafe { device.end_command_buffer(command_buffer)? };
 
@@ -206,9 +194,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     unsafe { device.wait_for_fences(std::slice::from_ref(&fence), true, u64::MAX)? };
 
     {
-        let mapped = unsafe {
-            device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())?
-        };
+        let mapped = unsafe { device.map_memory(signal_memory, 0, buffer_bytes, vk::MemoryMapFlags::empty())? };
         let slice = unsafe { std::slice::from_raw_parts(mapped.cast::<f32>(), element_count) };
 
         let mut ok = true;
@@ -274,9 +260,7 @@ fn find_memory_type_index(
 
     for index in 0..mem_props.memory_type_count {
         let supported = (type_bits & (1 << index)) != 0;
-        let has_flags = mem_props.memory_types[index as usize]
-            .property_flags
-            .contains(required);
+        let has_flags = mem_props.memory_types[index as usize].property_flags.contains(required);
         if supported && has_flags {
             return Some(index);
         }

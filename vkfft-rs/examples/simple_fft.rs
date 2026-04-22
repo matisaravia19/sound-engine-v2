@@ -1,6 +1,6 @@
 use ash::{Entry, vk};
 use std::{error::Error, ffi::CString};
-use vkfft_rs::plan::{DeviceHandles, PlanBuilder};
+use vkfft_rs::plan::{DeviceHandles, FFTPlanBuilder};
 
 const N: usize = 8;
 
@@ -87,7 +87,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         unsafe { device.unmap_memory(memory) };
     }
 
-    let mut builder = PlanBuilder::new(DeviceHandles {
+    let mut builder = FFTPlanBuilder::new(DeviceHandles {
         physical_device,
         device: device.handle(),
         queue,
@@ -110,7 +110,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let begin_info = vk::CommandBufferBeginInfo::default();
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
-    plan.launch(command_buffer)
+    plan.append(command_buffer)
         .map_err(|e| format!("Plan::launch failed: {e:?}"))?;
     unsafe { device.end_command_buffer(command_buffer)? };
 

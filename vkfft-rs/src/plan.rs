@@ -1,11 +1,11 @@
 use crate::ffi::*;
 use ash::vk::Handle;
 
-pub struct Plan {
+pub struct FFTPlan {
     app: VkFFTApp,
 }
 
-pub struct PlanBuilder {
+pub struct FFTPlanBuilder {
     config: VkFFTConfiguration,
     handles: Box<HandleStorage>,
 }
@@ -33,8 +33,8 @@ pub struct DeviceHandles {
     pub fence: ash::vk::Fence,
 }
 
-impl PlanBuilder {
-    pub fn new(handles: DeviceHandles) -> Result<Self, VkFFTResult> {
+impl FFTPlanBuilder {
+    pub fn new(handles: &DeviceHandles) -> Self {
         let mut handle_storage = Box::new(HandleStorage {
             physical_device: handles.physical_device.as_raw() as VkPhysicalDevice,
             device: handles.device.as_raw() as VkDevice,
@@ -53,13 +53,13 @@ impl PlanBuilder {
             ..Default::default()
         };
 
-        Ok(Self {
+        Self {
             config,
             handles: handle_storage,
-        })
+        }
     }
 
-    pub fn build(&mut self) -> Result<Plan, VkFFTResult> {
+    pub fn build(&mut self) -> Result<FFTPlan, VkFFTResult> {
         let app = unsafe { vkfft_app_create() };
         if app.is_null() {
             return Err(VkFFTResult::ErrorEmptyApp);
@@ -71,7 +71,7 @@ impl PlanBuilder {
             return Err(result);
         }
 
-        Ok(Plan { app })
+        Ok(FFTPlan { app })
     }
 
     pub fn with_dimensions(&mut self, dimensions: &[u64]) -> &mut Self {
@@ -83,6 +83,10 @@ impl PlanBuilder {
         }
 
         self
+    }
+
+    pub fn with_single_dimension(&mut self, size: u64) -> &mut Self {
+        self.with_dimensions(&[size])
     }
 
     pub fn with_buffer(&mut self, buffer: ash::vk::Buffer, buffer_size: u64) -> &mut Self {
@@ -113,16 +117,16 @@ impl PlanBuilder {
     }
 }
 
-impl Plan {
-    pub fn launch(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
-        self.launch_internal(command_buffer, 0)
+impl FFTPlan {
+    pub fn append(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
+        self.append_internal(command_buffer, 0)
     }
 
-    pub fn launch_inverse(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
-        self.launch_internal(command_buffer, 1)
+    pub fn append_inverse(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
+        self.append_internal(command_buffer, 1)
     }
 
-    fn launch_internal(&self, command_buffer: ash::vk::CommandBuffer, inverse: i32) -> Result<(), VkFFTResult> {
+    fn append_internal(&self, command_buffer: ash::vk::CommandBuffer, inverse: i32) -> Result<(), VkFFTResult> {
         let mut command_buffer_handle = command_buffer.as_raw() as VkCommandBuffer;
         let params = VkFFTLaunchParams {
             command_buffer: std::ptr::from_mut(&mut command_buffer_handle),
@@ -137,7 +141,7 @@ impl Plan {
     }
 }
 
-impl Drop for Plan {
+impl Drop for FFTPlan {
     fn drop(&mut self) {
         unsafe {
             vkfft_delete_plan(self.app);
