@@ -1,7 +1,7 @@
-use crate::gpu::GpuError;
 use crate::gpu::backend::VkDeviceContext;
+use crate::gpu::{GpuError, backend::QueueSet};
 use ash::vk;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vk_mem::{Alloc, Allocation, AllocationCreateFlags, Allocator, MemoryUsage};
 
 const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
@@ -9,9 +9,7 @@ const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
 pub(crate) struct GpuAllocator {
     allocator: Allocator,
     device_context: Arc<VkDeviceContext>,
-    transfer_command_buffer: vk::CommandBuffer,
-    transfer_fence: vk::Fence,
-    staging: StagingRing,
+    transfer: Mutex<TransferContext>,
 }
 
 pub(crate) struct BufferHandle {
@@ -20,17 +18,24 @@ pub(crate) struct BufferHandle {
     allocation: Allocation,
 }
 
-pub(crate) struct StagingRing {
+struct TransferContext {
+    queue: QueueSet,
+    command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
+    staging_buffer: BufferHandle,
+}
+
+struct StagingRing {
     buffer: BufferHandle,
 }
 
-pub(crate) struct UploadSlice {
+struct UploadSlice {
     pub staging_offset: vk::DeviceSize,
     pub size: vk::DeviceSize,
 }
 
 impl GpuAllocator {
-    pub(super) fn new(device_context: Arc<VkDeviceContext>) -> Result<Self, GpuError> {
+    pub(super) fn new(device_context: Arc<VkDeviceContext>, transfer_queue: QueueSet) -> Result<Self, GpuError> {
         let allocator_info = vk_mem::AllocatorCreateInfo::new(
             &device_context.instance,
             &device_context.device,
@@ -39,31 +44,37 @@ impl GpuAllocator {
         let allocator = unsafe { Allocator::new(allocator_info)? };
 
         let transfer_command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(device_context.queues.transfer_command_pool)
+            .command_pool(transfer_queue.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
-        let transfer_command_buffer =
-            unsafe { device_context.device.allocate_command_buffers(&transfer_command_buffer_alloc_info)? }[0];
+        let transfer_command_buffer = unsafe {
+            device_context
+                .device
+                .allocate_command_buffers(&transfer_command_buffer_alloc_info)?
+        }[0];
 
         let transfer_fence_info = vk::FenceCreateInfo::default();
         let transfer_fence = unsafe { device_context.device.create_fence(&transfer_fence_info, None)? };
 
-        let staging = StagingRing {
-            buffer: Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?,
+        let staging_buffer = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
+
+        let transfer = TransferContext {
+            queue: transfer_queue,
+            command_buffer: transfer_command_buffer,
+            fence: transfer_fence,
+            staging_buffer,
         };
 
         Ok(Self {
             allocator,
             device_context,
-            transfer_command_buffer,
-            transfer_fence,
-            staging,
+            transfer: Mutex::new(transfer),
         })
     }
 
-    pub fn create_storage_buffer(&mut self, size: vk::DeviceSize) -> Result<BufferHandle, GpuError> {
+    pub fn create_storage_buffer(&self, size: u64) -> Result<BufferHandle, GpuError> {
         self.create_buffer(
-            size,
+            size as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::TRANSFER_SRC,
@@ -72,7 +83,7 @@ impl GpuAllocator {
         )
     }
 
-    pub fn create_readback_buffer(&mut self, size: vk::DeviceSize) -> Result<BufferHandle, GpuError> {
+    pub fn create_readback_buffer(&self, size: vk::DeviceSize) -> Result<BufferHandle, GpuError> {
         self.create_buffer(
             size,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
@@ -81,7 +92,7 @@ impl GpuAllocator {
         )
     }
 
-    pub fn destroy_buffer(&mut self, mut handle: BufferHandle) {
+    pub fn destroy_buffer(&self, mut handle: BufferHandle) {
         unsafe {
             self.allocator.destroy_buffer(handle.buffer, &mut handle.allocation);
         }
@@ -97,8 +108,14 @@ impl GpuAllocator {
             .into());
         }
 
-        self.upload_to_staging(data)?;
-        self.copy_buffer(self.staging.buffer.buffer, destination.buffer, data.len() as u64)?;
+        let mut transfer = self
+            .transfer
+            .lock()
+            .map_err(|_| std::io::Error::other("Transfer lock is poisoned"))?;
+
+        self.ensure_staging_capacity(&mut transfer, data.len() as u64)?;
+        self.upload_to_staging(&transfer, data)?;
+        self.copy_buffer(&transfer, &transfer.staging_buffer, destination)?;
         Ok(())
     }
 
@@ -111,13 +128,18 @@ impl GpuAllocator {
             .into());
         }
 
-        self.ensure_staging_capacity(size as u64)?;
-        self.copy_buffer(src.buffer, self.staging.buffer.buffer, size as u64)?;
-        self.download_from_staging(size)
+        let mut transfer = self
+            .transfer
+            .lock()
+            .map_err(|_| std::io::Error::other("Transfer lock is poisoned"))?;
+
+        self.ensure_staging_capacity(&mut transfer, size as u64)?;
+        self.copy_buffer(&transfer, &src, &transfer.staging_buffer)?;
+        self.download_from_staging(&transfer, size)
     }
 
     fn create_buffer(
-        &mut self,
+        &self,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         memory_usage: MemoryUsage,
@@ -162,14 +184,18 @@ impl GpuAllocator {
         })
     }
 
-    fn ensure_staging_capacity(&mut self, required_size: vk::DeviceSize) -> Result<(), GpuError> {
-        if self.staging.buffer.size >= required_size {
+    fn ensure_staging_capacity(
+        &self,
+        transfer: &mut TransferContext,
+        required_size: vk::DeviceSize,
+    ) -> Result<(), GpuError> {
+        if transfer.staging_buffer.size >= required_size {
             return Ok(());
         }
 
-        let new_size = std::cmp::max(self.staging.buffer.size * 2, required_size);
+        let new_size = std::cmp::max(transfer.staging_buffer.size * 2, required_size);
         let mut old = std::mem::replace(
-            &mut self.staging.buffer,
+            &mut transfer.staging_buffer,
             Self::create_staging_buffer(&self.allocator, new_size)?,
         );
 
@@ -180,11 +206,10 @@ impl GpuAllocator {
         Ok(())
     }
 
-    fn upload_to_staging(&mut self, data: &[u8]) -> Result<UploadSlice, GpuError> {
-        self.ensure_staging_capacity(data.len() as u64)?;
+    fn upload_to_staging(&self, transfer: &TransferContext, data: &[u8]) -> Result<UploadSlice, GpuError> {
         let mapped_ptr = self
             .allocator
-            .get_allocation_info(&self.staging.buffer.allocation)
+            .get_allocation_info(&transfer.staging_buffer.allocation)
             .mapped_data;
 
         if mapped_ptr.is_null() {
@@ -196,7 +221,7 @@ impl GpuAllocator {
         }
 
         self.allocator
-            .flush_allocation(&self.staging.buffer.allocation, 0, data.len() as u64)?;
+            .flush_allocation(&transfer.staging_buffer.allocation, 0, data.len() as u64)?;
 
         Ok(UploadSlice {
             staging_offset: 0,
@@ -204,10 +229,10 @@ impl GpuAllocator {
         })
     }
 
-    fn download_from_staging(&self, size: usize) -> Result<Vec<u8>, GpuError> {
+    fn download_from_staging(&self, transfer: &TransferContext, size: usize) -> Result<Vec<u8>, GpuError> {
         let mapped_ptr = self
             .allocator
-            .get_allocation_info(&self.staging.buffer.allocation)
+            .get_allocation_info(&transfer.staging_buffer.allocation)
             .mapped_data;
 
         if mapped_ptr.is_null() {
@@ -215,7 +240,7 @@ impl GpuAllocator {
         }
 
         self.allocator
-            .invalidate_allocation(&self.staging.buffer.allocation, 0, size as u64)?;
+            .invalidate_allocation(&transfer.staging_buffer.allocation, 0, size as u64)?;
 
         let mut out = vec![0_u8; size];
         unsafe {
@@ -224,43 +249,44 @@ impl GpuAllocator {
         Ok(out)
     }
 
-    fn copy_buffer(&self, src: vk::Buffer, dst: vk::Buffer, size: vk::DeviceSize) -> Result<(), GpuError> {
-        let command_buffer = self.transfer_command_buffer;
-
+    fn copy_buffer(&self, transfer: &TransferContext, src: &BufferHandle, dst: &BufferHandle) -> Result<(), GpuError> {
         let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device_context
                 .device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
+                .reset_command_buffer(transfer.command_buffer, vk::CommandBufferResetFlags::empty())?;
             self.device_context
                 .device
-                .begin_command_buffer(command_buffer, &begin_info)?;
+                .begin_command_buffer(transfer.command_buffer, &begin_info)?;
 
             let region = vk::BufferCopy {
                 src_offset: 0,
                 dst_offset: 0,
-                size,
+                size: src.size,
             };
+            self.device_context.device.cmd_copy_buffer(
+                transfer.command_buffer,
+                src.buffer,
+                dst.buffer,
+                std::slice::from_ref(&region),
+            );
+
+            self.device_context.device.end_command_buffer(transfer.command_buffer)?;
+
             self.device_context
                 .device
-                .cmd_copy_buffer(command_buffer, src, dst, std::slice::from_ref(&region));
+                .reset_fences(std::slice::from_ref(&transfer.fence))?;
 
-            self.device_context.device.end_command_buffer(command_buffer)?;
-
-            self.device_context
-                .device
-                .reset_fences(std::slice::from_ref(&self.transfer_fence))?;
-
-            let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+            let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&transfer.command_buffer));
             self.device_context.device.queue_submit(
-                self.device_context.queues.transfer_queue,
+                transfer.queue.handle,
                 std::slice::from_ref(&submit_info),
-                self.transfer_fence,
+                transfer.fence,
             )?;
 
             self.device_context
                 .device
-                .wait_for_fences(std::slice::from_ref(&self.transfer_fence), true, u64::MAX)?;
+                .wait_for_fences(std::slice::from_ref(&transfer.fence), true, u64::MAX)?;
         }
 
         Ok(())
@@ -269,14 +295,26 @@ impl GpuAllocator {
 
 impl Drop for GpuAllocator {
     fn drop(&mut self) {
+        let mut transfer = self
+            .transfer
+            .lock()
+            .expect("Transfer lock is poisoned during GpuAllocator drop");
+
         unsafe {
             self.allocator
-                .destroy_buffer(self.staging.buffer.buffer, &mut self.staging.buffer.allocation);
+                .destroy_buffer(transfer.staging_buffer.buffer, &mut transfer.staging_buffer.allocation);
+
             self.device_context.device.free_command_buffers(
-                self.device_context.queues.transfer_command_pool,
-                std::slice::from_ref(&self.transfer_command_buffer),
+                transfer.queue.command_pool,
+                std::slice::from_ref(&transfer.command_buffer),
             );
-            self.device_context.device.destroy_fence(self.transfer_fence, None);
+
+            self.device_context.device.destroy_fence(transfer.fence, None);
+
+            self.device_context.device.queue_wait_idle(transfer.queue.handle).ok();
+            self.device_context
+                .device
+                .destroy_command_pool(transfer.queue.command_pool, None);
         }
     }
 }

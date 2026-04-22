@@ -1,7 +1,7 @@
 use crate::gpu::GpuError;
+use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::shader::ShaderLibrary;
-use crate::gpu::sync::SyncContext;
 use ash::vk;
 use ash::{Device, Entry, Instance};
 use std::ffi::CString;
@@ -11,18 +11,17 @@ pub(crate) struct VkBackend {
     entry: Entry,
     memory: GpuAllocator,
     shaders: ShaderLibrary,
-    sync: SyncContext,
+    compute: ComputeContext,
     device: Arc<VkDeviceContext>,
 }
 
-pub(super) struct VkDeviceContext {
+pub(crate) struct VkDeviceContext {
     pub instance: ash::Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
-    pub queues: QueueSet,
 }
 
-pub(super) struct QueueSet {
+pub(crate) struct QueueSetOld {
     pub compute_queue: vk::Queue,
     pub compute_family: u32,
     pub compute_command_pool: vk::CommandPool,
@@ -31,32 +30,42 @@ pub(super) struct QueueSet {
     pub transfer_command_pool: vk::CommandPool,
 }
 
+pub(super) struct QueueSet {
+    pub handle: vk::Queue,
+    pub queue_family: u32,
+    pub command_pool: vk::CommandPool,
+}
+
+struct DeviceCreationResult {
+    device: ash::Device,
+    compute_queue: QueueSet,
+    transfer_queue: QueueSet,
+}
+
 impl VkBackend {
     pub fn new() -> Result<Self, GpuError> {
         let entry = unsafe { Entry::load()? };
         let instance = Self::create_instance(&entry)?;
 
         let (physical_device, compute_family) = Self::select_physical_device_and_compute_family(&instance)?;
-        let (device, queues) = Self::create_device_and_queues(&instance, physical_device, compute_family)?;
+        let device_creation_result = Self::create_device_and_queues(&instance, physical_device, compute_family)?;
 
         let device = Arc::new(VkDeviceContext {
             instance,
             physical_device,
-            device,
-            queues,
+            device: device_creation_result.device,
         });
-        let memory = GpuAllocator::new(device.clone())?;
 
         Ok(Self {
             entry,
-            memory,
+            memory: GpuAllocator::new(device.clone(), device_creation_result.transfer_queue)?,
             shaders: ShaderLibrary::new(device.clone()),
-            sync: SyncContext::new(device.clone()),
+            compute: ComputeContext::new(device.clone(), device_creation_result.compute_queue),
             device,
         })
     }
 
-    pub(super) fn device(&self) -> &VkDeviceContext {
+    pub(crate) fn device(&self) -> &VkDeviceContext {
         self.device.as_ref()
     }
 
@@ -76,8 +85,8 @@ impl VkBackend {
         &mut self.shaders
     }
 
-    pub fn sync(&self) -> &SyncContext {
-        &self.sync
+    pub fn compute(&self) -> &ComputeContext {
+        &self.compute
     }
 
     fn create_instance(entry: &Entry) -> Result<Instance, GpuError> {
@@ -115,10 +124,7 @@ impl VkBackend {
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         compute_family: u32,
-    ) -> Result<(Device, QueueSet), GpuError> {
-        let transfer_family =
-            Self::find_queue_family(instance, physical_device, vk::QueueFlags::TRANSFER).unwrap_or(compute_family);
-
+    ) -> Result<DeviceCreationResult, GpuError> {
         let queue_priorities = [1.0_f32];
         let mut queue_infos = vec![
             vk::DeviceQueueCreateInfo::default()
@@ -126,6 +132,8 @@ impl VkBackend {
                 .queue_priorities(&queue_priorities),
         ];
 
+        let transfer_family =
+            Self::find_queue_family(instance, physical_device, vk::QueueFlags::TRANSFER).unwrap_or(compute_family);
         if transfer_family != compute_family {
             queue_infos.push(
                 vk::DeviceQueueCreateInfo::default()
@@ -150,16 +158,19 @@ impl VkBackend {
             .flags(vk::CommandPoolCreateFlags::TRANSIENT | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let transfer_command_pool = unsafe { device.create_command_pool(&transfer_pool_info, None)? };
 
-        let queues = QueueSet {
-            compute_queue,
-            compute_family,
-            compute_command_pool,
-            transfer_queue,
-            transfer_family,
-            transfer_command_pool,
-        };
-
-        Ok((device, queues))
+        Ok(DeviceCreationResult {
+            device,
+            compute_queue: QueueSet {
+                handle: compute_queue,
+                queue_family: compute_family,
+                command_pool: compute_command_pool,
+            },
+            transfer_queue: QueueSet {
+                handle: transfer_queue,
+                queue_family: transfer_family,
+                command_pool: transfer_command_pool,
+            },
+        })
     }
 
     fn find_queue_family(
@@ -197,6 +208,14 @@ impl VkBackend {
     }
 }
 
+impl VkDeviceContext {
+    pub fn create_fence(&self) -> Result<vk::Fence, GpuError> {
+        let fence_info = vk::FenceCreateInfo::default();
+        let fence = unsafe { self.device.create_fence(&fence_info, None)? };
+        Ok(fence)
+    }
+}
+
 impl Drop for VkBackend {
     fn drop(&mut self) {
         let _ = &self.entry;
@@ -207,9 +226,6 @@ impl Drop for VkDeviceContext {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
-            self.device
-                .destroy_command_pool(self.queues.transfer_command_pool, None);
-            self.device.destroy_command_pool(self.queues.compute_command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
