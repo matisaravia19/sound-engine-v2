@@ -1,9 +1,15 @@
 mod convolver;
 mod engine;
-use std::error::Error;
-use std::sync::Arc;
+mod fft;
 
-pub(crate) use engine::AuralizationEngine;
+use std::error::Error;
+
+// pub(crate) use engine::AuralizationEngine;
+
+pub const BLOCK_SIZE: u64 = 1024;
+pub const IR_SIZE: u64 = 44100;
+pub const SAMPLE_RATE: u32 = 44100;
+pub const FFT_SIZE: u64 = (BLOCK_SIZE + IR_SIZE - 1).next_power_of_two();
 
 pub(crate) type AudioError = Box<dyn Error + Send + Sync>;
 
@@ -40,6 +46,8 @@ impl AuralizationConfig {
 }
 
 pub(crate) type SoundId = u32;
+pub(crate) type ImpulseResponseId = u64;
+pub(crate) type VoiceId = u64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IrSnapshot {
@@ -47,16 +55,6 @@ pub(crate) struct IrSnapshot {
     pub samples: Vec<f32>,
     pub energy: f32,
 }
-
-pub(crate) type VoiceId = u64;
-
-pub(crate) struct VoiceState {
-    pub voice_id: VoiceId,
-    pub sound: SoundId,
-    pub ir: Arc<IrSnapshot>,
-}
-
-pub(crate) type VoiceTable = Vec<VoiceState>;
 
 pub(crate) trait SoundBankReader {
     fn render_voice_block(
