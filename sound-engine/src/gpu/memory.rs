@@ -1,13 +1,14 @@
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::{GpuError, backend::QueueSet};
 use ash::vk;
+use bytemuck::Pod;
 use std::sync::{Arc, Mutex};
 use vk_mem::{Alloc, Allocation, AllocationCreateFlags, Allocator, MemoryUsage};
 
 const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
 
 pub(crate) struct GpuAllocator {
-    allocator: Allocator,
+    allocator: Arc<Allocator>,
     device_context: Arc<VkDeviceContext>,
     transfer: Mutex<TransferContext>,
 }
@@ -16,6 +17,7 @@ pub(crate) struct BufferHandle {
     pub buffer: vk::Buffer,
     pub size: vk::DeviceSize,
     allocation: Allocation,
+    allocator: Arc<Allocator>,
 }
 
 struct TransferContext {
@@ -23,10 +25,6 @@ struct TransferContext {
     command_buffer: vk::CommandBuffer,
     fence: vk::Fence,
     staging_buffer: BufferHandle,
-}
-
-struct StagingRing {
-    buffer: BufferHandle,
 }
 
 struct UploadSlice {
@@ -41,7 +39,7 @@ impl GpuAllocator {
             &device_context.device,
             device_context.physical_device,
         );
-        let allocator = unsafe { Allocator::new(allocator_info)? };
+        let allocator = unsafe { Arc::new(Allocator::new(allocator_info)?) };
 
         let transfer_command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(transfer_queue.command_pool)
@@ -98,7 +96,7 @@ impl GpuAllocator {
         }
     }
 
-    pub fn upload_bytes(&mut self, destination: &BufferHandle, data: &[u8]) -> Result<(), GpuError> {
+    pub fn upload_bytes(&self, destination: &BufferHandle, data: &[u8]) -> Result<(), GpuError> {
         if data.len() as u64 > destination.size {
             return Err(std::io::Error::other(format!(
                 "Upload size {} exceeds destination buffer size {}",
@@ -119,7 +117,11 @@ impl GpuAllocator {
         Ok(())
     }
 
-    pub fn download_bytes(&mut self, src: &BufferHandle, size: usize) -> Result<Vec<u8>, GpuError> {
+    pub fn upload_typed<T: Pod>(&self, destination: &BufferHandle, data: &[T]) -> Result<(), GpuError> {
+        self.upload_bytes(destination, bytemuck::cast_slice(data))
+    }
+
+    pub fn download_bytes(&self, src: &BufferHandle, size: usize, out: &mut [u8]) -> Result<(), GpuError> {
         if size as u64 > src.size {
             return Err(std::io::Error::other(format!(
                 "Download size {} exceeds source buffer size {}",
@@ -135,7 +137,20 @@ impl GpuAllocator {
 
         self.ensure_staging_capacity(&mut transfer, size as u64)?;
         self.copy_buffer(&transfer, &src, &transfer.staging_buffer)?;
-        self.download_from_staging(&transfer, size)
+        self.download_from_staging(&transfer, size, out)?;
+
+        Ok(())
+    }
+
+    pub fn download_typed<T: Pod>(&self, src: &BufferHandle, count: usize, out: &mut [T]) -> Result<(), GpuError> {
+        let element_size = std::mem::size_of::<T>();
+        let byte_size = count
+            .checked_mul(element_size)
+            .ok_or_else(|| std::io::Error::other("download_typed byte size overflow"))?;
+
+        self.download_bytes(src, byte_size, bytemuck::cast_slice_mut::<T, u8>(out))?;
+
+        return Ok(());
     }
 
     fn create_buffer(
@@ -161,10 +176,11 @@ impl GpuAllocator {
             buffer,
             size,
             allocation,
+            allocator: self.allocator.clone(),
         })
     }
 
-    fn create_staging_buffer(allocator: &Allocator, size: vk::DeviceSize) -> Result<BufferHandle, GpuError> {
+    fn create_staging_buffer(allocator: &Arc<Allocator>, size: vk::DeviceSize) -> Result<BufferHandle, GpuError> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
@@ -181,6 +197,7 @@ impl GpuAllocator {
             buffer,
             size,
             allocation,
+            allocator: allocator.clone(),
         })
     }
 
@@ -229,7 +246,7 @@ impl GpuAllocator {
         })
     }
 
-    fn download_from_staging(&self, transfer: &TransferContext, size: usize) -> Result<Vec<u8>, GpuError> {
+    fn download_from_staging(&self, transfer: &TransferContext, size: usize, out: &mut [u8]) -> Result<(), GpuError> {
         let mapped_ptr = self
             .allocator
             .get_allocation_info(&transfer.staging_buffer.allocation)
@@ -242,11 +259,10 @@ impl GpuAllocator {
         self.allocator
             .invalidate_allocation(&transfer.staging_buffer.allocation, 0, size as u64)?;
 
-        let mut out = vec![0_u8; size];
         unsafe {
             std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, out.as_mut_ptr(), size);
         }
-        Ok(out)
+        Ok(())
     }
 
     fn copy_buffer(&self, transfer: &TransferContext, src: &BufferHandle, dst: &BufferHandle) -> Result<(), GpuError> {
@@ -295,15 +311,12 @@ impl GpuAllocator {
 
 impl Drop for GpuAllocator {
     fn drop(&mut self) {
-        let mut transfer = self
+        let transfer = self
             .transfer
             .lock()
             .expect("Transfer lock is poisoned during GpuAllocator drop");
 
         unsafe {
-            self.allocator
-                .destroy_buffer(transfer.staging_buffer.buffer, &mut transfer.staging_buffer.allocation);
-
             self.device_context.device.free_command_buffers(
                 transfer.queue.command_pool,
                 std::slice::from_ref(&transfer.command_buffer),
@@ -315,6 +328,14 @@ impl Drop for GpuAllocator {
             self.device_context
                 .device
                 .destroy_command_pool(transfer.queue.command_pool, None);
+        }
+    }
+}
+
+impl Drop for BufferHandle {
+    fn drop(&mut self) {
+        unsafe {
+            self.allocator.destroy_buffer(self.buffer, &mut self.allocation);
         }
     }
 }
