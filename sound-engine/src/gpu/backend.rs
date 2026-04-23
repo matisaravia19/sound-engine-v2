@@ -60,7 +60,7 @@ impl VkBackend {
             entry,
             memory: GpuAllocator::new(device.clone(), device_creation_result.transfer_queue)?,
             shaders: ShaderLibrary::new(device.clone()),
-            compute: ComputeContext::new(device.clone(), device_creation_result.compute_queue),
+            compute: ComputeContext::new(device.clone(), device_creation_result.compute_queue)?,
             device,
         })
     }

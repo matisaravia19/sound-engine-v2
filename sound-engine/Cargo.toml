@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ash = "0.38.0"
+bytemuck = "1.24.0"
 realfft = "3.5.0"
 vk-mem = "0.5.0"
 vkfft-rs = { path = "../vkfft-rs" }
