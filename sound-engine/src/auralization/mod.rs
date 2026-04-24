@@ -1,6 +1,5 @@
 mod convolver;
 mod engine;
-mod fft;
 
 use std::error::Error;
 
@@ -10,6 +9,7 @@ pub const BLOCK_SIZE: u64 = 1024;
 pub const IR_SIZE: u64 = 44100;
 pub const SAMPLE_RATE: u32 = 44100;
 pub const FFT_SIZE: u64 = (BLOCK_SIZE + IR_SIZE - 1).next_power_of_two();
+pub const TAIL_SIZE: usize = (FFT_SIZE - BLOCK_SIZE) as usize;
 
 pub(crate) type AudioError = Box<dyn Error + Send + Sync>;
 

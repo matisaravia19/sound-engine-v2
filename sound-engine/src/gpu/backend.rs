@@ -3,14 +3,14 @@ use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
-use ash::{Device, Entry, Instance};
+use ash::{Entry, Instance};
 use std::ffi::CString;
 use std::sync::Arc;
 
 pub(crate) struct VkBackend {
     entry: Entry,
     memory: GpuAllocator,
-    shaders: ShaderLibrary,
+    shaders: Arc<ShaderLibrary>,
     compute: ComputeContext,
     device: Arc<VkDeviceContext>,
 }
@@ -56,11 +56,13 @@ impl VkBackend {
             device: device_creation_result.device,
         });
 
+        let shaders = Arc::new(ShaderLibrary::new(device.clone()));
+
         Ok(Self {
             entry,
             memory: GpuAllocator::new(device.clone(), device_creation_result.transfer_queue)?,
-            shaders: ShaderLibrary::new(device.clone()),
-            compute: ComputeContext::new(device.clone(), device_creation_result.compute_queue)?,
+            shaders: shaders.clone(),
+            compute: ComputeContext::new(device.clone(), shaders.clone(), device_creation_result.compute_queue)?,
             device,
         })
     }
@@ -79,10 +81,6 @@ impl VkBackend {
 
     pub fn shaders(&self) -> &ShaderLibrary {
         &self.shaders
-    }
-
-    pub fn shaders_mut(&mut self) -> &mut ShaderLibrary {
-        &mut self.shaders
     }
 
     pub fn compute(&self) -> &ComputeContext {
