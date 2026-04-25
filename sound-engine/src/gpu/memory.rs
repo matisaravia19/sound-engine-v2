@@ -107,7 +107,8 @@ impl GpuAllocator {
     }
 
     pub fn upload_bytes(&self, destination: &BufferHandle, data: &[u8]) -> Result<(), GpuError> {
-        if data.len() as u64 > destination.size {
+        let copy_size = data.len() as u64;
+        if copy_size > destination.size {
             return Err(std::io::Error::other(format!(
                 "Upload size {} exceeds destination buffer size {}",
                 data.len(),
@@ -123,7 +124,7 @@ impl GpuAllocator {
 
         self.ensure_staging_capacity(&mut transfer, data.len() as u64)?;
         self.upload_to_staging(&transfer, data)?;
-        self.copy_buffer(&transfer, &transfer.staging_buffer, destination)?;
+        self.copy_buffer(&transfer, &transfer.staging_buffer, destination, copy_size)?;
         Ok(())
     }
 
@@ -132,10 +133,19 @@ impl GpuAllocator {
     }
 
     pub fn download_bytes(&self, src: &BufferHandle, size: usize, out: &mut [u8]) -> Result<(), GpuError> {
-        if size as u64 > src.size {
+        let copy_size = size as u64;
+        if copy_size > src.size {
             return Err(std::io::Error::other(format!(
                 "Download size {} exceeds source buffer size {}",
                 size, src.size
+            ))
+            .into());
+        }
+
+        if out.len() < size {
+            return Err(std::io::Error::other(format!(
+                "Output slice too small for download: out={}, requested={size}",
+                out.len()
             ))
             .into());
         }
@@ -145,17 +155,25 @@ impl GpuAllocator {
             .lock()
             .map_err(|_| std::io::Error::other("Transfer lock is poisoned"))?;
 
-        self.ensure_staging_capacity(&mut transfer, size as u64)?;
-        self.copy_buffer(&transfer, &src, &transfer.staging_buffer)?;
+        self.ensure_staging_capacity(&mut transfer, copy_size)?;
+        self.copy_buffer(&transfer, src, &transfer.staging_buffer, copy_size)?;
         self.download_from_staging(&transfer, size, out)?;
 
         Ok(())
     }
 
     pub fn download_typed<T: Pod>(&self, src: &BufferHandle, count: usize, out: &mut [T]) -> Result<(), GpuError> {
-        let element_size = std::mem::size_of::<T>();
+        if count > out.len() {
+            return Err(std::io::Error::other(format!(
+                "download_typed count {} exceeds output len {}",
+                count,
+                out.len()
+            ))
+            .into());
+        }
+
         let byte_size = count
-            .checked_mul(element_size)
+            .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| std::io::Error::other("download_typed byte size overflow"))?;
 
         self.download_bytes(src, byte_size, bytemuck::cast_slice_mut::<T, u8>(out))?;
@@ -272,12 +290,32 @@ impl GpuAllocator {
         Ok(())
     }
 
-    fn copy_buffer(&self, transfer: &TransferContext, src: &BufferHandle, dst: &BufferHandle) -> Result<(), GpuError> {
+    fn copy_buffer(
+        &self,
+        transfer: &TransferContext,
+        src: &BufferHandle,
+        dst: &BufferHandle,
+        size: vk::DeviceSize,
+    ) -> Result<(), GpuError> {
+        if size > src.size {
+            return Err(
+                std::io::Error::other(format!("Copy size {} exceeds source buffer size {}", size, src.size)).into(),
+            );
+        }
+
+        if size > dst.size {
+            return Err(std::io::Error::other(format!(
+                "Copy size {} exceeds destination buffer size {}",
+                size, dst.size
+            ))
+            .into());
+        }
+
         self.execute(transfer, |command_buffer| unsafe {
             let region = vk::BufferCopy {
                 src_offset: 0,
                 dst_offset: 0,
-                size: src.size,
+                size,
             };
 
             self.device_context.device.cmd_copy_buffer(
