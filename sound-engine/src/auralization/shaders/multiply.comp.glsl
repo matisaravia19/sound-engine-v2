@@ -10,7 +10,23 @@ layout(set = 0, binding = 1) readonly buffer IrBuffer {
 	float data[];
 } ir;
 
+layout(push_constant) uniform Params {
+	uint count;
+} params;
+
 void main() {
 	uint idx = gl_GlobalInvocationID.x;
-	signal.data[idx] *= ir.data[idx];
+	if (idx >= params.count) {
+		return;
+	}
+
+	uint base = idx * 2u;
+
+	float ar = signal.data[base];
+	float ai = signal.data[base + 1u];
+	float br = ir.data[base];
+	float bi = ir.data[base + 1u];
+
+	signal.data[base] = ar * br - ai * bi;
+	signal.data[base + 1u] = ar * bi + ai * br;
 }
