@@ -1,4 +1,4 @@
-mod convolver;
+pub mod convolver;
 mod engine;
 
 use std::error::Error;
@@ -11,7 +11,7 @@ pub const SAMPLE_RATE: u32 = 44100;
 pub const FFT_SIZE: u64 = (BLOCK_SIZE + IR_SIZE - 1).next_power_of_two();
 pub const TAIL_SIZE: usize = (FFT_SIZE - BLOCK_SIZE) as usize;
 
-pub(crate) type AudioError = Box<dyn Error + Send + Sync>;
+pub type AudioError = Box<dyn Error + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputChannels {
@@ -46,8 +46,8 @@ impl AuralizationConfig {
 }
 
 pub(crate) type SoundId = u32;
-pub(crate) type ImpulseResponseId = u64;
-pub(crate) type VoiceId = u64;
+pub type ImpulseResponseId = u64;
+pub type VoiceId = u64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IrSnapshot {

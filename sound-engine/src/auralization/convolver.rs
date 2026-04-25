@@ -1,13 +1,15 @@
-use crate::auralization::{AudioError, FFT_SIZE, ImpulseResponseId, TAIL_SIZE, VoiceId};
+use crate::auralization::{AudioError, BLOCK_SIZE, FFT_SIZE, ImpulseResponseId, TAIL_SIZE, VoiceId};
 use crate::gpu::GpuError;
 use crate::gpu::backend::VkBackend;
-use crate::gpu::compute::PipelineId;
+use crate::gpu::compute::{
+    ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
+};
 use crate::gpu::memory::BufferHandle;
-use crate::gpu::shader::{ShaderId, ShaderStage};
+use crate::gpu::shader::ShaderStage;
 use ash::vk;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 use vkfft_rs::plan::{DeviceHandles, FFTPlan, FFTPlanBuilder};
 
 const MULTIPLY_SHADER_PATH: &str = concat!(
@@ -15,10 +17,10 @@ const MULTIPLY_SHADER_PATH: &str = concat!(
     "/src/auralization/shaders/multiply.comp.glsl"
 );
 
-pub(crate) struct PartitionedConvolver {
+pub struct PartitionedConvolver {
     gpu: Arc<VkBackend>,
     id_counter: AtomicU64,
-    voices: HashMap<VoiceId, Voice>,
+    voices: Mutex<HashMap<VoiceId, Voice>>,
     impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
     signal_plan: FFTPlan,
     signal_buffer: BufferHandle,
@@ -28,7 +30,8 @@ pub(crate) struct PartitionedConvolver {
 struct Voice {
     impulse_response: Arc<ImpulseResponse>,
     tail: Vec<f32>,
-    convolution_output: Vec<f32>,
+    complex_cpu_buffer: Vec<f32>,
+    real_cpu_buffer: Vec<f32>,
 }
 
 struct ImpulseResponse {
@@ -36,14 +39,14 @@ struct ImpulseResponse {
 }
 
 impl PartitionedConvolver {
-    pub(crate) fn new(gpu: Arc<VkBackend>) -> Result<Self, AudioError> {
+    pub fn new(gpu: Arc<VkBackend>) -> Result<Self, AudioError> {
         let (signal_plan, signal_buffer) = Self::build_fft_plan(gpu.as_ref())?;
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
 
         Ok(Self {
             gpu,
             id_counter: AtomicU64::new(0),
-            voices: HashMap::new(),
+            voices: Mutex::new(HashMap::new()),
             impulse_responses: HashMap::new(),
             signal_plan,
             signal_buffer,
@@ -51,10 +54,12 @@ impl PartitionedConvolver {
         })
     }
 
-    pub(super) fn register_impulse_response(&mut self, id: ImpulseResponseId, data: &[f32]) -> Result<(), AudioError> {
+    pub fn register_impulse_response(&mut self, id: ImpulseResponseId, data: &[f32]) -> Result<(), AudioError> {
         let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref())?;
 
-        let complex_data = pack_real_as_complex(data);
+        let mut complex_data = vec![0.0_f32; data.len() * 2];
+        pack_real_as_complex(data, &mut complex_data);
+
         self.gpu
             .memory()
             .upload_typed(&buffer, complex_data.as_slice())
@@ -75,11 +80,11 @@ impl PartitionedConvolver {
         Ok(())
     }
 
-    pub(super) fn forget_impulse_response(&mut self, id: ImpulseResponseId) {
+    pub fn forget_impulse_response(&mut self, id: ImpulseResponseId) {
         self.impulse_responses.remove(&id);
     }
 
-    pub(super) fn start_sound(&mut self, ir_id: ImpulseResponseId) -> Result<VoiceId, AudioError> {
+    pub fn start_sound(&mut self, ir_id: ImpulseResponseId) -> Result<VoiceId, AudioError> {
         let ir = self
             .impulse_responses
             .get(&ir_id)
@@ -87,50 +92,125 @@ impl PartitionedConvolver {
 
         let voice_id = self.id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        self.voices.insert(
+        let mut voices = self
+            .voices
+            .lock()
+            .map_err(|_| std::io::Error::other("Voices lock is poisoned"))?;
+
+        voices.insert(
             voice_id,
             Voice {
                 impulse_response: ir.clone(),
                 tail: vec![0.0; TAIL_SIZE],
-                convolution_output: vec![0.0; FFT_SIZE as usize],
+                real_cpu_buffer: vec![0.0; FFT_SIZE as usize],
+                complex_cpu_buffer: vec![0.0; (FFT_SIZE * 2) as usize],
             },
         );
 
         Ok(voice_id)
     }
 
-    pub(super) fn process_block(
-        &mut self,
+    pub fn process_block(
+        &self,
         voice_id: VoiceId,
         input_block: &[f32],
         output_block: &mut [f32],
     ) -> Result<(), AudioError> {
-        let voice = self
+        let mut voices = self
             .voices
+            .lock()
+            .map_err(|_| std::io::Error::other("Voices lock is poisoned"))?;
+
+        let voice = voices
             .get_mut(&voice_id)
             .ok_or_else(|| std::io::Error::other(format!("Unknown voice id {voice_id}")))?;
+
+        self.convolve(voice, input_block)?;
+        self.overlap_add(&mut voice.real_cpu_buffer, &mut voice.tail);
+
+        output_block.copy_from_slice(&voice.real_cpu_buffer[..output_block.len()]);
 
         Ok(())
     }
 
-    pub(super) fn multiply_signal_with_ir(&self, ir_id: ImpulseResponseId, count: u32) -> Result<(), AudioError> {
-        let ir = self
-            .impulse_responses
-            .get(&ir_id)
-            .ok_or_else(|| std::io::Error::other(format!("Unknown impulse response id {ir_id}")))?;
-        self.launch_multiply(&ir.buffer, count)
-    }
+    fn convolve(&self, voice: &mut Voice, input_block: &[f32]) -> Result<(), AudioError> {
+        pack_real_as_complex(input_block, &mut voice.complex_cpu_buffer);
+        self.upload_signal(&voice.complex_cpu_buffer)?;
 
-    fn launch_multiply(&self, ir_buffer: &BufferHandle, count: u32) -> Result<(), AudioError> {
         self.gpu
             .compute()
-            .dispatch_multiply(
-                self.multiply_pipeline_id,
-                self.signal_buffer.buffer,
-                ir_buffer.buffer,
-                count,
-            )
+            .submit_compute_and_wait(|command_buffer| {
+                self.signal_plan
+                    .append(command_buffer)
+                    .map_err(|e| std::io::Error::other(format!("Signal forward launch failed: {e:?}")))?;
+
+                self.append_multiply(command_buffer, &voice.impulse_response.buffer, FFT_SIZE / 256)
+                    .map_err(|e| std::io::Error::other(format!("Multiply dispatch failed: {e:?}")))?;
+
+                self.signal_plan
+                    .append_inverse(command_buffer)
+                    .map_err(|e| std::io::Error::other(format!("Signal inverse launch failed: {e:?}")))?;
+
+                Ok(())
+            })
+            .map_err(map_gpu_error)?;
+
+        self.download_convolution_output(&mut voice.complex_cpu_buffer)?;
+        pack_complex_as_real(&voice.complex_cpu_buffer, &mut voice.real_cpu_buffer);
+
+        Ok(())
+    }
+
+    fn upload_signal(&self, signal: &[f32]) -> Result<(), AudioError> {
+        self.gpu
+            .memory()
+            .clear_buffer(&self.signal_buffer)
+            .map_err(map_gpu_error)?;
+
+        self.gpu
+            .memory()
+            .upload_typed(&self.signal_buffer, signal)
             .map_err(map_gpu_error)
+    }
+
+    fn download_convolution_output(&self, output: &mut [f32]) -> Result<(), AudioError> {
+        self.gpu
+            .memory()
+            .download_typed::<f32>(&self.signal_buffer, self.signal_buffer.size as usize, output)
+            .map_err(map_gpu_error)
+    }
+
+    fn append_multiply(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        ir_buffer: &BufferHandle,
+        count: u64,
+    ) -> Result<(), AudioError> {
+        let dispatch_spec = DispatchSpec {
+            pipeline_id: self.multiply_pipeline_id,
+            descriptor_writes: vec![
+                DescriptorWrite::storage_buffer(0, self.signal_buffer.buffer),
+                DescriptorWrite::storage_buffer(1, ir_buffer.buffer),
+            ],
+            push_constants: vec![],
+            push_constant_offset: 0,
+            groups: [count.div_ceil(256) as u32, 1, 1],
+        };
+
+        self.gpu
+            .compute()
+            .record_dispatch(command_buffer, &dispatch_spec)
+            .map_err(map_gpu_error)
+    }
+
+    fn overlap_add(&self, output: &mut [f32], tail: &mut [f32]) {
+        for i in 0..tail.len() {
+            output[i] += tail[i];
+        }
+
+        for i in BLOCK_SIZE as usize..tail.len() - output.len() {
+            tail[i] = tail[i + output.len()];
+        }
     }
 
     fn build_fft_plan(gpu: &VkBackend) -> Result<(FFTPlan, BufferHandle), AudioError> {
@@ -145,7 +225,7 @@ impl PartitionedConvolver {
 
             let buffer = gpu
                 .memory()
-                .create_storage_buffer(FFT_SIZE * std::mem::size_of::<f32>() as u64 * 2) // Placeholder size, will be updated per voice
+                .create_storage_buffer(FFT_SIZE * 2 * std::mem::size_of::<f32>() as u64) // Placeholder size, will be updated per voice
                 .map_err(map_gpu_error)?;
 
             let plan = FFTPlanBuilder::new(&handles)
@@ -165,31 +245,29 @@ impl PartitionedConvolver {
             .load_glsl_file(ShaderStage::Compute, MULTIPLY_SHADER_PATH)
             .map_err(map_gpu_error)?;
 
-        let descriptor_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-        ];
+        let pipeline_spec = ComputePipelineSpec {
+            shader_id: multiply_shader_id,
+            descriptor_bindings: vec![
+                DescriptorBindingSpec::storage_buffer(0),
+                DescriptorBindingSpec::storage_buffer(1),
+            ],
+            push_constant_ranges: vec![],
+        };
 
-        gpu.compute()
-            .create_pipeline(multiply_shader_id, &descriptor_bindings)
-            .map_err(map_gpu_error)
+        gpu.compute().create_pipeline(pipeline_spec).map_err(map_gpu_error)
     }
 }
 
-fn pack_real_as_complex(input: &[f32]) -> Vec<f32> {
-    let mut packed = vec![0.0_f32; input.len() * 2];
+fn pack_real_as_complex(input: &[f32], output: &mut [f32]) {
     for (i, &sample) in input.iter().enumerate() {
-        packed[2 * i] = sample;
+        output[2 * i] = sample;
     }
-    packed
+}
+
+fn pack_complex_as_real(input: &[f32], output: &mut [f32]) {
+    for (i, chunk) in input.chunks_exact(2).enumerate() {
+        output[i] = chunk[0];
+    }
 }
 
 fn map_gpu_error(err: GpuError) -> AudioError {
