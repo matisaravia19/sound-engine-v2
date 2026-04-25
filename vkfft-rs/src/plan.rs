@@ -3,6 +3,7 @@ use ash::vk::Handle;
 
 pub struct FFTPlan {
     app: VkFFTApp,
+    handles: Box<HandleStorage>,
 }
 
 pub struct FFTPlanBuilder {
@@ -59,7 +60,7 @@ impl FFTPlanBuilder {
         }
     }
 
-    pub fn build(&mut self) -> Result<FFTPlan, VkFFTResult> {
+    pub fn build(self) -> Result<FFTPlan, VkFFTResult> {
         let app = unsafe { vkfft_app_create() };
         if app.is_null() {
             return Err(VkFFTResult::ErrorEmptyApp);
@@ -71,10 +72,13 @@ impl FFTPlanBuilder {
             return Err(result);
         }
 
-        Ok(FFTPlan { app })
+        Ok(FFTPlan {
+            app,
+            handles: self.handles,
+        })
     }
 
-    pub fn with_dimensions(&mut self, dimensions: &[u64]) -> &mut Self {
+    pub fn with_dimensions(mut self, dimensions: &[u64]) -> Self {
         assert!(dimensions.len() > 0 && dimensions.len() <= VKFFT_MAX_FFT_DIMENSIONS);
 
         self.config.dimensions = dimensions.len() as u64;
@@ -85,11 +89,11 @@ impl FFTPlanBuilder {
         self
     }
 
-    pub fn with_single_dimension(&mut self, size: u64) -> &mut Self {
+    pub fn with_single_dimension(mut self, size: u64) -> Self {
         self.with_dimensions(&[size])
     }
 
-    pub fn with_buffer(&mut self, buffer: ash::vk::Buffer, buffer_size: u64) -> &mut Self {
+    pub fn with_buffer(mut self, buffer: ash::vk::Buffer, buffer_size: u64) -> Self {
         self.handles.buffer = buffer.as_raw() as VkBuffer;
         self.handles.buffer_size = buffer_size;
         self.config.buffer = std::ptr::from_mut(&mut self.handles.buffer);
@@ -97,17 +101,17 @@ impl FFTPlanBuilder {
         self
     }
 
-    pub fn with_normalization(&mut self) -> &mut Self {
+    pub fn with_normalization(mut self) -> Self {
         self.config.normalize = 1;
         self
     }
 
-    pub fn for_kernel(&mut self) -> &mut Self {
+    pub fn for_kernel(mut self) -> Self {
         self.config.kernel_convolution = 1;
         self
     }
 
-    pub fn for_convolution(&mut self, kernel: ash::vk::Buffer, kernel_size: u64) -> &mut Self {
+    pub fn for_convolution(mut self, kernel: ash::vk::Buffer, kernel_size: u64) -> Self {
         self.handles.kernel = kernel.as_raw() as VkBuffer;
         self.handles.kernel_size = kernel_size;
         self.config.kernel = std::ptr::from_mut(&mut self.handles.kernel);
