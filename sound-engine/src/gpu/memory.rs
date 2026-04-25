@@ -27,11 +27,6 @@ struct TransferContext {
     staging_buffer: BufferHandle,
 }
 
-struct UploadSlice {
-    pub staging_offset: vk::DeviceSize,
-    pub size: vk::DeviceSize,
-}
-
 impl GpuAllocator {
     pub(super) fn new(device_context: Arc<VkDeviceContext>, transfer_queue: QueueSet) -> Result<Self, GpuError> {
         let allocator_info = vk_mem::AllocatorCreateInfo::new(
@@ -238,7 +233,7 @@ impl GpuAllocator {
         Ok(())
     }
 
-    fn upload_to_staging(&self, transfer: &TransferContext, data: &[u8]) -> Result<UploadSlice, GpuError> {
+    fn upload_to_staging(&self, transfer: &TransferContext, data: &[u8]) -> Result<(), GpuError> {
         let mapped_ptr = self
             .allocator
             .get_allocation_info(&transfer.staging_buffer.allocation)
@@ -255,10 +250,7 @@ impl GpuAllocator {
         self.allocator
             .flush_allocation(&transfer.staging_buffer.allocation, 0, data.len() as u64)?;
 
-        Ok(UploadSlice {
-            staging_offset: 0,
-            size: data.len() as u64,
-        })
+        Ok(())
     }
 
     fn download_from_staging(&self, transfer: &TransferContext, size: usize, out: &mut [u8]) -> Result<(), GpuError> {
