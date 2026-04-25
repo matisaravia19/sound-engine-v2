@@ -2,7 +2,6 @@ use crate::gpu::GpuError;
 use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,48 +94,6 @@ impl ShaderLibrary {
         Ok(id)
     }
 
-    // pub fn create_compute_pipeline(&self, shader: ShaderId) -> Result<PipelineId, GpuError> {
-    //     let mut state = self
-    //         .state
-    //         .lock()
-    //         .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
-
-    //     let shader_record = state
-    //         .shaders
-    //         .get(shader.0 as usize)
-    //         .ok_or_else(|| std::io::Error::other(format!("Invalid shader id {}", shader.0)))?;
-    //     if shader_record.stage != ShaderStage::Compute {
-    //         return Err(std::io::Error::other(format!(
-    //             "create_compute_pipeline requires compute shader, got {:?}",
-    //             shader_record.stage
-    //         ))
-    //         .into());
-    //     }
-
-    //     let layout_info = vk::PipelineLayoutCreateInfo::default();
-    //     let layout = unsafe { self.device_context.device.create_pipeline_layout(&layout_info, None)? };
-
-    //     let stage_info = vk::PipelineShaderStageCreateInfo::default()
-    //         .stage(shader_record.stage.to_vk())
-    //         .module(shader_record.module)
-    //         .name(shader_record.entry.as_c_str());
-
-    //     let compute_info = vk::ComputePipelineCreateInfo::default()
-    //         .stage(stage_info)
-    //         .layout(layout);
-
-    //     let pipeline = unsafe {
-    //         self.device_context
-    //             .device
-    //             .create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&compute_info), None)
-    //             .map_err(|(_, err)| err)?[0]
-    //     };
-
-    //     let id = PipelineId(state.pipelines.len() as u32);
-    //     state.pipelines.push(PipelineRecord { pipeline, layout });
-    //     Ok(id)
-    // }
-
     pub fn shader_module(&self, shader_id: ShaderId) -> Result<vk::ShaderModule, GpuError> {
         let shaders = self
             .shaders
@@ -150,41 +107,18 @@ impl ShaderLibrary {
         Ok(shader.module)
     }
 
-    // pub fn pipeline(&self, pipeline: PipelineId) -> Result<vk::Pipeline, GpuError> {
-    //     let state = self
-    //         .state
-    //         .lock()
-    //         .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
-    //     let pipeline_record = state
-    //         .pipelines
-    //         .get(pipeline.0 as usize)
-    //         .ok_or_else(|| std::io::Error::other(format!("Invalid pipeline id {}", pipeline.0)))?;
-    //     Ok(pipeline_record.pipeline)
-    // }
+    pub fn shader_stage(&self, shader_id: ShaderId) -> Result<ShaderStage, GpuError> {
+        let shaders = self
+            .shaders
+            .lock()
+            .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
 
-    // pub fn pipeline_layout(&self, pipeline: PipelineId) -> Result<vk::PipelineLayout, GpuError> {
-    //     let state = self
-    //         .state
-    //         .lock()
-    //         .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
-    //     let pipeline_record = state
-    //         .pipelines
-    //         .get(pipeline.0 as usize)
-    //         .ok_or_else(|| std::io::Error::other(format!("Invalid pipeline id {}", pipeline.0)))?;
-    //     Ok(pipeline_record.layout)
-    // }
+        let shader = shaders
+            .get(&shader_id)
+            .ok_or_else(|| std::io::Error::other(format!("Invalid shader id {}", shader_id.0)))?;
 
-    // pub fn shader_source_path(&self, shader: ShaderId) -> Result<PathBuf, GpuError> {
-    //     let state = self
-    //         .state
-    //         .lock()
-    //         .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
-    //     let shader_record = state
-    //         .shaders
-    //         .get(shader.0 as usize)
-    //         .ok_or_else(|| std::io::Error::other(format!("Invalid shader id {}", shader.0)))?;
-    //     Ok(shader_record.source_path.clone())
-    // }
+        Ok(shader.stage)
+    }
 }
 
 impl Drop for ShaderLibrary {

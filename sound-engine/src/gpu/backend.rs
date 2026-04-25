@@ -7,7 +7,7 @@ use ash::{Entry, Instance};
 use std::ffi::CString;
 use std::sync::Arc;
 
-pub(crate) struct VkBackend {
+pub struct VkBackend {
     entry: Entry,
     memory: GpuAllocator,
     shaders: Arc<ShaderLibrary>,

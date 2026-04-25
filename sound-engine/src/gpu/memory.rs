@@ -96,6 +96,21 @@ impl GpuAllocator {
         }
     }
 
+    pub fn clear_buffer(&self, buffer: &BufferHandle) -> Result<(), GpuError> {
+        let transfer = self
+            .transfer
+            .lock()
+            .map_err(|_| std::io::Error::other("Transfer lock is poisoned"))?;
+
+        self.execute(&transfer, |command_buffer| unsafe {
+            self.device_context
+                .device
+                .cmd_fill_buffer(command_buffer, buffer.buffer, 0, buffer.size, 0);
+
+            Ok(())
+        })
+    }
+
     pub fn upload_bytes(&self, destination: &BufferHandle, data: &[u8]) -> Result<(), GpuError> {
         if data.len() as u64 > destination.size {
             return Err(std::io::Error::other(format!(
@@ -266,6 +281,28 @@ impl GpuAllocator {
     }
 
     fn copy_buffer(&self, transfer: &TransferContext, src: &BufferHandle, dst: &BufferHandle) -> Result<(), GpuError> {
+        self.execute(transfer, |command_buffer| unsafe {
+            let region = vk::BufferCopy {
+                src_offset: 0,
+                dst_offset: 0,
+                size: src.size,
+            };
+
+            self.device_context.device.cmd_copy_buffer(
+                command_buffer,
+                src.buffer,
+                dst.buffer,
+                std::slice::from_ref(&region),
+            );
+
+            Ok(())
+        })
+    }
+
+    fn execute<F>(&self, transfer: &TransferContext, record: F) -> Result<(), GpuError>
+    where
+        F: FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
+    {
         let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
             self.device_context
@@ -275,17 +312,7 @@ impl GpuAllocator {
                 .device
                 .begin_command_buffer(transfer.command_buffer, &begin_info)?;
 
-            let region = vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: src.size,
-            };
-            self.device_context.device.cmd_copy_buffer(
-                transfer.command_buffer,
-                src.buffer,
-                dst.buffer,
-                std::slice::from_ref(&region),
-            );
+            record(transfer.command_buffer)?;
 
             self.device_context.device.end_command_buffer(transfer.command_buffer)?;
 
