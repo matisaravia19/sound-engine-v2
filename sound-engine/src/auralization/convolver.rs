@@ -2,7 +2,7 @@ use crate::auralization::{AudioError, BLOCK_SIZE, FFT_SIZE, ImpulseResponseId, T
 use crate::gpu::GpuError;
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
-    ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
+    ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId, PushConstantSpec,
 };
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::shader::ShaderStage;
@@ -40,7 +40,7 @@ struct ImpulseResponse {
 
 impl PartitionedConvolver {
     pub fn new(gpu: Arc<VkBackend>) -> Result<Self, AudioError> {
-        let (signal_plan, signal_buffer) = Self::build_fft_plan(gpu.as_ref())?;
+        let (signal_plan, signal_buffer) = Self::build_fft_plan(gpu.as_ref(), true)?;
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
 
         Ok(Self {
@@ -55,10 +55,12 @@ impl PartitionedConvolver {
     }
 
     pub fn register_impulse_response(&mut self, id: ImpulseResponseId, data: &[f32]) -> Result<(), AudioError> {
-        let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref())?;
+        let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref(), false)?;
 
         let mut complex_data = vec![0.0_f32; data.len() * 2];
         pack_real_as_complex(data, &mut complex_data);
+
+        self.gpu.memory().clear_buffer(&buffer).map_err(map_gpu_error)?;
 
         self.gpu
             .memory()
@@ -144,7 +146,7 @@ impl PartitionedConvolver {
                     .append(command_buffer)
                     .map_err(|e| std::io::Error::other(format!("Signal forward launch failed: {e:?}")))?;
 
-                self.append_multiply(command_buffer, &voice.impulse_response.buffer, FFT_SIZE / 256)
+                self.append_multiply(command_buffer, &voice.impulse_response.buffer, FFT_SIZE)
                     .map_err(|e| std::io::Error::other(format!("Multiply dispatch failed: {e:?}")))?;
 
                 self.signal_plan
@@ -176,7 +178,7 @@ impl PartitionedConvolver {
     fn download_convolution_output(&self, output: &mut [f32]) -> Result<(), AudioError> {
         self.gpu
             .memory()
-            .download_typed::<f32>(&self.signal_buffer, self.signal_buffer.size as usize, output)
+            .download_typed::<f32>(&self.signal_buffer, output.len(), output)
             .map_err(map_gpu_error)
     }
 
@@ -192,7 +194,7 @@ impl PartitionedConvolver {
                 DescriptorWrite::storage_buffer(0, self.signal_buffer.buffer),
                 DescriptorWrite::storage_buffer(1, ir_buffer.buffer),
             ],
-            push_constants: vec![],
+            push_constants: (count as u32).to_ne_bytes().to_vec(),
             push_constant_offset: 0,
             groups: [count.div_ceil(256) as u32, 1, 1],
         };
@@ -204,16 +206,18 @@ impl PartitionedConvolver {
     }
 
     fn overlap_add(&self, output: &mut [f32], tail: &mut [f32]) {
+        // Add previous block tail into the current block head.
         for i in 0..tail.len() {
             output[i] += tail[i];
         }
 
-        for i in BLOCK_SIZE as usize..tail.len() - output.len() {
-            tail[i] = tail[i + output.len()];
-        }
+        // Store new overlap tail from current convolution result.
+        let tail_start = BLOCK_SIZE as usize;
+        let tail_end = tail_start + tail.len();
+        tail.copy_from_slice(&output[tail_start..tail_end]);
     }
 
-    fn build_fft_plan(gpu: &VkBackend) -> Result<(FFTPlan, BufferHandle), AudioError> {
+    fn build_fft_plan(gpu: &VkBackend, normalize: bool) -> Result<(FFTPlan, BufferHandle), AudioError> {
         unsafe {
             let handles = DeviceHandles {
                 physical_device: gpu.device().physical_device,
@@ -228,10 +232,15 @@ impl PartitionedConvolver {
                 .create_storage_buffer(FFT_SIZE * 2 * std::mem::size_of::<f32>() as u64) // Placeholder size, will be updated per voice
                 .map_err(map_gpu_error)?;
 
-            let plan = FFTPlanBuilder::new(&handles)
-                .with_single_dimension(buffer.size) // Placeholder, will be updated per voice
-                .with_buffer(buffer.buffer, buffer.size) // Placeholder, will be updated per voice
-                .with_normalization()
+            let builder = FFTPlanBuilder::new(&handles)
+                .with_single_dimension(FFT_SIZE)
+                .with_buffer(buffer.buffer, buffer.size);
+            let builder = if normalize {
+                builder.with_normalization()
+            } else {
+                builder
+            };
+            let plan = builder
                 .build()
                 .map_err(|e| std::io::Error::other(format!("Global signal plan build failed: {e:?}")))?;
 
@@ -251,7 +260,7 @@ impl PartitionedConvolver {
                 DescriptorBindingSpec::storage_buffer(0),
                 DescriptorBindingSpec::storage_buffer(1),
             ],
-            push_constant_ranges: vec![],
+            push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<u32>() as u32)],
         };
 
         gpu.compute().create_pipeline(pipeline_spec).map_err(map_gpu_error)
@@ -259,6 +268,7 @@ impl PartitionedConvolver {
 }
 
 fn pack_real_as_complex(input: &[f32], output: &mut [f32]) {
+    output.fill(0.0);
     for (i, &sample) in input.iter().enumerate() {
         output[2 * i] = sample;
     }
