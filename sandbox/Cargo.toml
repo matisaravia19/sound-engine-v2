@@ -4,8 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-hound = "3.5.1"
-sound-engine = { path = "../sound-engine" }
-symphonia = "0.5.5"
-realfft = "3.5.0"
-rustfft = "6.4.1"
+raylib = "5.5.1"

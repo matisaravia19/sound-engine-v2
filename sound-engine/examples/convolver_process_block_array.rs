@@ -36,9 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     println!("\nmax_abs_err(first {compare_len} samples) = {max_abs_err:.6}");
-    println!(
-        "If convolution is working, GPU output should differ from input and be close to expected (small error)."
-    );
+    println!("If convolution is working, GPU output should differ from input and be close to expected (small error).");
 
     Ok(())
 }

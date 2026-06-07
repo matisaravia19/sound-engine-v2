@@ -11,4 +11,5 @@ vk-mem = "0.5.0"
 vkfft-rs = { path = "../vkfft-rs" }
 
 [dev-dependencies]
+cpal = "0.15"
 hound = "3.5.1"
