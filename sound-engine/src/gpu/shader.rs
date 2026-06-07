@@ -7,24 +7,38 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-pub(super) const SHADER_ENTRY_POINT: &str = "main";
+/// Default shader entry point used when compiling GLSL modules.
+pub const SHADER_ENTRY_POINT: &str = "main";
 
-pub(crate) struct ShaderLibrary {
+/// Owns compiled Vulkan shader modules and identifies them by `ShaderId`.
+///
+/// Shaders are compiled from GLSL files through `glslangValidator` and kept
+/// alive until the library is dropped.
+pub struct ShaderLibrary {
     device_context: Arc<VkDeviceContext>,
     shaders: Mutex<HashMap<ShaderId, ShaderRecord>>,
 }
 
+/// Stable handle to a shader module stored in `ShaderLibrary`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ShaderId(pub u32);
+pub struct ShaderId(pub u32);
 
+/// Shader stages supported by the engine shader compiler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShaderStage {
+pub enum ShaderStage {
+    /// Compute shader stage.
     Compute,
+    /// Ray generation shader stage.
     RayGeneration,
+    /// Ray miss shader stage.
     RayMiss,
+    /// Ray closest-hit shader stage.
     RayClosestHit,
+    /// Ray any-hit shader stage.
     RayAnyHit,
+    /// Ray intersection shader stage.
     RayIntersection,
+    /// Ray callable shader stage.
     RayCallable,
 }
 
@@ -68,6 +82,9 @@ impl ShaderLibrary {
         }
     }
 
+    /// Compiles a GLSL file into SPIR-V and creates a Vulkan shader module.
+    ///
+    /// The returned ID remains valid until the shader library is dropped.
     pub fn load_glsl_file<P: AsRef<Path>>(&self, stage: ShaderStage, path: P) -> Result<ShaderId, GpuError> {
         let source_path = path.as_ref().to_path_buf();
         if !source_path.exists() {
@@ -94,6 +111,7 @@ impl ShaderLibrary {
         Ok(id)
     }
 
+    /// Returns the raw Vulkan shader module for pipeline creation.
     pub fn shader_module(&self, shader_id: ShaderId) -> Result<vk::ShaderModule, GpuError> {
         let shaders = self
             .shaders
@@ -107,6 +125,7 @@ impl ShaderLibrary {
         Ok(shader.module)
     }
 
+    /// Returns the stage recorded when the shader was loaded.
     pub fn shader_stage(&self, shader_id: ShaderId) -> Result<ShaderStage, GpuError> {
         let shaders = self
             .shaders
@@ -157,6 +176,7 @@ fn compile_glsl_file_to_spirv_words(source_path: &Path, stage: ShaderStage, entr
     );
     let spv_path = temp_dir.join(format!("sound_engine_shader_{unique_tag}.spv"));
 
+    // Compile to a unique temp file because glslangValidator writes SPIR-V to disk.
     let output = Command::new("glslangValidator")
         .arg("-V")
         .arg("--target-env")

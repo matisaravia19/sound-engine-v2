@@ -17,6 +17,11 @@ const MULTIPLY_SHADER_PATH: &str = concat!(
     "/src/auralization/shaders/multiply.comp.glsl"
 );
 
+/// GPU-backed partitioned convolver for mono voices and impulse responses.
+///
+/// Each registered IR is transformed to the frequency domain once. Playback
+/// transforms each input block, multiplies it by the IR spectrum, runs the
+/// inverse transform, and applies overlap-add.
 pub struct PartitionedConvolver {
     gpu: Arc<VkBackend>,
     id_counter: AtomicU64,
@@ -39,6 +44,7 @@ struct ImpulseResponse {
 }
 
 impl PartitionedConvolver {
+    /// Creates the shared FFT plan and multiply compute pipeline.
     pub fn new(gpu: Arc<VkBackend>) -> Result<Self, AudioError> {
         let (signal_plan, signal_buffer) = Self::build_fft_plan(gpu.as_ref(), true)?;
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
@@ -54,6 +60,7 @@ impl PartitionedConvolver {
         })
     }
 
+    /// Registers an impulse response and uploads its frequency-domain form.
     pub fn register_impulse_response(&mut self, id: ImpulseResponseId, data: &[f32]) -> Result<(), AudioError> {
         let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref(), false)?;
 
@@ -67,6 +74,7 @@ impl PartitionedConvolver {
             .upload_typed(&buffer, complex_data.as_slice())
             .map_err(map_gpu_error)?;
 
+        // Transform the IR once so voices can reuse the spectrum per block.
         self.gpu
             .compute()
             .submit_compute_and_wait(|command_buffer| {
@@ -82,10 +90,12 @@ impl PartitionedConvolver {
         Ok(())
     }
 
+    /// Removes an impulse response from the convolver.
     pub fn forget_impulse_response(&mut self, id: ImpulseResponseId) {
         self.impulse_responses.remove(&id);
     }
 
+    /// Starts a voice that uses a registered impulse response.
     pub fn start_sound(&mut self, ir_id: ImpulseResponseId) -> Result<VoiceId, AudioError> {
         let ir = self
             .impulse_responses
@@ -112,6 +122,7 @@ impl PartitionedConvolver {
         Ok(voice_id)
     }
 
+    /// Processes one mono input block for a voice into `output_block`.
     pub fn process_block(
         &self,
         voice_id: VoiceId,
@@ -139,6 +150,7 @@ impl PartitionedConvolver {
         pack_real_as_complex(input_block, &mut voice.complex_cpu_buffer);
         self.upload_signal(&voice.complex_cpu_buffer)?;
 
+        // One submission keeps FFT, multiply, and inverse FFT ordered on the GPU.
         self.gpu
             .compute()
             .submit_compute_and_wait(|command_buffer| {
@@ -219,6 +231,7 @@ impl PartitionedConvolver {
 
     fn build_fft_plan(gpu: &VkBackend, normalize: bool) -> Result<(FFTPlan, BufferHandle), AudioError> {
         unsafe {
+            // VkFFT consumes raw Vulkan handles but does not own them.
             let handles = DeviceHandles {
                 physical_device: gpu.device().physical_device,
                 device: gpu.device().device.handle(),

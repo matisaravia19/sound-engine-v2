@@ -2,17 +2,29 @@ use super::*;
 use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
 use std::ffi::CString;
 
-pub(crate) struct ComputePipelineSpec {
+/// Description used to create a compute pipeline and its descriptor layout.
+pub struct ComputePipelineSpec {
+    /// Shader module ID; it must refer to a compute shader.
     pub shader_id: ShaderId,
+    /// Descriptor bindings exposed to the compute shader.
     pub descriptor_bindings: Vec<DescriptorBindingSpec>,
+    /// Push-constant ranges available to dispatches.
     pub push_constant_ranges: Vec<PushConstantSpec>,
 }
 
-pub(crate) enum DescriptorBindingSpec {
-    StorageBuffer { binding: u32, descriptor_count: u32 },
+/// Descriptor binding kinds currently supported by compute pipelines.
+pub enum DescriptorBindingSpec {
+    /// Storage buffer binding with the given descriptor count.
+    StorageBuffer {
+        /// Descriptor binding number in the set.
+        binding: u32,
+        /// Number of storage-buffer descriptors in the binding.
+        descriptor_count: u32,
+    },
 }
 
 impl DescriptorBindingSpec {
+    /// Creates a single storage-buffer binding.
     pub fn storage_buffer(binding: u32) -> Self {
         Self::StorageBuffer {
             binding,
@@ -20,6 +32,7 @@ impl DescriptorBindingSpec {
         }
     }
 
+    /// Creates an array storage-buffer binding.
     pub fn storage_buffer_array(binding: u32, descriptor_count: u32) -> Self {
         Self::StorageBuffer {
             binding,
@@ -28,18 +41,23 @@ impl DescriptorBindingSpec {
     }
 }
 
-pub(crate) struct PushConstantSpec {
+/// Push-constant byte range available to a compute shader.
+pub struct PushConstantSpec {
+    /// Byte offset within the pipeline layout.
     pub offset: u32,
+    /// Byte size of the range.
     pub size: u32,
 }
 
 impl PushConstantSpec {
+    /// Creates a push-constant range.
     pub fn new(offset: u32, size: u32) -> Self {
         Self { offset, size }
     }
 }
 
 impl ComputeContext {
+    /// Creates and stores a Vulkan compute pipeline.
     pub fn create_pipeline(&self, spec: ComputePipelineSpec) -> Result<PipelineId, GpuError> {
         let shader_stage = self.shaders.shader_stage(spec.shader_id)?;
         if shader_stage != ShaderStage::Compute {
@@ -53,6 +71,7 @@ impl ComputeContext {
         let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
 
+        // Pipeline layout is built from exactly one descriptor set layout for now.
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
         let descriptor_set_layout = unsafe {
             self.device_context
@@ -106,6 +125,7 @@ impl ComputeContext {
     }
 }
 
+/// Aggregates descriptor counts by type for descriptor-pool creation.
 pub(super) fn aggregate_pool_sizes(bindings: &[vk::DescriptorSetLayoutBinding<'_>]) -> Vec<vk::DescriptorPoolSize> {
     let mut pool_sizes = Vec::<vk::DescriptorPoolSize>::new();
     for binding in bindings {

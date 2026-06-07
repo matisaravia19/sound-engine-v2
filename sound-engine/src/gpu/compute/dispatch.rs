@@ -1,23 +1,36 @@
 use super::*;
 
-pub(crate) struct DispatchSpec {
+/// One compute dispatch recorded into a command buffer.
+pub struct DispatchSpec {
+    /// Pipeline to bind before dispatch.
     pub pipeline_id: PipelineId,
+    /// Descriptor writes used for this dispatch.
     pub descriptor_writes: Vec<DescriptorWrite>,
+    /// Raw push-constant bytes to upload before dispatch.
     pub push_constants: Vec<u8>,
+    /// Offset where `push_constants` are written.
     pub push_constant_offset: u32,
+    /// Workgroup counts passed to `vkCmdDispatch`.
     pub groups: [u32; 3],
 }
 
-pub(crate) enum DescriptorWrite {
+/// Descriptor write supported by compute dispatches.
+pub enum DescriptorWrite {
+    /// Storage buffer write for one descriptor binding.
     StorageBuffer {
+        /// Descriptor binding number to update.
         binding: u32,
+        /// Vulkan buffer handle to bind.
         buffer: vk::Buffer,
+        /// Byte offset into the buffer.
         offset: vk::DeviceSize,
+        /// Byte range exposed to the shader.
         range: vk::DeviceSize,
     },
 }
 
 impl DescriptorWrite {
+    /// Creates a storage-buffer write covering the whole buffer.
     pub fn storage_buffer(binding: u32, buffer: vk::Buffer) -> Self {
         Self::StorageBuffer {
             binding,
@@ -35,6 +48,7 @@ impl DescriptorWrite {
 }
 
 impl ComputeContext {
+    /// Records descriptor updates, pipeline bind, push constants, and dispatch.
     pub fn record_dispatch(&self, command_buffer: vk::CommandBuffer, spec: &DispatchSpec) -> Result<(), GpuError> {
         let mut pipelines = self
             .pipelines
@@ -45,6 +59,7 @@ impl ComputeContext {
             .get_mut(&spec.pipeline_id)
             .ok_or_else(|| std::io::Error::other(format!("Invalid pipeline id {}", spec.pipeline_id.0)))?;
 
+        // Descriptor sets are short-lived and allocated from growable pools.
         let descriptor_set = self.acquire_descriptor_set(pipeline)?;
 
         let buffer_infos = build_buffer_infos(spec);

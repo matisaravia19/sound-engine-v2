@@ -1,7 +1,11 @@
-pub mod core;
-pub mod auralization;
-pub mod gpu;
+//! Sound engine prototype with GPU acceleration for convolution and ray tracing.
 
+pub mod auralization;
+pub mod core;
+pub mod gpu;
+mod simulation;
+
+/// Placeholder helper kept by the initial crate template.
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }

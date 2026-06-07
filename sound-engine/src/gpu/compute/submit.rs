@@ -2,6 +2,10 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 impl ComputeContext {
+    /// Records work into a command buffer and submits it to the compute queue.
+    ///
+    /// The returned token must be waited on before resources written by the
+    /// submission are read on the host.
     pub fn submit_compute<F>(&self, record: F) -> Result<FrameToken, GpuError>
     where
         F: FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
@@ -14,6 +18,7 @@ impl ComputeContext {
             .write()
             .map_err(|_| std::io::Error::other("Compute queue lock is poisoned"))?;
 
+        // Reuse command buffers after their fence has completed.
         let command_buffer = self.acquire_command_buffer(&queue)?;
 
         unsafe {
@@ -66,6 +71,7 @@ impl ComputeContext {
         Ok(command_buffer)
     }
 
+    /// Submits compute work and waits for completion before returning.
     pub fn submit_compute_and_wait<F>(&self, record: F) -> Result<(), GpuError>
     where
         F: FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
@@ -74,6 +80,7 @@ impl ComputeContext {
         self.wait_for(token)
     }
 
+    /// Waits for a previously submitted frame token and recycles its command buffer.
     pub fn wait_for(&self, token: FrameToken) -> Result<(), GpuError> {
         let in_flight = self
             .in_flight

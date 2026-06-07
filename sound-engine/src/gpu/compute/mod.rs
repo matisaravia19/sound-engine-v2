@@ -11,13 +11,17 @@ mod dispatch;
 mod pipeline;
 mod submit;
 
-pub(crate) use dispatch::{DescriptorWrite, DispatchSpec};
-pub(crate) use pipeline::{ComputePipelineSpec, DescriptorBindingSpec, PushConstantSpec};
+pub use dispatch::{DescriptorWrite, DispatchSpec};
+pub use pipeline::{ComputePipelineSpec, DescriptorBindingSpec, PushConstantSpec};
 
 const COMMAND_BUFFER_POOL_SIZE: u32 = 12;
 const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 
-pub(crate) struct ComputeContext {
+/// Owns compute pipelines and command submission state for the backend.
+///
+/// The context records work onto a preallocated pool of command buffers and
+/// tracks in-flight submissions by `FrameToken`.
+pub struct ComputeContext {
     device_context: Arc<VkDeviceContext>,
     shaders: Arc<ShaderLibrary>,
     next_token: AtomicU64,
@@ -27,15 +31,17 @@ pub(crate) struct ComputeContext {
     pipelines: Mutex<HashMap<PipelineId, ComputePipeline>>,
 }
 
-pub(crate) struct FrameToken(pub u64);
+/// Token returned for an asynchronous compute submission.
+pub struct FrameToken(pub u64);
 
 struct InFlightSubmission {
     fence: vk::Fence,
     command_buffer: vk::CommandBuffer,
 }
 
+/// Stable handle to a compute pipeline stored in `ComputeContext`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct PipelineId(u32);
+pub struct PipelineId(u32);
 
 struct ComputePipeline {
     handle: vk::Pipeline,
@@ -70,6 +76,12 @@ impl ComputeContext {
         })
     }
 
+    /// Returns the raw compute queue for integrations that record directly.
+    ///
+    /// # Safety
+    ///
+    /// Callers must preserve the queue synchronization guarantees expected by
+    /// the compute context.
     pub unsafe fn queue_handle(&self) -> Result<vk::Queue, GpuError> {
         let queue = self
             .queue
@@ -78,6 +90,11 @@ impl ComputeContext {
         Ok(queue.handle)
     }
 
+    /// Returns the raw compute command pool for integrations that need it.
+    ///
+    /// # Safety
+    ///
+    /// Callers must not free or reset command buffers owned by this context.
     pub unsafe fn command_pool_handle(&self) -> Result<vk::CommandPool, GpuError> {
         let queue = self
             .queue
