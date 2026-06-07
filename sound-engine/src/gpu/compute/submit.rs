@@ -92,7 +92,7 @@ impl ComputeContext {
         self.wait_for_submission(&in_flight)
     }
 
-    pub(super) fn wait_for_all(&self) -> Result<(), GpuError> {
+    pub(crate) fn wait_for_all(&self) -> Result<(), GpuError> {
         let mut in_flight = self
             .in_flight
             .lock()

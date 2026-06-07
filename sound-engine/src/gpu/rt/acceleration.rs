@@ -1,6 +1,5 @@
 use super::*;
 use crate::gpu::GpuError;
-use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::GpuAllocator;
 use std::mem::size_of;
 
@@ -33,12 +32,7 @@ impl RtContext {
     ///
     /// The build is submitted to the compute queue and completed before the new
     /// `BlasId` is returned.
-    pub fn build_blas(
-        &self,
-        memory: &GpuAllocator,
-        compute: &ComputeContext,
-        spec: BlasBuildSpec<'_>,
-    ) -> Result<BlasId, GpuError> {
+    pub fn build_blas(&self, memory: &GpuAllocator, spec: BlasBuildSpec<'_>) -> Result<BlasId, GpuError> {
         // Geometry build inputs reference buffers by device address, not descriptors.
         let vertex_address = memory.buffer_device_address(&spec.mesh.vertex_buffer);
         let mut triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -76,7 +70,6 @@ impl RtContext {
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
         let handle = self.build_acceleration_structure(
             memory,
-            compute,
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             spec.flags,
             std::slice::from_ref(&geometry),
@@ -97,12 +90,7 @@ impl RtContext {
     ///
     /// The instance buffer is uploaded as host-visible device-address data and
     /// the build completes before the returned `TlasId` can be used for tracing.
-    pub fn build_tlas(
-        &self,
-        memory: &GpuAllocator,
-        compute: &ComputeContext,
-        spec: TlasBuildSpec<'_>,
-    ) -> Result<TlasId, GpuError> {
+    pub fn build_tlas(&self, memory: &GpuAllocator, spec: TlasBuildSpec<'_>) -> Result<TlasId, GpuError> {
         if spec.instances.is_empty() {
             return Err(std::io::Error::other("RT TLAS must contain at least one instance").into());
         }
@@ -161,7 +149,6 @@ impl RtContext {
 
         let handle = self.build_acceleration_structure(
             memory,
-            compute,
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
             spec.flags,
             std::slice::from_ref(&geometry),
@@ -181,7 +168,6 @@ impl RtContext {
     fn build_acceleration_structure(
         &self,
         memory: &GpuAllocator,
-        compute: &ComputeContext,
         ty: vk::AccelerationStructureTypeKHR,
         flags: vk::BuildAccelerationStructureFlagsKHR,
         geometries: &[vk::AccelerationStructureGeometryKHR<'_>],
@@ -231,7 +217,7 @@ impl RtContext {
                 device_address: memory.buffer_device_address(&scratch),
             });
 
-        compute.submit_compute_and_wait(|command_buffer| unsafe {
+        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
             self.device_context
                 .acceleration_structure
                 .cmd_build_acceleration_structures(command_buffer, std::slice::from_ref(&build_info), &[ranges]);

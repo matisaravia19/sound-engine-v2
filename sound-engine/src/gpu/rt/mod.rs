@@ -1,18 +1,19 @@
 use crate::gpu::backend::VkDeviceContext;
+use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-mod accel;
+mod acceleration;
 mod descriptor;
 mod dispatch;
 mod pipeline;
 mod scene;
 mod submit;
 
-pub use accel::{BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
+pub use acceleration::{BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
 pub use pipeline::{
     RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec,
@@ -28,6 +29,7 @@ const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 /// can build scenes and record traces without managing raw Vulkan lifetimes.
 pub struct RtContext {
     device_context: Arc<VkDeviceContext>,
+    compute: Arc<ComputeContext>,
     shaders: Arc<ShaderLibrary>,
     blas: Mutex<HashMap<BlasId, AccelerationStructureHandle>>,
     tlas: Mutex<HashMap<TlasId, AccelerationStructureHandle>>,
@@ -55,9 +57,14 @@ struct RayTracingPipeline {
 }
 
 impl RtContext {
-    pub(super) fn new(device_context: Arc<VkDeviceContext>, shaders: Arc<ShaderLibrary>) -> Self {
+    pub(super) fn new(
+        device_context: Arc<VkDeviceContext>,
+        shaders: Arc<ShaderLibrary>,
+        compute: Arc<ComputeContext>,
+    ) -> Self {
         Self {
             device_context,
+            compute,
             shaders,
             blas: Mutex::new(HashMap::new()),
             tlas: Mutex::new(HashMap::new()),
@@ -68,6 +75,10 @@ impl RtContext {
 
 impl Drop for RtContext {
     fn drop(&mut self) {
+        self.compute
+            .wait_for_all()
+            .expect("Failed to wait for RT compute work during drop");
+
         unsafe {
             if let Ok(mut pipelines) = self.pipelines.lock() {
                 for (_, pipeline) in pipelines.drain() {

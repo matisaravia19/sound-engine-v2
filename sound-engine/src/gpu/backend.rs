@@ -16,7 +16,7 @@ pub struct VkBackend {
     entry: Entry,
     memory: GpuAllocator,
     shaders: Arc<ShaderLibrary>,
-    compute: ComputeContext,
+    compute: Arc<ComputeContext>,
     rt: RtContext,
     device: Arc<VkDeviceContext>,
 }
@@ -93,12 +93,18 @@ impl VkBackend {
 
         let shaders = Arc::new(ShaderLibrary::new(device.clone()));
 
+        let compute = Arc::new(ComputeContext::new(
+            device.clone(),
+            shaders.clone(),
+            device_creation_result.compute_queue,
+        )?);
+
         Ok(Self {
             entry,
             memory: GpuAllocator::new(device.clone(), device_creation_result.transfer_queue)?,
             shaders: shaders.clone(),
-            compute: ComputeContext::new(device.clone(), shaders.clone(), device_creation_result.compute_queue)?,
-            rt: RtContext::new(device.clone(), shaders.clone()),
+            compute: compute.clone(),
+            rt: RtContext::new(device.clone(), shaders.clone(), compute),
             device,
         })
     }
@@ -130,7 +136,7 @@ impl VkBackend {
 
     /// Returns the compute context used for pipeline dispatch and submission.
     pub fn compute(&self) -> &ComputeContext {
-        &self.compute
+        self.compute.as_ref()
     }
 
     /// Returns the ray tracing context used for AS builds and RT pipelines.
