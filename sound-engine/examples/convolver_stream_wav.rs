@@ -134,7 +134,7 @@ fn run_convolver_producer(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ir = build_sample_ir(sample_rate);
 
-    let backend = Arc::new(VkBackend::new().map_err(|e| std::io::Error::other(e.to_string()))?);
+    let backend = Arc::new(VkBackend::new()?);
     let mut convolver = PartitionedConvolver::new(backend)?;
     convolver.register_impulse_response(IR_ID, &ir)?;
     let voice_id = convolver.start_sound(IR_ID)?;

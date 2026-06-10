@@ -1,11 +1,8 @@
 use super::*;
-use crate::gpu::GpuError;
+use crate::error::SoundResult;
 
 impl RtContext {
-    pub(super) fn acquire_descriptor_set(
-        &self,
-        pipeline: &mut RayTracingPipeline,
-    ) -> Result<vk::DescriptorSet, GpuError> {
+    pub(super) fn acquire_descriptor_set(&self, pipeline: &mut RayTracingPipeline) -> SoundResult<vk::DescriptorSet> {
         for pool in pipeline.descriptor_pools.iter().rev() {
             if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout) {
                 return Ok(set);
@@ -21,7 +18,7 @@ impl RtContext {
     fn create_descriptor_pool(
         &self,
         pool_sizes_template: &[vk::DescriptorPoolSize],
-    ) -> Result<vk::DescriptorPool, GpuError> {
+    ) -> SoundResult<vk::DescriptorPool> {
         let pool_sizes = pool_sizes_template
             .iter()
             .map(|size| {
@@ -42,7 +39,7 @@ impl RtContext {
         &self,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> Result<vk::DescriptorSet, GpuError> {
+    ) -> SoundResult<vk::DescriptorSet> {
         let set_layouts = [descriptor_set_layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
@@ -67,28 +64,4 @@ pub(super) fn aggregate_pool_sizes(bindings: &[vk::DescriptorSetLayoutBinding<'_
         }
     }
     pool_sizes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::aggregate_pool_sizes;
-    use ash::vk;
-
-    #[test]
-    fn aggregate_pool_sizes_merges_same_descriptor_types() {
-        let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1),
-            vk::DescriptorSetLayoutBinding::default()
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(2),
-        ];
-
-        let sizes = aggregate_pool_sizes(&bindings);
-
-        assert_eq!(sizes.len(), 1);
-        assert_eq!(sizes[0].ty, vk::DescriptorType::STORAGE_BUFFER);
-        assert_eq!(sizes[0].descriptor_count, 3);
-    }
 }

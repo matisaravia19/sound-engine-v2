@@ -1,5 +1,5 @@
 use super::*;
-use crate::gpu::GpuError;
+use crate::error::{ErrorCode, SoundError, SoundResult};
 
 /// One ray tracing dispatch recorded into a command buffer.
 pub struct RtTraceSpec {
@@ -58,15 +58,30 @@ impl RtDescriptorWrite {
 
 impl RtContext {
     /// Records descriptor updates, pipeline bind, push constants, and ray trace.
-    pub fn record_trace(&self, command_buffer: vk::CommandBuffer, spec: &RtTraceSpec) -> Result<(), GpuError> {
+    pub fn record_trace(&self, command_buffer: vk::CommandBuffer, spec: &RtTraceSpec) -> SoundResult<()> {
+        crate::debug_validate!(
+            spec.dimensions.iter().all(|dimension| *dimension > 0),
+            ErrorCode::InvalidArgument,
+            "RT trace dimensions must all be non-zero, got {:?}",
+            spec.dimensions
+        );
+
         let mut pipelines = self
             .pipelines
             .lock()
-            .map_err(|_| std::io::Error::other("RT pipelines lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("RT pipelines lock is poisoned"))?;
 
         let pipeline = pipelines
             .get_mut(&spec.pipeline_id)
-            .ok_or_else(|| std::io::Error::other(format!("Invalid RT pipeline id {}", spec.pipeline_id.0)))?;
+            .ok_or_else(|| SoundError::not_found(format!("Invalid RT pipeline id {}", spec.pipeline_id.0)))?;
+
+        crate::debug_validate!(
+            push_constants_fit_pipeline(spec, pipeline),
+            ErrorCode::InvalidArgument,
+            "RT push constants offset={} size={} do not fit pipeline ranges",
+            spec.push_constant_offset,
+            spec.push_constants.len()
+        );
 
         // Descriptor sets are allocated per trace from growable pools.
         let descriptor_set = self.acquire_descriptor_set(pipeline)?;
@@ -132,18 +147,18 @@ impl RtContext {
         &self,
         descriptor_set: vk::DescriptorSet,
         writes: &[RtDescriptorWrite],
-    ) -> Result<(), GpuError> {
+    ) -> SoundResult<()> {
         let tlas = self
             .tlas
             .lock()
-            .map_err(|_| std::io::Error::other("RT TLAS lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("RT TLAS lock is poisoned"))?;
 
         for write in writes {
             match *write {
                 RtDescriptorWrite::AccelerationStructure { binding, tlas_id } => {
                     let tlas = tlas
                         .get(&tlas_id)
-                        .ok_or_else(|| std::io::Error::other(format!("Invalid TLAS id {}", tlas_id.0)))?;
+                        .ok_or_else(|| SoundError::not_found(format!("Invalid TLAS id {}", tlas_id.0)))?;
                     let mut as_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
                         .acceleration_structures(std::slice::from_ref(&tlas.handle));
                     let descriptor_write = vk::WriteDescriptorSet::default()
@@ -184,6 +199,22 @@ impl RtContext {
 
         Ok(())
     }
+}
+
+fn push_constants_fit_pipeline(spec: &RtTraceSpec, pipeline: &RayTracingPipeline) -> bool {
+    if spec.push_constants.is_empty() {
+        return true;
+    }
+
+    let start = spec.push_constant_offset;
+    let Some(end) = start.checked_add(spec.push_constants.len() as u32) else {
+        return false;
+    };
+
+    pipeline.push_constant_ranges.iter().any(|range| {
+        let range_end = range.offset.saturating_add(range.size);
+        start >= range.offset && end <= range_end
+    })
 }
 
 fn default_trace_push_constant_stages() -> vk::ShaderStageFlags {

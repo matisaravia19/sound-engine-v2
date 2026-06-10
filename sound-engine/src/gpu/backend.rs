@@ -1,4 +1,4 @@
-use crate::gpu::GpuError;
+use crate::error::{SoundError, SoundResult};
 use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::rt::RtContext;
@@ -69,7 +69,7 @@ impl VkBackend {
     ///
     /// Device selection requires KHR acceleration structures, ray tracing
     /// pipelines, deferred host operations, and buffer device addresses.
-    pub fn new() -> Result<Self, GpuError> {
+    pub fn new() -> SoundResult<Self> {
         let entry = unsafe { Entry::load()? };
         let instance = Self::create_instance(&entry)?;
 
@@ -144,7 +144,7 @@ impl VkBackend {
         &self.rt
     }
 
-    fn create_instance(entry: &Entry) -> Result<Instance, GpuError> {
+    fn create_instance(entry: &Entry) -> SoundResult<Instance> {
         let app_name = CString::new("sound-engine")?;
         let engine_name = CString::new("sound-engine")?;
 
@@ -162,7 +162,7 @@ impl VkBackend {
 
     fn select_physical_device_and_compute_family(
         instance: &Instance,
-    ) -> Result<(vk::PhysicalDevice, u32, RayTracingProperties), GpuError> {
+    ) -> SoundResult<(vk::PhysicalDevice, u32, RayTracingProperties)> {
         let physical_devices = unsafe { instance.enumerate_physical_devices()? };
 
         physical_devices
@@ -176,8 +176,9 @@ impl VkBackend {
             .max_by_key(|(score, _, _, _)| *score)
             .map(|(_, physical_device, compute_family, rt_properties)| (physical_device, compute_family, rt_properties))
             .ok_or_else(|| {
-                std::io::Error::other("No Vulkan physical device with compute and KHR ray tracing support was found")
-                    .into()
+                SoundError::backend_unavailable(
+                    "No Vulkan physical device with compute and KHR ray tracing support was found",
+                )
             })
     }
 
@@ -185,7 +186,7 @@ impl VkBackend {
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         compute_family: u32,
-    ) -> Result<DeviceCreationResult, GpuError> {
+    ) -> SoundResult<DeviceCreationResult> {
         let queue_priorities = [1.0_f32];
         let mut queue_infos = vec![
             vk::DeviceQueueCreateInfo::default()
@@ -292,7 +293,7 @@ impl VkBackend {
     fn query_ray_tracing_support(
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
-    ) -> Result<RayTracingProperties, GpuError> {
+    ) -> SoundResult<RayTracingProperties> {
         Self::require_device_extensions(instance, physical_device)?;
 
         let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
@@ -312,7 +313,9 @@ impl VkBackend {
             || acceleration_structure_features.acceleration_structure != vk::TRUE
             || ray_tracing_pipeline_features.ray_tracing_pipeline != vk::TRUE
         {
-            return Err(std::io::Error::other("Required Vulkan ray tracing features are not supported").into());
+            return Err(SoundError::unsupported_feature(
+                "Required Vulkan ray tracing features are not supported",
+            ));
         }
 
         let mut acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
@@ -332,7 +335,7 @@ impl VkBackend {
         })
     }
 
-    fn require_device_extensions(instance: &Instance, physical_device: vk::PhysicalDevice) -> Result<(), GpuError> {
+    fn require_device_extensions(instance: &Instance, physical_device: vk::PhysicalDevice) -> SoundResult<()> {
         let extensions = unsafe { instance.enumerate_device_extension_properties(physical_device)? };
         let required = [
             vk::KHR_ACCELERATION_STRUCTURE_NAME,
@@ -348,11 +351,10 @@ impl VkBackend {
             });
 
             if !found {
-                return Err(std::io::Error::other(format!(
+                return Err(SoundError::unsupported_feature(format!(
                     "Required Vulkan device extension is not supported: {}",
                     required_extension.to_string_lossy()
-                ))
-                .into());
+                )));
             }
         }
 
@@ -362,7 +364,7 @@ impl VkBackend {
 
 impl VkDeviceContext {
     /// Creates an unsignaled fence on the backend device.
-    pub fn create_fence(&self) -> Result<vk::Fence, GpuError> {
+    pub fn create_fence(&self) -> SoundResult<vk::Fence> {
         let fence_info = vk::FenceCreateInfo::default();
         let fence = unsafe { self.device.create_fence(&fence_info, None)? };
         Ok(fence)

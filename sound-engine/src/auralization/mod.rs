@@ -1,7 +1,7 @@
 pub mod convolver;
 mod engine;
 
-use std::error::Error;
+use crate::error::{SoundError, SoundResult};
 
 // pub(crate) use engine::AuralizationEngine;
 
@@ -15,9 +15,6 @@ pub const SAMPLE_RATE: u32 = 44100;
 pub const FFT_SIZE: u64 = (BLOCK_SIZE + IR_SIZE - 1).next_power_of_two();
 /// Number of overlap samples carried between audio blocks.
 pub const TAIL_SIZE: usize = (FFT_SIZE - BLOCK_SIZE) as usize;
-
-/// Common error type for auralization setup and processing.
-pub type AudioError = Box<dyn Error + Send + Sync>;
 
 /// Output channel layout used by the auralization engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,12 +46,12 @@ pub(crate) struct AuralizationConfig {
 
 impl AuralizationConfig {
     /// Validates basic non-zero audio parameters.
-    pub(crate) fn validate(&self) -> Result<(), AudioError> {
+    pub(crate) fn validate(&self) -> SoundResult<()> {
         if self.sample_rate == 0 {
-            return Err(std::io::Error::other("sample_rate must be > 0").into());
+            return Err(SoundError::invalid_argument("sample_rate must be > 0"));
         }
         if self.block_size == 0 {
-            return Err(std::io::Error::other("block_size must be > 0").into());
+            return Err(SoundError::invalid_argument("block_size must be > 0"));
         }
         Ok(())
     }
@@ -86,7 +83,7 @@ pub(crate) trait SoundBankReader {
         sound: SoundId,
         voice: VoiceId,
         out_mono: &mut [f32],
-    ) -> Result<VoiceRenderResult, AudioError>;
+    ) -> SoundResult<VoiceRenderResult>;
 }
 
 /// Result of rendering one dry voice block.

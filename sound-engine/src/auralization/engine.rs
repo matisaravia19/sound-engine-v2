@@ -1,6 +1,6 @@
 // use crate::auralization::convolver::PartitionedConvolver;
 // use crate::auralization::{
-//     AudioError, AuralizationConfig, IrSnapshot, SoundBankReader, SoundId, VoiceId, VoiceRenderResult, VoiceState,
+//     SoundError, AuralizationConfig, IrSnapshot, SoundBankReader, SoundId, VoiceId, VoiceRenderResult, VoiceState,
 //     VoiceTable,
 // };
 // use std::collections::HashSet;
@@ -17,7 +17,7 @@
 // }
 
 // impl AuralizationEngine {
-//     pub fn new(config: AuralizationConfig) -> Result<Self, AudioError> {
+//     pub fn new(config: AuralizationConfig) -> SoundResult<Self> {
 //         config.validate()?;
 
 //         let block_size = config.block_size;
@@ -45,7 +45,7 @@
 //         self.convolver.forget_voice(voice_id);
 //     }
 
-//     pub fn process_block(&mut self, sound_bank: &dyn SoundBankReader, output: &mut [f32]) -> Result<(), AudioError> {
+//     pub fn process_block(&mut self, sound_bank: &dyn SoundBankReader, output: &mut [f32]) -> SoundResult<()> {
 //         let channels = self.config.output_channels.count();
 //         let expected_output_len = self.config.block_size * channels;
 //         if output.len() != expected_output_len {

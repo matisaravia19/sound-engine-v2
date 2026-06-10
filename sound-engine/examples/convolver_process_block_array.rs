@@ -1,12 +1,13 @@
 use sound_engine::auralization::convolver::PartitionedConvolver;
 use sound_engine::auralization::{BLOCK_SIZE, ImpulseResponseId};
+use sound_engine::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use std::sync::Arc;
 
 const IR_ID: ImpulseResponseId = 7;
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let backend = Arc::new(VkBackend::new().map_err(|e| std::io::Error::other(e.to_string()))?);
+fn main() -> SoundResult<()> {
+    let backend = Arc::new(VkBackend::new()?);
     let mut convolver = PartitionedConvolver::new(backend)?;
 
     // Small deterministic IR so expected output is easy to validate.

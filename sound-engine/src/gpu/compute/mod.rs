@@ -1,4 +1,4 @@
-use crate::gpu::GpuError;
+use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::{QueueSet, VkDeviceContext};
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
@@ -58,7 +58,7 @@ impl ComputeContext {
         device_context: Arc<VkDeviceContext>,
         shaders: Arc<ShaderLibrary>,
         compute_queue: QueueSet,
-    ) -> Result<Self, GpuError> {
+    ) -> SoundResult<Self> {
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(compute_queue.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -82,11 +82,11 @@ impl ComputeContext {
     ///
     /// Callers must preserve the queue synchronization guarantees expected by
     /// the compute context.
-    pub unsafe fn queue_handle(&self) -> Result<vk::Queue, GpuError> {
+    pub unsafe fn queue_handle(&self) -> SoundResult<vk::Queue> {
         let queue = self
             .queue
             .read()
-            .map_err(|_| std::io::Error::other("Compute queue lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Compute queue lock is poisoned"))?;
         Ok(queue.handle)
     }
 
@@ -95,15 +95,15 @@ impl ComputeContext {
     /// # Safety
     ///
     /// Callers must not free or reset command buffers owned by this context.
-    pub unsafe fn command_pool_handle(&self) -> Result<vk::CommandPool, GpuError> {
+    pub unsafe fn command_pool_handle(&self) -> SoundResult<vk::CommandPool> {
         let queue = self
             .queue
             .read()
-            .map_err(|_| std::io::Error::other("Compute queue lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Compute queue lock is poisoned"))?;
         Ok(queue.command_pool)
     }
 
-    fn drop_command_pool(&self) -> Result<(), GpuError> {
+    fn drop_command_pool(&self) -> SoundResult<()> {
         if let Ok(mut available) = self.available_command_buffers.lock() {
             available.clear();
         }
@@ -120,7 +120,7 @@ impl ComputeContext {
         Ok(())
     }
 
-    fn drop_pipelines(&self) -> Result<(), GpuError> {
+    fn drop_pipelines(&self) -> SoundResult<()> {
         if let Ok(mut pipelines) = self.pipelines.lock() {
             unsafe {
                 for (_, pipeline) in pipelines.drain() {

@@ -1,4 +1,4 @@
-use crate::gpu::GpuError;
+use crate::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
 use std::collections::HashMap;
@@ -85,12 +85,13 @@ impl ShaderLibrary {
     /// Compiles a GLSL file into SPIR-V and creates a Vulkan shader module.
     ///
     /// The returned ID remains valid until the shader library is dropped.
-    pub fn load_glsl_file<P: AsRef<Path>>(&self, stage: ShaderStage, path: P) -> Result<ShaderId, GpuError> {
+    pub fn load_glsl_file<P: AsRef<Path>>(&self, stage: ShaderStage, path: P) -> SoundResult<ShaderId> {
         let source_path = path.as_ref().to_path_buf();
         if !source_path.exists() {
-            return Err(
-                std::io::Error::other(format!("Shader source file does not exist: {}", source_path.display())).into(),
-            );
+            return Err(SoundError::io(format!(
+                "Shader source file does not exist: {}",
+                source_path.display()
+            )));
         }
 
         let spirv_words = compile_glsl_file_to_spirv_words(&source_path, stage, SHADER_ENTRY_POINT)?;
@@ -104,7 +105,7 @@ impl ShaderLibrary {
         let mut shaders = self
             .shaders
             .lock()
-            .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
 
         let id = ShaderId(shaders.len() as u32);
         shaders.insert(id, record);
@@ -112,29 +113,29 @@ impl ShaderLibrary {
     }
 
     /// Returns the raw Vulkan shader module for pipeline creation.
-    pub fn shader_module(&self, shader_id: ShaderId) -> Result<vk::ShaderModule, GpuError> {
+    pub fn shader_module(&self, shader_id: ShaderId) -> SoundResult<vk::ShaderModule> {
         let shaders = self
             .shaders
             .lock()
-            .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
 
         let shader = shaders
             .get(&shader_id)
-            .ok_or_else(|| std::io::Error::other(format!("Invalid shader id {}", shader_id.0)))?;
+            .ok_or_else(|| SoundError::not_found(format!("Invalid shader id {}", shader_id.0)))?;
 
         Ok(shader.module)
     }
 
     /// Returns the stage recorded when the shader was loaded.
-    pub fn shader_stage(&self, shader_id: ShaderId) -> Result<ShaderStage, GpuError> {
+    pub fn shader_stage(&self, shader_id: ShaderId) -> SoundResult<ShaderStage> {
         let shaders = self
             .shaders
             .lock()
-            .map_err(|_| std::io::Error::other("Shader library lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
 
         let shader = shaders
             .get(&shader_id)
-            .ok_or_else(|| std::io::Error::other(format!("Invalid shader id {}", shader_id.0)))?;
+            .ok_or_else(|| SoundError::not_found(format!("Invalid shader id {}", shader_id.0)))?;
 
         Ok(shader.stage)
     }
@@ -155,9 +156,9 @@ impl Drop for ShaderLibrary {
     }
 }
 
-fn create_shader_module(device: &ash::Device, spirv_words: &[u32]) -> Result<vk::ShaderModule, GpuError> {
+fn create_shader_module(device: &ash::Device, spirv_words: &[u32]) -> SoundResult<vk::ShaderModule> {
     if spirv_words.is_empty() {
-        return Err(std::io::Error::other("SPIR-V module is empty").into());
+        return Err(SoundError::shader_compile_failed("SPIR-V module is empty"));
     }
 
     let create_info = vk::ShaderModuleCreateInfo::default().code(spirv_words);
@@ -165,7 +166,7 @@ fn create_shader_module(device: &ash::Device, spirv_words: &[u32]) -> Result<vk:
     Ok(module)
 }
 
-fn compile_glsl_file_to_spirv_words(source_path: &Path, stage: ShaderStage, entry: &str) -> Result<Vec<u32>, GpuError> {
+fn compile_glsl_file_to_spirv_words(source_path: &Path, stage: ShaderStage, entry: &str) -> SoundResult<Vec<u32>> {
     let temp_dir = std::env::temp_dir();
     let unique_tag = format!(
         "{}_{}",
@@ -190,27 +191,33 @@ fn compile_glsl_file_to_spirv_words(source_path: &Path, stage: ShaderStage, entr
         .arg(source_path)
         .output()
         .map_err(|e| {
-            std::io::Error::other(format!(
+            SoundError::with_source(
+                ErrorCode::ShaderCompileFailed,
+                format!(
                 "Failed to run glslangValidator for {}: {e}. Ensure Vulkan SDK tools are installed and glslangValidator is in PATH",
                 source_path.display()
-            ))
+                ),
+                e,
+            )
         })?;
 
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = fs::remove_file(&spv_path);
-        return Err(std::io::Error::other(format!(
+        return Err(SoundError::shader_compile_failed(format!(
             "GLSL compilation failed for {} ({stage:?}):\n{stdout}\n{stderr}",
             source_path.display()
-        ))
-        .into());
+        )));
     }
 
-    let result = (|| -> Result<Vec<u32>, GpuError> {
+    let result = (|| -> SoundResult<Vec<u32>> {
         let spirv_bytes = fs::read(&spv_path)?;
         if spirv_bytes.len() % size_of::<u32>() != 0 {
-            return Err(std::io::Error::other(format!("Invalid SPIR-V size for {}", source_path.display())).into());
+            return Err(SoundError::shader_compile_failed(format!(
+                "Invalid SPIR-V size for {}",
+                source_path.display()
+            )));
         }
 
         Ok(spirv_bytes

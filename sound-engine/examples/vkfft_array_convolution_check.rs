@@ -1,14 +1,14 @@
 // use ash::vk;
 // use sound_engine::gpu::context::GpuContext;
-// use sound_engine::gpu::errors::GpuError;
+// use sound_engine::error::SoundResult;
 // use std::mem::size_of;
 // use vkfft_rs::plan::{DeviceHandles, FFTPlanBuilder};
 //
-// fn main() -> Result<(), GpuError> {
+// fn main() -> SoundResult<()> {
 //     run()
 // }
 //
-// fn run() -> Result<(), GpuError> {
+// fn run() -> SoundResult<()> {
 //     // Deterministic test signal and IR: y[n] = x[n] + 0.5 * x[n-64]
 //     let signal: Vec<f32> = (0..512)
 //         .map(|i| ((i as f32) * 0.03125).sin() + ((i % 13) as f32 * 0.01))
@@ -142,7 +142,7 @@
 //     out
 // }
 //
-// fn validate_close(name: &str, actual: &[f32], expected: &[f32], tol: f32) -> Result<(), GpuError> {
+// fn validate_close(name: &str, actual: &[f32], expected: &[f32], tol: f32) -> SoundResult<()> {
 //     if actual.len() != expected.len() {
 //         return Err(std::io::Error::other(format!(
 //             "{name}: length mismatch, actual={} expected={}",
@@ -165,7 +165,7 @@
 //     Ok(())
 // }
 //
-// fn complex_multiply_in_place(lhs: &mut [f32], rhs: &[f32]) -> Result<(), GpuError> {
+// fn complex_multiply_in_place(lhs: &mut [f32], rhs: &[f32]) -> SoundResult<()> {
 //     if lhs.len() != rhs.len() || lhs.len() % 2 != 0 {
 //         return Err(std::io::Error::other("Complex buffers must have equal even lengths").into());
 //     }
@@ -195,7 +195,7 @@
 //     unsafe { std::slice::from_raw_parts(samples.as_ptr() as *const u8, std::mem::size_of_val(samples)) }
 // }
 //
-// fn bytes_to_f32_vec(bytes: &[u8]) -> Result<Vec<f32>, GpuError> {
+// fn bytes_to_f32_vec(bytes: &[u8]) -> SoundResult<Vec<f32>> {
 //     if bytes.len() % size_of::<f32>() != 0 {
 //         return Err(std::io::Error::other("GPU readback size is not aligned to f32 elements").into());
 //     }
@@ -208,7 +208,7 @@
 //     Ok(out)
 // }
 //
-// fn extract_real_samples(complex_data: &[f32], count: usize) -> Result<Vec<f32>, GpuError> {
+// fn extract_real_samples(complex_data: &[f32], count: usize) -> SoundResult<Vec<f32>> {
 //     if complex_data.len() < count * 2 {
 //         return Err(std::io::Error::other("GPU output buffer is smaller than expected").into());
 //     }
@@ -221,7 +221,7 @@
 //     Ok(out)
 // }
 //
-// fn allocate_command_buffer(context: &GpuContext) -> Result<vk::CommandBuffer, GpuError> {
+// fn allocate_command_buffer(context: &GpuContext) -> SoundResult<vk::CommandBuffer> {
 //     let allocation_info = vk::CommandBufferAllocateInfo::default()
 //         .command_pool(context.compute_command_pool().clone())
 //         .level(vk::CommandBufferLevel::PRIMARY)
@@ -236,7 +236,7 @@
 //     command_buffer: vk::CommandBuffer,
 //     fence: vk::Fence,
 //     launch: F,
-// ) -> Result<(), GpuError>
+// ) -> SoundResult<()>
 // where
 //     F: FnOnce() -> Result<(), std::io::Error>,
 // {

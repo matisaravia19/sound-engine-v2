@@ -6,9 +6,9 @@ impl ComputeContext {
     ///
     /// The returned token must be waited on before resources written by the
     /// submission are read on the host.
-    pub fn submit_compute<F>(&self, record: F) -> Result<FrameToken, GpuError>
+    pub fn submit_compute<F>(&self, record: F) -> SoundResult<FrameToken>
     where
-        F: FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
+        F: FnOnce(vk::CommandBuffer) -> SoundResult<()>,
     {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let fence = self.device_context.create_fence()?;
@@ -16,7 +16,7 @@ impl ComputeContext {
         let queue = self
             .queue
             .write()
-            .map_err(|_| std::io::Error::other("Compute queue lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Compute queue lock is poisoned"))?;
 
         // Reuse command buffers after their fence has completed.
         let command_buffer = self.acquire_command_buffer(&queue)?;
@@ -47,17 +47,17 @@ impl ComputeContext {
 
         self.in_flight
             .lock()
-            .map_err(|_| std::io::Error::other("Compute in_flight lock is poisoned"))?
+            .map_err(|_| SoundError::poisoned_lock("Compute in_flight lock is poisoned"))?
             .insert(token, InFlightSubmission { fence, command_buffer });
 
         Ok(FrameToken(token))
     }
 
-    fn acquire_command_buffer(&self, queue: &QueueSet) -> Result<vk::CommandBuffer, GpuError> {
+    fn acquire_command_buffer(&self, queue: &QueueSet) -> SoundResult<vk::CommandBuffer> {
         if let Some(command_buffer) = self
             .available_command_buffers
             .lock()
-            .map_err(|_| std::io::Error::other("Compute command buffer pool lock is poisoned"))?
+            .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
             .pop()
         {
             return Ok(command_buffer);
@@ -72,31 +72,31 @@ impl ComputeContext {
     }
 
     /// Submits compute work and waits for completion before returning.
-    pub fn submit_compute_and_wait<F>(&self, record: F) -> Result<(), GpuError>
+    pub fn submit_compute_and_wait<F>(&self, record: F) -> SoundResult<()>
     where
-        F: FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
+        F: FnOnce(vk::CommandBuffer) -> SoundResult<()>,
     {
         let token = self.submit_compute(record)?;
         self.wait_for(token)
     }
 
     /// Waits for a previously submitted frame token and recycles its command buffer.
-    pub fn wait_for(&self, token: FrameToken) -> Result<(), GpuError> {
+    pub fn wait_for(&self, token: FrameToken) -> SoundResult<()> {
         let in_flight = self
             .in_flight
             .lock()
-            .map_err(|_| std::io::Error::other("Compute in_flight lock is poisoned"))?
+            .map_err(|_| SoundError::poisoned_lock("Compute in_flight lock is poisoned"))?
             .remove(&token.0)
-            .ok_or_else(|| std::io::Error::other(format!("Unknown frame token {}", token.0)))?;
+            .ok_or_else(|| SoundError::not_found(format!("Unknown frame token {}", token.0)))?;
 
         self.wait_for_submission(&in_flight)
     }
 
-    pub(crate) fn wait_for_all(&self) -> Result<(), GpuError> {
+    pub(crate) fn wait_for_all(&self) -> SoundResult<()> {
         let mut in_flight = self
             .in_flight
             .lock()
-            .map_err(|_| std::io::Error::other("Compute in_flight lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Compute in_flight lock is poisoned"))?;
 
         for (_, submission) in in_flight.drain() {
             self.wait_for_submission(&submission)?;
@@ -105,7 +105,7 @@ impl ComputeContext {
         Ok(())
     }
 
-    fn wait_for_submission(&self, submission: &InFlightSubmission) -> Result<(), GpuError> {
+    fn wait_for_submission(&self, submission: &InFlightSubmission) -> SoundResult<()> {
         unsafe {
             self.device_context
                 .device
@@ -115,7 +115,7 @@ impl ComputeContext {
 
         self.available_command_buffers
             .lock()
-            .map_err(|_| std::io::Error::other("Compute command buffer pool lock is poisoned"))?
+            .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
             .push(submission.command_buffer);
 
         Ok(())

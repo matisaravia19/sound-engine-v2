@@ -1,7 +1,7 @@
 use super::*;
 
 impl ComputeContext {
-    pub(super) fn acquire_descriptor_set(&self, pipeline: &mut ComputePipeline) -> Result<vk::DescriptorSet, GpuError> {
+    pub(super) fn acquire_descriptor_set(&self, pipeline: &mut ComputePipeline) -> SoundResult<vk::DescriptorSet> {
         for pool in pipeline.descriptor_pools.iter().rev() {
             if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout) {
                 return Ok(set);
@@ -17,7 +17,7 @@ impl ComputeContext {
     fn create_descriptor_pool(
         &self,
         pool_sizes_template: &[vk::DescriptorPoolSize],
-    ) -> Result<vk::DescriptorPool, GpuError> {
+    ) -> SoundResult<vk::DescriptorPool> {
         let pool_sizes = pool_sizes_template
             .iter()
             .map(|size| {
@@ -39,7 +39,7 @@ impl ComputeContext {
         &self,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> Result<vk::DescriptorSet, GpuError> {
+    ) -> SoundResult<vk::DescriptorSet> {
         let set_layouts = [descriptor_set_layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)

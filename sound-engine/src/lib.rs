@@ -2,6 +2,7 @@
 
 pub mod auralization;
 pub mod core;
+pub mod error;
 pub mod gpu;
 mod simulation;
 

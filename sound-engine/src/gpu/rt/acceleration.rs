@@ -1,5 +1,5 @@
 use super::*;
-use crate::gpu::GpuError;
+use crate::error::{SoundError, SoundResult};
 use crate::gpu::memory::GpuAllocator;
 use std::mem::size_of;
 
@@ -32,7 +32,7 @@ impl RtContext {
     ///
     /// The build is submitted to the compute queue and completed before the new
     /// `BlasId` is returned.
-    pub fn build_blas(&self, memory: &GpuAllocator, spec: BlasBuildSpec<'_>) -> Result<BlasId, GpuError> {
+    pub fn build_blas(&self, memory: &GpuAllocator, spec: BlasBuildSpec<'_>) -> SoundResult<BlasId> {
         // Geometry build inputs reference buffers by device address, not descriptors.
         let vertex_address = memory.buffer_device_address(&spec.mesh.vertex_buffer);
         let mut triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -56,7 +56,9 @@ impl RtContext {
         };
 
         if primitive_count == 0 {
-            return Err(std::io::Error::other("RT BLAS must contain at least one triangle").into());
+            return Err(SoundError::invalid_argument(
+                "RT BLAS must contain at least one triangle",
+            ));
         }
 
         // BLAS v1 supports triangle geometry only.
@@ -80,7 +82,7 @@ impl RtContext {
         let mut blas = self
             .blas
             .lock()
-            .map_err(|_| std::io::Error::other("RT BLAS lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
         let id = BlasId(blas.len() as u32);
         blas.insert(id, handle);
         Ok(id)
@@ -90,9 +92,11 @@ impl RtContext {
     ///
     /// The instance buffer is uploaded as host-visible device-address data and
     /// the build completes before the returned `TlasId` can be used for tracing.
-    pub fn build_tlas(&self, memory: &GpuAllocator, spec: TlasBuildSpec<'_>) -> Result<TlasId, GpuError> {
+    pub fn build_tlas(&self, memory: &GpuAllocator, spec: TlasBuildSpec<'_>) -> SoundResult<TlasId> {
         if spec.instances.is_empty() {
-            return Err(std::io::Error::other("RT TLAS must contain at least one instance").into());
+            return Err(SoundError::invalid_argument(
+                "RT TLAS must contain at least one instance",
+            ));
         }
 
         // Resolve BLAS IDs while holding the lock, then drop it before GPU work.
@@ -100,14 +104,14 @@ impl RtContext {
             let blas = self
                 .blas
                 .lock()
-                .map_err(|_| std::io::Error::other("RT BLAS lock is poisoned"))?;
+                .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
 
             spec.instances
                 .iter()
                 .map(|instance| {
                     let blas = blas
                         .get(&instance.blas_id)
-                        .ok_or_else(|| std::io::Error::other(format!("Invalid BLAS id {}", instance.blas_id.0)))?;
+                        .ok_or_else(|| SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0)))?;
 
                     Ok(vk::AccelerationStructureInstanceKHR {
                         transform: vk::TransformMatrixKHR {
@@ -123,7 +127,7 @@ impl RtContext {
                         },
                     })
                 })
-                .collect::<Result<Vec<_>, GpuError>>()?
+                .collect::<SoundResult<Vec<_>>>()?
         };
 
         // Vulkan consumes TLAS instances through a device address.
@@ -159,7 +163,7 @@ impl RtContext {
         let mut tlas = self
             .tlas
             .lock()
-            .map_err(|_| std::io::Error::other("RT TLAS lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("RT TLAS lock is poisoned"))?;
         let id = TlasId(tlas.len() as u32);
         tlas.insert(id, handle);
         Ok(id)
@@ -173,7 +177,7 @@ impl RtContext {
         geometries: &[vk::AccelerationStructureGeometryKHR<'_>],
         primitive_counts: &[u32],
         ranges: &[vk::AccelerationStructureBuildRangeInfoKHR],
-    ) -> Result<AccelerationStructureHandle, GpuError> {
+    ) -> SoundResult<AccelerationStructureHandle> {
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(ty)
             .flags(flags)

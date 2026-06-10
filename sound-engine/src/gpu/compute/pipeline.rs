@@ -58,13 +58,12 @@ impl PushConstantSpec {
 
 impl ComputeContext {
     /// Creates and stores a Vulkan compute pipeline.
-    pub fn create_pipeline(&self, spec: ComputePipelineSpec) -> Result<PipelineId, GpuError> {
+    pub fn create_pipeline(&self, spec: ComputePipelineSpec) -> SoundResult<PipelineId> {
         let shader_stage = self.shaders.shader_stage(spec.shader_id)?;
         if shader_stage != ShaderStage::Compute {
-            return Err(std::io::Error::other(format!(
+            return Err(SoundError::invalid_argument(format!(
                 "create_pipeline requires compute shader, got {shader_stage:?}"
-            ))
-            .into());
+            )));
         }
 
         let shader_module = self.shaders.shader_module(spec.shader_id)?;
@@ -104,7 +103,7 @@ impl ComputeContext {
         let mut pipelines = self
             .pipelines
             .lock()
-            .map_err(|_| std::io::Error::other("Compute pipelines lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("Compute pipelines lock is poisoned"))?;
 
         let pool_sizes_template = aggregate_pool_sizes(&descriptor_bindings);
 

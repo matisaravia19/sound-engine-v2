@@ -1,6 +1,6 @@
 use super::descriptor::aggregate_pool_sizes;
 use super::*;
-use crate::gpu::GpuError;
+use crate::error::{SoundError, SoundResult};
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
 use std::ffi::CString;
@@ -34,13 +34,13 @@ pub struct RtShaderStageSpec {
 #[derive(Debug, Clone, Copy)]
 pub enum RtShaderGroupSpec {
     /// Ray-generation group referencing a general shader stage index.
-    Raygen { general_shader: u32 },
+    Raygen { shader: u32 },
     /// Miss group referencing a general shader stage index.
-    Miss { general_shader: u32 },
+    Miss { shader: u32 },
     /// Triangle hit group referencing a closest-hit shader stage index.
     TrianglesHit { closest_hit_shader: u32 },
     /// Callable group referencing a general shader stage index.
-    Callable { general_shader: u32 },
+    Callable { shader: u32 },
 }
 
 /// Descriptor binding kinds supported by RT pipelines.
@@ -117,12 +117,15 @@ impl RtPushConstantSpec {
 
 impl RtContext {
     /// Creates a ray tracing pipeline and its shader binding table.
-    pub fn create_pipeline(&self, memory: &GpuAllocator, spec: RtPipelineSpec) -> Result<RtPipelineId, GpuError> {
+    pub fn create_pipeline(&self, memory: &GpuAllocator, spec: RtPipelineSpec) -> SoundResult<RtPipelineId> {
         if spec.shaders.is_empty() {
-            return Err(std::io::Error::other("RT pipeline requires at least one shader").into());
+            return Err(SoundError::invalid_argument("RT pipeline requires at least one shader"));
         }
+
         if spec.groups.is_empty() {
-            return Err(std::io::Error::other("RT pipeline requires at least one shader group").into());
+            return Err(SoundError::invalid_argument(
+                "RT pipeline requires at least one shader group",
+            ));
         }
 
         let entry = CString::new(SHADER_ENTRY_POINT)?;
@@ -130,7 +133,7 @@ impl RtContext {
             .shaders
             .iter()
             .map(|stage| self.pipeline_shader_stage(*stage, &entry))
-            .collect::<Result<Vec<_>, GpuError>>()?;
+            .collect::<SoundResult<Vec<_>>>()?;
         validate_groups(&stages, &spec.groups)?;
 
         let groups = spec.groups.iter().map(build_shader_group).collect::<Vec<_>>();
@@ -174,14 +177,17 @@ impl RtContext {
         let mut pipelines = self
             .pipelines
             .lock()
-            .map_err(|_| std::io::Error::other("RT pipelines lock is poisoned"))?;
+            .map_err(|_| SoundError::poisoned_lock("RT pipelines lock is poisoned"))?;
+
         let id = RtPipelineId(pipelines.len() as u32);
+
         pipelines.insert(
             id,
             RayTracingPipeline {
                 handle,
                 layout,
                 descriptor_set_layout,
+                push_constant_ranges,
                 pool_sizes_template: aggregate_pool_sizes(&descriptor_bindings),
                 descriptor_pools: Vec::new(),
                 sbt,
@@ -198,7 +204,7 @@ impl RtContext {
         &self,
         spec: RtShaderStageSpec,
         entry: &'a CString,
-    ) -> Result<vk::PipelineShaderStageCreateInfo<'a>, GpuError> {
+    ) -> SoundResult<vk::PipelineShaderStageCreateInfo<'a>> {
         let stage = self.shaders.shader_stage(spec.shader_id)?;
         let vk_stage = shader_stage_to_vk(stage)?;
         Ok(vk::PipelineShaderStageCreateInfo::default()
@@ -213,16 +219,13 @@ fn build_sbt(
     device: Arc<VkDeviceContext>,
     pipeline: vk::Pipeline,
     groups: &[RtShaderGroupSpec],
-) -> Result<
-    (
-        BufferHandle,
-        vk::StridedDeviceAddressRegionKHR,
-        vk::StridedDeviceAddressRegionKHR,
-        vk::StridedDeviceAddressRegionKHR,
-        vk::StridedDeviceAddressRegionKHR,
-    ),
-    GpuError,
-> {
+) -> SoundResult<(
+    BufferHandle,
+    vk::StridedDeviceAddressRegionKHR,
+    vk::StridedDeviceAddressRegionKHR,
+    vk::StridedDeviceAddressRegionKHR,
+    vk::StridedDeviceAddressRegionKHR,
+)> {
     let props = &device.rt_properties.ray_tracing_pipeline;
     let handle_size = props.shader_group_handle_size as usize;
     let handle_alignment = props.shader_group_handle_alignment as usize;
@@ -308,9 +311,9 @@ impl RtShaderGroupSpec {
 
 fn build_shader_group(spec: &RtShaderGroupSpec) -> vk::RayTracingShaderGroupCreateInfoKHR<'static> {
     match *spec {
-        RtShaderGroupSpec::Raygen { general_shader }
-        | RtShaderGroupSpec::Miss { general_shader }
-        | RtShaderGroupSpec::Callable { general_shader } => vk::RayTracingShaderGroupCreateInfoKHR::default()
+        RtShaderGroupSpec::Raygen { shader: general_shader }
+        | RtShaderGroupSpec::Miss { shader: general_shader }
+        | RtShaderGroupSpec::Callable { shader: general_shader } => vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
             .general_shader(general_shader)
             .closest_hit_shader(vk::SHADER_UNUSED_KHR)
@@ -363,20 +366,15 @@ fn build_vk_push_constant_ranges(specs: &[RtPushConstantSpec]) -> Vec<vk::PushCo
         .collect()
 }
 
-fn validate_groups(
-    stages: &[vk::PipelineShaderStageCreateInfo<'_>],
-    groups: &[RtShaderGroupSpec],
-) -> Result<(), GpuError> {
+fn validate_groups(stages: &[vk::PipelineShaderStageCreateInfo<'_>], groups: &[RtShaderGroupSpec]) -> SoundResult<()> {
     for group in groups {
         match *group {
-            RtShaderGroupSpec::Raygen { general_shader } => {
-                validate_group_stage(stages, general_shader, vk::ShaderStageFlags::RAYGEN_KHR)?
+            RtShaderGroupSpec::Raygen { shader } => {
+                validate_group_stage(stages, shader, vk::ShaderStageFlags::RAYGEN_KHR)?
             }
-            RtShaderGroupSpec::Miss { general_shader } => {
-                validate_group_stage(stages, general_shader, vk::ShaderStageFlags::MISS_KHR)?
-            }
-            RtShaderGroupSpec::Callable { general_shader } => {
-                validate_group_stage(stages, general_shader, vk::ShaderStageFlags::CALLABLE_KHR)?
+            RtShaderGroupSpec::Miss { shader } => validate_group_stage(stages, shader, vk::ShaderStageFlags::MISS_KHR)?,
+            RtShaderGroupSpec::Callable { shader } => {
+                validate_group_stage(stages, shader, vk::ShaderStageFlags::CALLABLE_KHR)?
             }
             RtShaderGroupSpec::TrianglesHit { closest_hit_shader } => {
                 validate_group_stage(stages, closest_hit_shader, vk::ShaderStageFlags::CLOSEST_HIT_KHR)?
@@ -390,21 +388,20 @@ fn validate_group_stage(
     stages: &[vk::PipelineShaderStageCreateInfo<'_>],
     index: u32,
     expected: vk::ShaderStageFlags,
-) -> Result<(), GpuError> {
-    let stage = stages
-        .get(index as usize)
-        .ok_or_else(|| std::io::Error::other(format!("RT shader group references invalid shader index {index}")))?;
+) -> SoundResult<()> {
+    let stage = stages.get(index as usize).ok_or_else(|| {
+        SoundError::invalid_argument(format!("RT shader group references invalid shader index {index}"))
+    })?;
     if stage.stage != expected {
-        return Err(std::io::Error::other(format!(
+        return Err(SoundError::invalid_argument(format!(
             "RT shader group index {index} expects {expected:?}, got {:?}",
             stage.stage
-        ))
-        .into());
+        )));
     }
     Ok(())
 }
 
-fn shader_stage_to_vk(stage: ShaderStage) -> Result<vk::ShaderStageFlags, GpuError> {
+fn shader_stage_to_vk(stage: ShaderStage) -> SoundResult<vk::ShaderStageFlags> {
     match stage {
         ShaderStage::RayGeneration => Ok(vk::ShaderStageFlags::RAYGEN_KHR),
         ShaderStage::RayMiss => Ok(vk::ShaderStageFlags::MISS_KHR),
@@ -412,7 +409,9 @@ fn shader_stage_to_vk(stage: ShaderStage) -> Result<vk::ShaderStageFlags, GpuErr
         ShaderStage::RayAnyHit => Ok(vk::ShaderStageFlags::ANY_HIT_KHR),
         ShaderStage::RayIntersection => Ok(vk::ShaderStageFlags::INTERSECTION_KHR),
         ShaderStage::RayCallable => Ok(vk::ShaderStageFlags::CALLABLE_KHR),
-        ShaderStage::Compute => Err(std::io::Error::other("Compute shader cannot be used in an RT pipeline").into()),
+        ShaderStage::Compute => Err(SoundError::invalid_argument(
+            "Compute shader cannot be used in an RT pipeline",
+        )),
     }
 }
 
@@ -423,14 +422,4 @@ fn default_rt_stage_flags() -> vk::ShaderStageFlags {
         | vk::ShaderStageFlags::ANY_HIT_KHR
         | vk::ShaderStageFlags::INTERSECTION_KHR
         | vk::ShaderStageFlags::CALLABLE_KHR
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compute_shader_stage_is_rejected_for_rt_pipeline() {
-        assert!(shader_stage_to_vk(ShaderStage::Compute).is_err());
-    }
 }

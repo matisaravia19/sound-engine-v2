@@ -1,5 +1,5 @@
 use super::*;
-use crate::gpu::GpuError;
+use crate::error::{SoundError, SoundResult};
 use crate::gpu::memory::GpuAllocator;
 
 /// CPU-side triangle mesh data to upload for BLAS construction.
@@ -45,9 +45,9 @@ impl RtContext {
     /// Uploads triangle mesh data into device-addressable GPU buffers.
     ///
     /// The returned buffers are suitable as BLAS build inputs.
-    pub fn upload_mesh(&self, memory: &GpuAllocator, spec: RtMeshSpec<'_>) -> Result<RtMeshBuffers, GpuError> {
+    pub fn upload_mesh(&self, memory: &GpuAllocator, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
         if spec.vertices.is_empty() {
-            return Err(std::io::Error::other("RT mesh must contain at least one vertex").into());
+            return Err(SoundError::invalid_argument("RT mesh must contain at least one vertex"));
         }
 
         let vertex_buffer = memory.create_device_address_buffer(
@@ -59,7 +59,7 @@ impl RtContext {
 
         let index_buffer = if let Some(indices) = spec.indices {
             if indices.is_empty() {
-                return Err(std::io::Error::other("RT mesh index slice must not be empty").into());
+                return Err(SoundError::invalid_argument("RT mesh index slice must not be empty"));
             }
 
             let buffer = memory.create_device_address_buffer(

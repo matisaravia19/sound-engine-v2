@@ -19,7 +19,7 @@ pub use pipeline::{
     RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec,
 };
 pub use scene::{RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
-pub use submit::{RtFrameToken, RtSubmitExt};
+pub use submit::RtFrameToken;
 
 const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 
@@ -47,6 +47,7 @@ struct RayTracingPipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    push_constant_ranges: Vec<vk::PushConstantRange>,
     pool_sizes_template: Vec<vk::DescriptorPoolSize>,
     descriptor_pools: Vec<vk::DescriptorPool>,
     sbt: BufferHandle,
