@@ -61,6 +61,36 @@ impl BufferBarrierSpec {
             size: vk::WHOLE_SIZE,
         }
     }
+
+    /// Synchronizes transfer writes with later compute shader reads/writes on the same buffer.
+    pub fn transfer_write_to_compute_shader_read_write(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            src_access: vk::AccessFlags::TRANSFER_WRITE,
+            dst_access: vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
+    /// Synchronizes compute shader writes with later transfer reads on the same buffer.
+    pub fn compute_shader_write_to_transfer_read(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            dst_stage: vk::PipelineStageFlags::TRANSFER,
+            src_access: vk::AccessFlags::SHADER_WRITE,
+            dst_access: vk::AccessFlags::TRANSFER_READ,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
 }
 
 impl ComputeContext {

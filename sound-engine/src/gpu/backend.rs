@@ -61,11 +61,10 @@ pub(super) struct QueueSet {
 struct DeviceCreationResult {
     device: ash::Device,
     compute_queue: QueueSet,
-    transfer_queue: QueueSet,
 }
 
 impl VkBackend {
-    /// Creates a Vulkan backend with compute, transfer, shader, and RT support.
+    /// Creates a Vulkan backend with compute, shader, and RT support.
     ///
     /// Device selection requires KHR acceleration structures, ray tracing
     /// pipelines, deferred host operations, and buffer device addresses.
@@ -101,7 +100,7 @@ impl VkBackend {
 
         Ok(Self {
             entry,
-            memory: GpuAllocator::new(device.clone(), device_creation_result.transfer_queue)?,
+            memory: GpuAllocator::new(device.clone(), compute.clone())?,
             shaders: shaders.clone(),
             compute: compute.clone(),
             rt: RtContext::new(device.clone(), shaders.clone(), compute),
@@ -188,21 +187,9 @@ impl VkBackend {
         compute_family: u32,
     ) -> SoundResult<DeviceCreationResult> {
         let queue_priorities = [1.0_f32];
-        let mut queue_infos = vec![
-            vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(compute_family)
-                .queue_priorities(&queue_priorities),
-        ];
-
-        let transfer_family =
-            Self::find_queue_family(instance, physical_device, vk::QueueFlags::TRANSFER).unwrap_or(compute_family);
-        if transfer_family != compute_family {
-            queue_infos.push(
-                vk::DeviceQueueCreateInfo::default()
-                    .queue_family_index(transfer_family)
-                    .queue_priorities(&queue_priorities),
-            );
-        }
+        let queue_infos = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(compute_family)
+            .queue_priorities(&queue_priorities)];
 
         // Enable the full set needed for device-address AS builds and RT traces.
         let extension_names = [
@@ -229,17 +216,11 @@ impl VkBackend {
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
 
         let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
-        let transfer_queue = unsafe { device.get_device_queue(transfer_family, 0) };
 
         let compute_pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(compute_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         let compute_command_pool = unsafe { device.create_command_pool(&compute_pool_info, None)? };
-
-        let transfer_pool_info = vk::CommandPoolCreateInfo::default()
-            .queue_family_index(transfer_family)
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let transfer_command_pool = unsafe { device.create_command_pool(&transfer_pool_info, None)? };
 
         Ok(DeviceCreationResult {
             device,
@@ -247,11 +228,6 @@ impl VkBackend {
                 handle: compute_queue,
                 queue_family: compute_family,
                 command_pool: compute_command_pool,
-            },
-            transfer_queue: QueueSet {
-                handle: transfer_queue,
-                queue_family: transfer_family,
-                command_pool: transfer_command_pool,
             },
         })
     }

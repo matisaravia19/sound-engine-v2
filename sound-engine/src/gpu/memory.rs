@@ -1,5 +1,6 @@
 use crate::error::{SoundError, SoundResult};
-use crate::gpu::backend::{QueueSet, VkDeviceContext};
+use crate::gpu::backend::VkDeviceContext;
+use crate::gpu::compute::ComputeContext;
 use ash::vk;
 use bytemuck::Pod;
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,7 @@ const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
 pub struct GpuAllocator {
     allocator: Arc<Allocator>,
     device_context: Arc<VkDeviceContext>,
+    compute: Arc<ComputeContext>,
     transfer: Mutex<TransferContext>,
 }
 
@@ -28,14 +30,11 @@ pub struct BufferHandle {
 }
 
 struct TransferContext {
-    queue: QueueSet,
-    command_buffer: vk::CommandBuffer,
-    fence: vk::Fence,
     staging_buffer: BufferHandle,
 }
 
 impl GpuAllocator {
-    pub(super) fn new(device_context: Arc<VkDeviceContext>, transfer_queue: QueueSet) -> SoundResult<Self> {
+    pub(super) fn new(device_context: Arc<VkDeviceContext>, compute: Arc<ComputeContext>) -> SoundResult<Self> {
         let mut allocator_info = vk_mem::AllocatorCreateInfo::new(
             &device_context.instance,
             &device_context.device,
@@ -50,31 +49,14 @@ impl GpuAllocator {
                 })?)
             };
 
-        let transfer_command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(transfer_queue.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let transfer_command_buffer = unsafe {
-            device_context
-                .device
-                .allocate_command_buffers(&transfer_command_buffer_alloc_info)?
-        }[0];
-
-        let transfer_fence_info = vk::FenceCreateInfo::default();
-        let transfer_fence = unsafe { device_context.device.create_fence(&transfer_fence_info, None)? };
-
         let staging_buffer = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
 
-        let transfer = TransferContext {
-            queue: transfer_queue,
-            command_buffer: transfer_command_buffer,
-            fence: transfer_fence,
-            staging_buffer,
-        };
+        let transfer = TransferContext { staging_buffer };
 
         Ok(Self {
             allocator,
             device_context,
+            compute,
             transfer: Mutex::new(transfer),
         })
     }
@@ -202,14 +184,9 @@ impl GpuAllocator {
         }
     }
 
-    /// Fills the whole buffer with zero using the transfer queue.
+    /// Fills the whole buffer with zero using the compute queue transfer path.
     pub fn clear_buffer(&self, buffer: &BufferHandle) -> SoundResult<()> {
-        let transfer = self
-            .transfer
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Transfer lock is poisoned"))?;
-
-        self.execute(&transfer, |command_buffer| unsafe {
+        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
             self.device_context
                 .device
                 .cmd_fill_buffer(command_buffer, buffer.buffer, 0, buffer.size, 0);
@@ -237,7 +214,7 @@ impl GpuAllocator {
         // Grow staging lazily so large scene uploads do not require a fixed cap.
         self.ensure_staging_capacity(&mut transfer, data.len() as u64)?;
         self.upload_to_staging(&transfer, data)?;
-        self.copy_buffer(&transfer, &transfer.staging_buffer, destination, copy_size)?;
+        self.copy_buffer(&transfer.staging_buffer, destination, copy_size)?;
         Ok(())
     }
 
@@ -269,7 +246,7 @@ impl GpuAllocator {
             .map_err(|_| SoundError::poisoned_lock("Transfer lock is poisoned"))?;
 
         self.ensure_staging_capacity(&mut transfer, copy_size)?;
-        self.copy_buffer(&transfer, src, &transfer.staging_buffer, copy_size)?;
+        self.copy_buffer(src, &transfer.staging_buffer, copy_size)?;
         self.download_from_staging(&transfer, size, out)?;
 
         Ok(())
@@ -414,7 +391,6 @@ impl GpuAllocator {
 
     fn copy_buffer(
         &self,
-        transfer: &TransferContext,
         src: &BufferHandle,
         dst: &BufferHandle,
         size: vk::DeviceSize,
@@ -433,7 +409,7 @@ impl GpuAllocator {
             )));
         }
 
-        self.execute(transfer, |command_buffer| unsafe {
+        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
             let region = vk::BufferCopy {
                 src_offset: 0,
                 dst_offset: 0,
@@ -449,66 +425,6 @@ impl GpuAllocator {
 
             Ok(())
         })
-    }
-
-    fn execute<F>(&self, transfer: &TransferContext, record: F) -> SoundResult<()>
-    where
-        F: FnOnce(vk::CommandBuffer) -> SoundResult<()>,
-    {
-        let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe {
-            self.device_context
-                .device
-                .reset_command_buffer(transfer.command_buffer, vk::CommandBufferResetFlags::empty())?;
-            self.device_context
-                .device
-                .begin_command_buffer(transfer.command_buffer, &begin_info)?;
-
-            record(transfer.command_buffer)?;
-
-            self.device_context.device.end_command_buffer(transfer.command_buffer)?;
-
-            self.device_context
-                .device
-                .reset_fences(std::slice::from_ref(&transfer.fence))?;
-
-            // Transfers are synchronous today; callers can safely reuse staging immediately.
-            let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&transfer.command_buffer));
-            self.device_context.device.queue_submit(
-                transfer.queue.handle,
-                std::slice::from_ref(&submit_info),
-                transfer.fence,
-            )?;
-
-            self.device_context
-                .device
-                .wait_for_fences(std::slice::from_ref(&transfer.fence), true, u64::MAX)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for GpuAllocator {
-    fn drop(&mut self) {
-        let transfer = self
-            .transfer
-            .lock()
-            .expect("Transfer lock is poisoned during GpuAllocator drop");
-
-        unsafe {
-            self.device_context.device.free_command_buffers(
-                transfer.queue.command_pool,
-                std::slice::from_ref(&transfer.command_buffer),
-            );
-
-            self.device_context.device.destroy_fence(transfer.fence, None);
-
-            self.device_context.device.queue_wait_idle(transfer.queue.handle).ok();
-            self.device_context
-                .device
-                .destroy_command_pool(transfer.queue.command_pool, None);
-        }
     }
 }
 
