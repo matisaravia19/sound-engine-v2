@@ -10,9 +10,11 @@ mod descriptor;
 mod dispatch;
 mod pipeline;
 mod submit;
+mod sync;
 
 pub use dispatch::{DescriptorWrite, DispatchSpec};
 pub use pipeline::{ComputePipelineSpec, DescriptorBindingSpec, PushConstantSpec};
+pub use sync::{BufferBarrierSpec, MemoryBarrierSpec};
 
 const COMMAND_BUFFER_POOL_SIZE: u32 = 12;
 const DESCRIPTOR_SETS_PER_POOL: u32 = 64;

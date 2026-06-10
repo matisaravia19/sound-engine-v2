@@ -2,7 +2,8 @@ use crate::auralization::{BLOCK_SIZE, FFT_SIZE, ImpulseResponseId, TAIL_SIZE, Vo
 use crate::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
-    ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId, PushConstantSpec,
+    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
+    PushConstantSpec,
 };
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::shader::ShaderStage;
@@ -168,23 +169,28 @@ impl PartitionedConvolver {
         self.upload_signal(&voice.complex_cpu_buffer)?;
 
         // One submission keeps FFT, multiply, and inverse FFT ordered on the GPU.
-        self.gpu
-            .compute()
-            .submit_compute_and_wait(|command_buffer| {
-                self.signal_plan
-                    .append(command_buffer)
-                    .map_err(|e| std::io::Error::other(format!("Signal forward launch failed: {e:?}")))?;
+        self.gpu.compute().submit_compute_and_wait(|command_buffer| {
+            self.signal_plan
+                .append(command_buffer)
+                .map_err(|e| SoundError::external(format!("Signal forward launch failed: {e:?}")))?;
+            self.gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(self.signal_buffer.buffer),
+            );
 
-                self.append_multiply(command_buffer, &voice.impulse_response.buffer, FFT_SIZE)
-                    .map_err(|e| std::io::Error::other(format!("Multiply dispatch failed: {e:?}")))?;
+            self.append_multiply(command_buffer, &voice.impulse_response.buffer, FFT_SIZE)
+                .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
+            self.gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(self.signal_buffer.buffer),
+            );
 
-                self.signal_plan
-                    .append_inverse(command_buffer)
-                    .map_err(|e| std::io::Error::other(format!("Signal inverse launch failed: {e:?}")))?;
+            self.signal_plan
+                .append_inverse(command_buffer)
+                .map_err(|e| SoundError::external(format!("Signal inverse launch failed: {e:?}")))?;
 
-                Ok(())
-            })
-            .map_err(map_gpu_error)?;
+            Ok(())
+        })?;
 
         self.download_convolution_output(&mut voice.complex_cpu_buffer)?;
         pack_complex_as_real(&voice.complex_cpu_buffer, &mut voice.real_cpu_buffer);
