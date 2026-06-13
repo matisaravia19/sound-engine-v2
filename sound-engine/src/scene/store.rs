@@ -237,6 +237,7 @@ fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
+    use glam::{vec3, Mat4};
 
     #[test]
     fn apply_updates_can_remove_object_and_its_mesh_in_one_batch() {
@@ -334,7 +335,7 @@ mod tests {
     fn mesh(id: MeshId) -> MeshAsset {
         MeshAsset {
             id,
-            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vertices: vec![vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)],
             indices: Vec::new(),
             opaque: true,
         }
@@ -345,7 +346,7 @@ mod tests {
             id,
             mesh_id,
             material_id: 1,
-            transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            transform: Mat4::IDENTITY,
             active: true,
         }
     }

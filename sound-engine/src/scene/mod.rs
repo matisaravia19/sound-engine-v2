@@ -7,13 +7,11 @@
 mod gpu;
 mod manager;
 mod store;
-mod transform;
 mod types;
 
 pub use gpu::GpuSceneResources;
 pub use manager::SceneManager;
 pub use store::SceneStore;
-pub use transform::{identity_transform, translation_transform};
 pub use types::{
     Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
     SceneVersion,

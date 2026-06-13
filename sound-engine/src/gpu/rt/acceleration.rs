@@ -1,3 +1,5 @@
+use glam::{Mat4, Vec3};
+
 use super::*;
 use crate::error::{SoundError, SoundResult};
 use std::mem::size_of;
@@ -39,7 +41,7 @@ impl RtContext {
             .vertex_data(vk::DeviceOrHostAddressConstKHR {
                 device_address: vertex_address,
             })
-            .vertex_stride(size_of::<[f32; 3]>() as vk::DeviceSize)
+            .vertex_stride(size_of::<Vec3>() as vk::DeviceSize)
             .max_vertex(spec.mesh.vertex_count.saturating_sub(1));
 
         let primitive_count = if let Some(index_buffer) = &spec.mesh.index_buffer {
@@ -229,7 +231,7 @@ impl RtContext {
 
                 Ok(vk::AccelerationStructureInstanceKHR {
                     transform: vk::TransformMatrixKHR {
-                        matrix: instance.transform,
+                        matrix: matrix_to_tlas_transform(instance.transform),
                     },
                     instance_custom_index_and_mask: vk::Packed24_8::new(instance.custom_index, instance.mask),
                     instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
@@ -252,4 +254,44 @@ fn acceleration_instances_as_bytes(instances: &[vk::AccelerationStructureInstanc
     // - ash represents it as a repr(C)-compatible Vulkan FFI type.
     // - The returned byte slice is only used immediately for copying into mapped memory.
     unsafe { std::slice::from_raw_parts(instances.as_ptr().cast::<u8>(), std::mem::size_of_val(instances)) }
+}
+
+// Converts a 4x4 column-major matrix to the 3x4 row-major format required for TLAS instance transforms.
+fn matrix_to_tlas_transform(matrix: Mat4) -> [f32; 12] {
+    [
+        matrix.col(0).x,
+        matrix.col(1).x,
+        matrix.col(2).x,
+        matrix.col(3).x,
+        matrix.col(0).y,
+        matrix.col(1).y,
+        matrix.col(2).y,
+        matrix.col(3).y,
+        matrix.col(0).z,
+        matrix.col(1).z,
+        matrix.col(2).z,
+        matrix.col(3).z,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    #[test]
+    fn translation_transform_is_converted_correctly() {
+        let matrix = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
+
+        let result = matrix_to_tlas_transform(matrix);
+
+        assert_eq!(
+            result,
+            [
+                1.0, 0.0, 0.0, 1.0, // row 0
+                0.0, 1.0, 0.0, 2.0, // row 1
+                0.0, 0.0, 1.0, 3.0, // row 2
+            ]
+        );
+    }
 }

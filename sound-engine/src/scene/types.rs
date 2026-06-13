@@ -1,3 +1,5 @@
+use glam::{Mat4, Vec3};
+
 /// Stable identifier for a triangle mesh asset.
 pub type MeshId = u32;
 
@@ -15,8 +17,8 @@ pub type SceneVersion = u64;
 pub struct MeshAsset {
     /// Application-provided mesh identifier.
     pub id: MeshId,
-    /// Vertex positions as tightly packed `vec3<f32>` values.
-    pub vertices: Vec<[f32; 3]>,
+    /// Vertex positions in mesh-local space.
+    pub vertices: Vec<Vec3>,
     /// Optional triangle indices; empty means vertices are consumed as triples.
     pub indices: Vec<u32>,
     /// Whether RT traversal may treat the mesh as opaque.
@@ -45,8 +47,8 @@ pub struct SceneObject {
     pub mesh_id: MeshId,
     /// Acoustic material used by this object.
     pub material_id: MaterialId,
-    /// Row-major 3x4 object-to-world transform expected by Vulkan TLAS instances.
-    pub transform: [f32; 12],
+    /// Object-to-world transform used for scene placement and TLAS instances.
+    pub transform: Mat4,
     /// Inactive objects stay in CPU state but are excluded from the TLAS.
     pub active: bool,
 }
@@ -94,8 +96,8 @@ pub enum SceneUpdate {
     SetTransform {
         /// Object to mutate.
         id: ObjectId,
-        /// New row-major 3x4 object-to-world transform.
-        transform: [f32; 12],
+        /// New object-to-world transform.
+        transform: Mat4,
     },
     /// Include or exclude an object from future GPU TLAS builds.
     SetActive {

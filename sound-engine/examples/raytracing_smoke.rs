@@ -1,4 +1,5 @@
 use ash::vk;
+use glam::vec3;
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::gpu::rt::{
@@ -33,7 +34,7 @@ struct SmokeTraceResult {
 }
 
 fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
-    let vertices: [[f32; 3]; 3] = [[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]];
+    let vertices = [vec3(-0.5, -0.5, 0.0), vec3(0.5, -0.5, 0.0), vec3(0.0, 0.5, 0.0)];
     let mesh = gpu.rt().upload_mesh(RtMeshSpec {
         vertices: &vertices,
         indices: None,
@@ -47,7 +48,7 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
     let tlas_id = gpu.rt().build_tlas(TlasBuildSpec {
         instances: &[RtInstanceSpec {
             blas_id,
-            transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            transform: glam::Mat4::IDENTITY,
             custom_index: 0,
             mask: 0xff,
             sbt_record_offset: 0,

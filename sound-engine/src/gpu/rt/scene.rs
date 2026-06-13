@@ -1,10 +1,11 @@
 use super::*;
 use crate::error::{SoundError, SoundResult};
+use glam::{Mat4, Vec3};
 
 /// CPU-side triangle mesh data to upload for BLAS construction.
 pub struct RtMeshSpec<'a> {
-    /// Vertex positions as tightly packed `vec3<f32>` values.
-    pub vertices: &'a [[f32; 3]],
+    /// Vertex positions in mesh-local space.
+    pub vertices: &'a [Vec3],
     /// Optional triangle indices. If omitted, vertices are consumed as triples.
     pub indices: Option<&'a [u32]>,
     /// Whether triangles can be treated as opaque by RT shaders.
@@ -30,8 +31,8 @@ pub struct RtMeshBuffers {
 pub struct RtInstanceSpec {
     /// BLAS to instance into the TLAS.
     pub blas_id: BlasId,
-    /// Row-major 3x4 object-to-world transform expected by Vulkan.
-    pub transform: [f32; 12],
+    /// Object-to-world transform for this TLAS instance.
+    pub transform: Mat4,
     /// 24-bit custom index visible to shaders.
     pub custom_index: u32,
     /// Visibility mask used during ray traversal.

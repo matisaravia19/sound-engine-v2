@@ -1,8 +1,8 @@
+use glam::vec3;
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{
-    identity_transform, translation_transform, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
-    SceneUpdate, SceneUpdates,
+    Material, MeshAsset, SceneDescription, SceneManager, SceneObject, SceneUpdate, SceneUpdates,
 };
 
 fn main() -> SoundResult<()> {
@@ -25,7 +25,7 @@ fn main() -> SoundResult<()> {
     scene.apply_updates(SceneUpdates {
         updates: vec![SceneUpdate::SetTransform {
             id: 2,
-            transform: translation_transform(0.25, 0.0, 0.0),
+            transform: glam::Mat4::from_translation(glam::Vec3::new(0.25, 0.0, 0.0)),
         }],
     })?;
     let synced = scene.sync_gpu_if_needed(&gpu)?;
@@ -55,7 +55,7 @@ fn two_triangle_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: vec![[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]],
+            vertices: vec![vec3(-0.5, -0.5, 0.0), vec3(0.5, -0.5, 0.0), vec3(0.0, 0.5, 0.0)],
             indices: Vec::new(),
             opaque: true,
         }],
@@ -70,14 +70,14 @@ fn two_triangle_scene() -> SceneDescription {
                 id: 1,
                 mesh_id: 1,
                 material_id: 1,
-                transform: identity_transform(),
+                transform: glam::Mat4::IDENTITY,
                 active: true,
             },
             SceneObject {
                 id: 2,
                 mesh_id: 1,
                 material_id: 1,
-                transform: translation_transform(1.0, 0.0, 0.0),
+                transform: glam::Mat4::from_translation(glam::Vec3::new(1.0, 0.0, 0.0)),
                 active: true,
             },
         ],

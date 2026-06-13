@@ -1,7 +1,8 @@
+use glam::vec3;
 use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{identity_transform, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
 
 fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
@@ -23,8 +24,8 @@ fn main() -> SoundResult<()> {
         &mut scene,
         AcousticQuery {
             query_id: 1,
-            source_position: [0.0, 0.0, 0.0],
-            listener_position: [1.0, 0.0, 0.0],
+            source_position: vec3(0.0, 0.0, 0.0),
+            listener_position: vec3(1.0, 0.0, 0.0),
             gain: 1.0,
         },
     )?;
@@ -54,7 +55,7 @@ fn smoke_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: vec![[-0.5, -0.5, -1.0], [0.5, -0.5, -1.0], [0.0, 0.5, -1.0]],
+            vertices: vec![vec3(-0.5, -0.5, -1.0), vec3(0.5, -0.5, -1.0), vec3(0.0, 0.5, -1.0)],
             indices: Vec::new(),
             opaque: true,
         }],
@@ -68,7 +69,7 @@ fn smoke_scene() -> SceneDescription {
             id: 1,
             mesh_id: 1,
             material_id: 1,
-            transform: identity_transform(),
+            transform: glam::Mat4::IDENTITY,
             active: true,
         }],
     }

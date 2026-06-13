@@ -9,6 +9,7 @@ use crate::gpu::rt::{
 use crate::gpu::shader::ShaderStage;
 use crate::scene::SceneManager;
 use ash::vk;
+use glam::Vec3;
 use std::mem::size_of;
 use std::path::PathBuf;
 
@@ -33,9 +34,9 @@ pub struct AcousticQuery {
     /// Application-defined query identifier copied into the returned IR snapshot.
     pub query_id: u32,
     /// Source position in world meters.
-    pub source_position: [f32; 3],
+    pub source_position: Vec3,
     /// Listener position in world meters.
-    pub listener_position: [f32; 3],
+    pub listener_position: Vec3,
     /// Linear source gain applied before distance attenuation.
     pub gain: f32,
 }
@@ -135,18 +136,11 @@ impl AcousticPipeline {
         let _ray_budget = self.cfg.rays_per_query;
         let _max_bounces = self.cfg.max_bounces;
         let visibility_constants = VisibilityPushConstants {
-            source: [
-                query.source_position[0],
-                query.source_position[1],
-                query.source_position[2],
-                query.gain,
-            ],
-            listener: [
-                query.listener_position[0],
-                query.listener_position[1],
-                query.listener_position[2],
-                SPEED_OF_SOUND_METERS_PER_SECOND,
-            ],
+            source: query.source_position.extend(query.gain).to_array(),
+            listener: query
+                .listener_position
+                .extend(SPEED_OF_SOUND_METERS_PER_SECOND)
+                .to_array(),
         };
 
         gpu.compute().submit_compute_and_wait(|command_buffer| {
@@ -187,15 +181,7 @@ impl AcousticPipeline {
         }
         Ok(snapshots)
     }
-}
 
-fn shader_path(file: &str) -> PathBuf {
-    PathBuf::from(SHADER_DIR).join(file)
-}
-
-const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
-
-impl AcousticPipeline {
     fn download_contributions(&self, gpu: &VkBackend) -> SoundResult<Vec<ContributionRecord>> {
         let mut raw = vec![0_u8; contribution_buffer_size()];
         gpu.memory()
@@ -210,6 +196,12 @@ impl AcousticPipeline {
         Ok(records[..count].to_vec())
     }
 }
+
+fn shader_path(file: &str) -> PathBuf {
+    PathBuf::from(SHADER_DIR).join(file)
+}
+
+const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 
 fn contribution_buffer_size() -> usize {
     size_of::<ContributionHeader>() + MAX_CONTRIBUTIONS_PER_QUERY * size_of::<ContributionRecord>()
