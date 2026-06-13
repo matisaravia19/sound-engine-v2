@@ -5,6 +5,7 @@ layout(push_constant) uniform PushConstants {
     vec4 source;
     vec4 listener;
     vec4 listener_half_extent;
+    uvec4 ray_config;
 } pc;
 
 void main() {

@@ -63,6 +63,7 @@ struct VisibilityPushConstants {
     source: [f32; 4],
     listener: [f32; 4],
     listener_half_extent: [f32; 4],
+    ray_config: [u32; 4],
 }
 
 unsafe impl bytemuck::Zeroable for VisibilityPushConstants {}
@@ -120,9 +121,11 @@ impl AcousticPipeline {
             descriptor_bindings: vec![
                 RtDescriptorBindingSpec::acceleration_structure(0),
                 RtDescriptorBindingSpec::storage_buffer(1),
+                RtDescriptorBindingSpec::storage_buffer(2),
+                RtDescriptorBindingSpec::storage_buffer(3),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
-            max_ray_recursion_depth: 1,
+            max_ray_recursion_depth: cfg.max_bounces.saturating_add(1).max(1),
         })?;
         let contribution_buffer = gpu.memory().create_storage_buffer(contribution_buffer_size() as u64)?;
         let listener_aabbs = create_listener_aabb(gpu, cfg.listener_half_extent)?;
@@ -164,8 +167,10 @@ impl AcousticPipeline {
                 .extend(SPEED_OF_SOUND_METERS_PER_SECOND)
                 .to_array(),
             listener_half_extent: self.cfg.listener_half_extent.extend(0.0).to_array(),
+            ray_config: [self.cfg.rays_per_query.max(1), self.cfg.max_bounces, 0, 0],
         };
 
+        gpu.memory().clear_buffer(&self.contribution_buffer)?;
         gpu.compute().submit_compute_and_wait(|command_buffer| {
             gpu.rt().record_trace(
                 command_buffer,
@@ -174,11 +179,13 @@ impl AcousticPipeline {
                     descriptor_writes: vec![
                         RtDescriptorWrite::acceleration_structure(0, tlas_id),
                         RtDescriptorWrite::storage_buffer(1, self.contribution_buffer.buffer),
+                        RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
+                        RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
                     ],
                     push_constants: bytemuck::bytes_of(&visibility_constants).to_vec(),
                     push_constant_offset: 0,
-                    dimensions: [1, 1, 1],
-                    barrier_after_trace: false,
+                    dimensions: [self.cfg.rays_per_query.max(1), 1, 1],
+                    barrier_after_trace: true,
                 },
             )?;
 

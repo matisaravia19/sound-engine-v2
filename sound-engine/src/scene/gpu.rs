@@ -1,5 +1,5 @@
 use super::store::SceneStore;
-use super::types::{MeshId, SceneVersion};
+use super::types::{MaterialId, MeshId, SceneObject, SceneVersion};
 use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
@@ -15,8 +15,8 @@ use std::collections::HashMap;
 pub struct GpuSceneResources {
     version: SceneVersion,
     uploaded_meshes: HashMap<MeshId, UploadedMesh>,
-    material_buffer: Option<BufferHandle>,
-    object_buffer: Option<BufferHandle>,
+    material_buffer: BufferHandle,
+    object_buffer: BufferHandle,
     tlas_id: Option<TlasId>,
     instances: Vec<RtInstanceSpec>,
     instance_count: u32,
@@ -32,19 +32,18 @@ struct UploadedMesh {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuMaterial {
-    absorption: [f32; 4],
-    scattering: f32,
-    transmission: f32,
-    _pad: [f32; 2],
+    absorption_scattering: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuObject {
-    object_id: u32,
-    material_id: u32,
-    mesh_id: u32,
-    active: u32,
+    material_index: u32,
+    indexed: u32,
+    _pad: [u32; 2],
+    vertex_address: u64,
+    index_address: u64,
+    object_to_world: [[f32; 4]; 4],
 }
 
 unsafe impl bytemuck::Zeroable for GpuMaterial {}
@@ -82,17 +81,20 @@ impl GpuSceneResources {
         }
         uploaded_meshes.retain(|mesh_id, _| store.meshes.contains_key(mesh_id));
 
-        let instances = store
-            .objects()
-            .filter(|object| object.active)
-            .map(|object| {
+        let mut active_objects = store.objects().filter(|object| object.active).collect::<Vec<_>>();
+        active_objects.sort_by_key(|object| object.id);
+
+        let instances = active_objects
+            .iter()
+            .enumerate()
+            .map(|(object_index, object)| {
                 let uploaded = uploaded_meshes
                     .get(&object.mesh_id)
                     .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id)))?;
                 Ok(RtInstanceSpec {
                     blas_id: uploaded.blas_id,
                     transform: object.transform,
-                    custom_index: object.id,
+                    custom_index: object_index as u32,
                     mask: 0xff,
                     sbt_record_offset: 0,
                 })
@@ -109,14 +111,13 @@ impl GpuSceneResources {
             })?)
         };
 
-        let material_buffer = upload_materials(gpu, store)?;
-        let object_buffer = upload_objects(gpu, store)?;
+        let scene_buffers = upload_scene_buffers(gpu, store, &uploaded_meshes, &active_objects)?;
 
         Ok(Self {
             version: store.version(),
             uploaded_meshes,
-            material_buffer,
-            object_buffer,
+            material_buffer: scene_buffers.material_buffer,
+            object_buffer: scene_buffers.object_buffer,
             tlas_id,
             instance_count: instances.len() as u32,
             instances,
@@ -143,67 +144,120 @@ impl GpuSceneResources {
         &self.instances
     }
 
-    /// Returns the compact GPU material buffer when the scene has materials.
-    pub fn material_buffer(&self) -> Option<&BufferHandle> {
-        self.material_buffer.as_ref()
+    /// Returns compact material data used by GPU scene shaders.
+    pub fn material_buffer(&self) -> &BufferHandle {
+        &self.material_buffer
     }
 
-    /// Returns the compact GPU object metadata buffer when the scene has objects.
-    pub fn object_buffer(&self) -> Option<&BufferHandle> {
-        self.object_buffer.as_ref()
+    /// Returns compact object data used by GPU scene shaders.
+    pub fn object_buffer(&self) -> &BufferHandle {
+        &self.object_buffer
     }
 }
 
-fn upload_materials(gpu: &VkBackend, store: &SceneStore) -> SoundResult<Option<BufferHandle>> {
-    let materials = store
-        .materials()
-        .map(|material| {
-            let mut absorption = [0.0; 4];
-            for (dst, src) in absorption.iter_mut().zip(material.absorption_bands.iter().copied()) {
-                *dst = src;
-            }
-            GpuMaterial {
-                absorption,
-                scattering: material.scattering,
-                transmission: material
+struct SceneGpuBuffers {
+    material_buffer: BufferHandle,
+    object_buffer: BufferHandle,
+}
+
+fn upload_scene_buffers(
+    gpu: &VkBackend,
+    store: &SceneStore,
+    uploaded_meshes: &HashMap<MeshId, UploadedMesh>,
+    active_objects: &[&SceneObject],
+) -> SoundResult<SceneGpuBuffers> {
+    let (materials, material_indices) = gpu_materials(store);
+    let mut objects = Vec::with_capacity(active_objects.len().max(1));
+
+    for object in active_objects {
+        let mesh = store
+            .meshes
+            .get(&object.mesh_id)
+            .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not available", object.mesh_id)))?;
+        let uploaded = uploaded_meshes
+            .get(&object.mesh_id)
+            .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id)))?;
+        let material_index = *material_indices
+            .get(&object.material_id)
+            .ok_or_else(|| SoundError::not_found(format!("Material {} is not available", object.material_id)))?;
+
+        objects.push(GpuObject {
+            material_index,
+            indexed: u32::from(!mesh.indices.is_empty()),
+            _pad: [0; 2],
+            vertex_address: gpu.memory().buffer_device_address(&uploaded._buffers.vertex_buffer),
+            index_address: uploaded
+                ._buffers
+                .index_buffer
+                .as_ref()
+                .map_or(0, |buffer| gpu.memory().buffer_device_address(buffer)),
+            object_to_world: matrix_to_columns(object.transform),
+        });
+    }
+
+    if objects.is_empty() {
+        objects.push(GpuObject {
+            material_index: 0,
+            indexed: 0,
+            _pad: [0; 2],
+            vertex_address: 0,
+            index_address: 0,
+            object_to_world: matrix_to_columns(glam::Mat4::IDENTITY),
+        });
+    }
+
+    let material_buffer = upload_gpu_slice(gpu, &materials)?;
+    let object_buffer = upload_gpu_slice(gpu, &objects)?;
+    Ok(SceneGpuBuffers {
+        material_buffer,
+        object_buffer,
+    })
+}
+
+fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u32>) {
+    let mut source_materials = store.materials().collect::<Vec<_>>();
+    source_materials.sort_by_key(|material| material.id);
+
+    let mut material_indices = HashMap::new();
+    let mut materials = Vec::with_capacity(source_materials.len().max(1));
+    for material in source_materials {
+        let material_index = materials.len() as u32;
+        material_indices.insert(material.id, material_index);
+        materials.push(GpuMaterial {
+            absorption_scattering: [
+                material
+                    .absorption_bands
+                    .first()
+                    .copied()
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0),
+                material.scattering,
+                material
                     .transmission
                     .as_ref()
                     .and_then(|bands| bands.first().copied())
                     .unwrap_or(0.0),
-                _pad: [0.0; 2],
-            }
-        })
-        .collect::<Vec<_>>();
-
+                0.0,
+            ],
+        });
+    }
     if materials.is_empty() {
-        return Ok(None);
+        materials.push(GpuMaterial {
+            absorption_scattering: [1.0, 0.0, 0.0, 0.0],
+        });
     }
 
-    let buffer = gpu
-        .memory()
-        .create_storage_buffer(std::mem::size_of_val(materials.as_slice()) as u64)?;
-    gpu.memory().upload_typed(&buffer, &materials)?;
-    Ok(Some(buffer))
+    (materials, material_indices)
 }
 
-fn upload_objects(gpu: &VkBackend, store: &SceneStore) -> SoundResult<Option<BufferHandle>> {
-    let objects = store
-        .objects()
-        .map(|object| GpuObject {
-            object_id: object.id,
-            material_id: object.material_id,
-            mesh_id: object.mesh_id,
-            active: u32::from(object.active),
-        })
-        .collect::<Vec<_>>();
+fn matrix_to_columns(matrix: glam::Mat4) -> [[f32; 4]; 4] {
+    matrix.to_cols_array_2d()
+}
 
-    if objects.is_empty() {
-        return Ok(None);
-    }
-
+fn upload_gpu_slice<T: bytemuck::Pod>(gpu: &VkBackend, values: &[T]) -> SoundResult<BufferHandle> {
     let buffer = gpu
         .memory()
-        .create_storage_buffer(std::mem::size_of_val(objects.as_slice()) as u64)?;
-    gpu.memory().upload_typed(&buffer, &objects)?;
-    Ok(Some(buffer))
+        .create_storage_buffer(std::mem::size_of_val(values) as u64)?;
+    gpu.memory().upload_typed(&buffer, values)?;
+    Ok(buffer)
 }

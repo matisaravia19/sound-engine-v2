@@ -3,54 +3,36 @@
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-struct Contribution {
-    vec4 timing_gain;
-    vec4 direction_order;
+struct AcousticPayload {
+    vec4 throughput_distance;
+    uvec4 control;
 };
 
-layout(std430, set = 0, binding = 1) buffer ContributionBuffer {
-    uvec4 header;
-    Contribution records[];
-} contributions;
-
-layout(location = 0) rayPayloadEXT uint occluded;
+layout(location = 0) rayPayloadEXT AcousticPayload payload;
 
 layout(push_constant) uniform PushConstants {
     vec4 source;
     vec4 listener;
     vec4 listener_half_extent;
+    uvec4 ray_config;
 } pc;
 
-void recordContribution(float distance, float source_gain, float speed_of_sound, vec3 incoming_direction) {
-    contributions.header.x = 1;
-    contributions.records[0].timing_gain = vec4(
-        distance / max(speed_of_sound, 0.001),
-        source_gain / max(distance, 1.0),
-        0.0,
-        0.0
-    );
-    contributions.records[0].direction_order = vec4(incoming_direction, 0.0);
+vec3 fibonacciSphereDirection(uint ray_index, uint ray_count) {
+    float i = float(ray_index);
+    float n = float(max(ray_count, 1));
+    float z = 1.0 - 2.0 * ((i + 0.5) / n);
+    float radius = sqrt(max(0.0, 1.0 - z * z));
+    float phi = i * 2.39996322972865332;
+    return vec3(cos(phi) * radius, sin(phi) * radius, z);
 }
 
 void main() {
     vec3 origin = pc.source.xyz;
-    vec3 target = pc.listener.xyz;
-    vec3 listener_half_extent = pc.listener_half_extent.xyz;
-    float source_gain = pc.source.w;
-    float speed_of_sound = pc.listener.w;
-    vec3 delta = target - origin;
-    float center_distance = length(delta);
-    contributions.header.x = 0;
+    uint ray_count = max(pc.ray_config.x, 1);
+    vec3 ray_direction = fibonacciSphereDirection(gl_LaunchIDEXT.x, ray_count);
 
-    if (center_distance <= 0.001) {
-        recordContribution(0.0, source_gain, speed_of_sound, vec3(0.0));
-        return;
-    }
-
-    vec3 ray_direction = normalize(delta);
-    float listener_extent_radius = length(listener_half_extent);
-
-    occluded = 0;
+    payload.throughput_distance = vec4(pc.source.w / float(ray_count), 0.0, 0.0, 0.0);
+    payload.control = uvec4(0, 0, 0, 0);
     traceRayEXT(
         tlas,
         gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
@@ -61,7 +43,7 @@ void main() {
         origin,
         0.001,
         ray_direction,
-        center_distance + listener_extent_radius + 0.001,
+        10000.0,
         0
     );
 }

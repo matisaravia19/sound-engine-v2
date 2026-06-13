@@ -2,7 +2,7 @@ use crate::error::{SoundError, SoundResult};
 use crate::scene::SceneVersion;
 
 /// Maximum number of path contributions downloaded for one acoustic query.
-pub const MAX_CONTRIBUTIONS_PER_QUERY: usize = 64;
+pub const MAX_CONTRIBUTIONS_PER_QUERY: usize = 4096;
 
 /// Configuration for CPU mono IR construction.
 #[derive(Debug, Clone, Copy)]
