@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// tears down child contexts before the device is destroyed.
 pub struct VkBackend {
     entry: Entry,
-    memory: GpuAllocator,
+    memory: Arc<GpuAllocator>,
     shaders: Arc<ShaderLibrary>,
     compute: Arc<ComputeContext>,
     rt: RtContext,
@@ -98,12 +98,14 @@ impl VkBackend {
             device_creation_result.compute_queue,
         )?);
 
+        let memory = Arc::new(GpuAllocator::new(device.clone(), compute.clone())?);
+
         Ok(Self {
             entry,
-            memory: GpuAllocator::new(device.clone(), compute.clone())?,
+            memory: memory.clone(),
             shaders: shaders.clone(),
             compute: compute.clone(),
-            rt: RtContext::new(device.clone(), shaders.clone(), compute),
+            rt: RtContext::new(device.clone(), memory, shaders.clone(), compute),
             device,
         })
     }
@@ -120,12 +122,7 @@ impl VkBackend {
 
     /// Returns the GPU allocator and synchronous transfer helper.
     pub fn memory(&self) -> &GpuAllocator {
-        &self.memory
-    }
-
-    /// Returns a mutable reference to the GPU allocator.
-    pub fn memory_mut(&mut self) -> &mut GpuAllocator {
-        &mut self.memory
+        self.memory.as_ref()
     }
 
     /// Returns the shader library used to compile and own shader modules.

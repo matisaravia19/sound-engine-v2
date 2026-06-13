@@ -1,6 +1,5 @@
 use super::*;
 use crate::error::{SoundError, SoundResult};
-use crate::gpu::memory::GpuAllocator;
 
 /// CPU-side triangle mesh data to upload for BLAS construction.
 pub struct RtMeshSpec<'a> {
@@ -45,29 +44,29 @@ impl RtContext {
     /// Uploads triangle mesh data into device-addressable GPU buffers.
     ///
     /// The returned buffers are suitable as BLAS build inputs.
-    pub fn upload_mesh(&self, memory: &GpuAllocator, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
+    pub fn upload_mesh(&self, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
         if spec.vertices.is_empty() {
             return Err(SoundError::invalid_argument("RT mesh must contain at least one vertex"));
         }
 
-        let vertex_buffer = memory.create_device_address_buffer(
+        let vertex_buffer = self.memory.create_device_address_buffer(
             std::mem::size_of_val(spec.vertices) as vk::DeviceSize,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::STORAGE_BUFFER,
         )?;
-        memory.upload_typed(&vertex_buffer, spec.vertices)?;
+        self.memory.upload_typed(&vertex_buffer, spec.vertices)?;
 
         let index_buffer = if let Some(indices) = spec.indices {
             if indices.is_empty() {
                 return Err(SoundError::invalid_argument("RT mesh index slice must not be empty"));
             }
 
-            let buffer = memory.create_device_address_buffer(
+            let buffer = self.memory.create_device_address_buffer(
                 std::mem::size_of_val(indices) as vk::DeviceSize,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
             )?;
-            memory.upload_typed(&buffer, indices)?;
+            self.memory.upload_typed(&buffer, indices)?;
             Some(buffer)
         } else {
             None

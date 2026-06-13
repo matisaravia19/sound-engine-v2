@@ -1,8 +1,7 @@
 use super::descriptor::aggregate_pool_sizes;
 use super::*;
 use crate::error::{SoundError, SoundResult};
-use crate::gpu::memory::GpuAllocator;
-use crate::gpu::shader::{ShaderId, ShaderStage, SHADER_ENTRY_POINT};
+use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
 use std::ffi::CString;
 
 /// Stable handle to a ray tracing pipeline stored in `RtContext`.
@@ -117,7 +116,7 @@ impl RtPushConstantSpec {
 
 impl RtContext {
     /// Creates a ray tracing pipeline and its shader binding table.
-    pub fn create_pipeline(&self, memory: &GpuAllocator, spec: RtPipelineSpec) -> SoundResult<RtPipelineId> {
+    pub fn create_pipeline(&self, spec: RtPipelineSpec) -> SoundResult<RtPipelineId> {
         if spec.shaders.is_empty() {
             return Err(SoundError::invalid_argument("RT pipeline requires at least one shader"));
         }
@@ -172,7 +171,7 @@ impl RtContext {
 
         // The SBT is derived from created pipeline group handles.
         let (sbt, raygen_region, miss_region, hit_region, callable_region) =
-            build_sbt(memory, self.device_context.clone(), handle, &spec.groups)?;
+            self.build_sbt(self.device_context.clone(), handle, &spec.groups)?;
 
         let mut pipelines = self
             .pipelines
@@ -212,61 +211,62 @@ impl RtContext {
             .module(self.shaders.shader_module(spec.shader_id)?)
             .name(entry.as_c_str()))
     }
-}
 
-fn build_sbt(
-    memory: &GpuAllocator,
-    device: Arc<VkDeviceContext>,
-    pipeline: vk::Pipeline,
-    groups: &[RtShaderGroupSpec],
-) -> SoundResult<(
-    BufferHandle,
-    vk::StridedDeviceAddressRegionKHR,
-    vk::StridedDeviceAddressRegionKHR,
-    vk::StridedDeviceAddressRegionKHR,
-    vk::StridedDeviceAddressRegionKHR,
-)> {
-    let props = &device.rt_properties.ray_tracing_pipeline;
-    let handle_size = props.shader_group_handle_size as usize;
-    let handle_alignment = props.shader_group_handle_alignment as usize;
-    let base_alignment = props.shader_group_base_alignment as usize;
-    let record_stride = align_up(handle_size, handle_alignment);
-    let group_count = groups.len() as u32;
-    let region_size = align_up(record_stride, base_alignment);
-    let total_size = region_size * groups.len();
+    fn build_sbt(
+        &self,
+        device: Arc<VkDeviceContext>,
+        pipeline: vk::Pipeline,
+        groups: &[RtShaderGroupSpec],
+    ) -> SoundResult<(
+        BufferHandle,
+        vk::StridedDeviceAddressRegionKHR,
+        vk::StridedDeviceAddressRegionKHR,
+        vk::StridedDeviceAddressRegionKHR,
+        vk::StridedDeviceAddressRegionKHR,
+    )> {
+        let props = &device.rt_properties.ray_tracing_pipeline;
+        let handle_size = props.shader_group_handle_size as usize;
+        let handle_alignment = props.shader_group_handle_alignment as usize;
+        let base_alignment = props.shader_group_base_alignment as usize;
+        let record_stride = align_up(handle_size, handle_alignment);
+        let group_count = groups.len() as u32;
+        let region_size = align_up(record_stride, base_alignment);
+        let total_size = region_size * groups.len();
 
-    let handles = unsafe {
-        device.ray_tracing_pipeline.get_ray_tracing_shader_group_handles(
-            pipeline,
-            0,
-            group_count,
-            handle_size * groups.len(),
-        )?
-    };
+        let handles = unsafe {
+            device.ray_tracing_pipeline.get_ray_tracing_shader_group_handles(
+                pipeline,
+                0,
+                group_count,
+                handle_size * groups.len(),
+            )?
+        };
 
-    // Each group handle is copied into a base-aligned record slot.
-    let mut sbt_bytes = vec![0_u8; total_size];
-    for group_idx in 0..groups.len() {
-        let src_offset = group_idx * handle_size;
-        let dst_offset = group_idx * region_size;
-        sbt_bytes[dst_offset..dst_offset + handle_size].copy_from_slice(&handles[src_offset..src_offset + handle_size]);
+        // Each group handle is copied into a base-aligned record slot.
+        let mut sbt_bytes = vec![0_u8; total_size];
+        for group_idx in 0..groups.len() {
+            let src_offset = group_idx * handle_size;
+            let dst_offset = group_idx * region_size;
+            sbt_bytes[dst_offset..dst_offset + handle_size]
+                .copy_from_slice(&handles[src_offset..src_offset + handle_size]);
+        }
+
+        // Host-visible SBT is fine for now and avoids a staging copy.
+        let sbt = self.memory.create_host_device_address_buffer(
+            sbt_bytes.len() as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
+        )?;
+        self.memory.write_mapped_bytes(&sbt, &sbt_bytes)?;
+        let base_address = self.memory.buffer_device_address(&sbt);
+
+        Ok((
+            sbt,
+            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Raygen),
+            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Miss),
+            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Hit),
+            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Callable),
+        ))
     }
-
-    // Host-visible SBT is fine for now and avoids a staging copy.
-    let sbt = memory.create_host_device_address_buffer(
-        sbt_bytes.len() as vk::DeviceSize,
-        vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
-    )?;
-    memory.write_mapped_bytes(&sbt, &sbt_bytes)?;
-    let base_address = memory.buffer_device_address(&sbt);
-
-    Ok((
-        sbt,
-        region_for(groups, base_address, record_stride, region_size, RtGroupKind::Raygen),
-        region_for(groups, base_address, record_stride, region_size, RtGroupKind::Miss),
-        region_for(groups, base_address, record_stride, region_size, RtGroupKind::Hit),
-        region_for(groups, base_address, record_stride, region_size, RtGroupKind::Callable),
-    ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

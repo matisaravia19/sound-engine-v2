@@ -1,6 +1,5 @@
 use super::*;
 use crate::error::{SoundError, SoundResult};
-use crate::gpu::memory::GpuAllocator;
 use std::mem::size_of;
 
 /// Stable handle to a bottom-level acceleration structure.
@@ -32,9 +31,9 @@ impl RtContext {
     ///
     /// The build is submitted to the compute queue and completed before the new
     /// `BlasId` is returned.
-    pub fn build_blas(&self, memory: &GpuAllocator, spec: BlasBuildSpec<'_>) -> SoundResult<BlasId> {
+    pub fn build_blas(&self, spec: BlasBuildSpec<'_>) -> SoundResult<BlasId> {
         // Geometry build inputs reference buffers by device address, not descriptors.
-        let vertex_address = memory.buffer_device_address(&spec.mesh.vertex_buffer);
+        let vertex_address = self.memory.buffer_device_address(&spec.mesh.vertex_buffer);
         let mut triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vk::DeviceOrHostAddressConstKHR {
@@ -47,7 +46,7 @@ impl RtContext {
             triangles = triangles
                 .index_type(vk::IndexType::UINT32)
                 .index_data(vk::DeviceOrHostAddressConstKHR {
-                    device_address: memory.buffer_device_address(index_buffer),
+                    device_address: self.memory.buffer_device_address(index_buffer),
                 });
             spec.mesh.index_count / 3
         } else {
@@ -71,7 +70,6 @@ impl RtContext {
 
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
         let handle = self.build_acceleration_structure(
-            memory,
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             spec.flags,
             std::slice::from_ref(&geometry),
@@ -92,7 +90,7 @@ impl RtContext {
     ///
     /// The instance buffer is uploaded as host-visible device-address data and
     /// the build completes before the returned `TlasId` can be used for tracing.
-    pub fn build_tlas(&self, memory: &GpuAllocator, spec: TlasBuildSpec<'_>) -> SoundResult<TlasId> {
+    pub fn build_tlas(&self, spec: TlasBuildSpec<'_>) -> SoundResult<TlasId> {
         if spec.instances.is_empty() {
             return Err(SoundError::invalid_argument(
                 "RT TLAS must contain at least one instance",
@@ -100,43 +98,16 @@ impl RtContext {
         }
 
         // Resolve BLAS IDs while holding the lock, then drop it before GPU work.
-        let instances = {
-            let blas = self
-                .blas
-                .lock()
-                .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
-
-            spec.instances
-                .iter()
-                .map(|instance| {
-                    let blas = blas
-                        .get(&instance.blas_id)
-                        .ok_or_else(|| SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0)))?;
-
-                    Ok(vk::AccelerationStructureInstanceKHR {
-                        transform: vk::TransformMatrixKHR {
-                            matrix: instance.transform,
-                        },
-                        instance_custom_index_and_mask: vk::Packed24_8::new(instance.custom_index, instance.mask),
-                        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                            instance.sbt_record_offset,
-                            0,
-                        ),
-                        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                            device_handle: blas.device_address,
-                        },
-                    })
-                })
-                .collect::<SoundResult<Vec<_>>>()?
-        };
+        let instances = self.resolve_instances(spec.instances)?;
 
         // Vulkan consumes TLAS instances through a device address.
-        let instance_buffer = memory.create_host_device_address_buffer(
+        let instance_buffer = self.memory.create_host_device_address_buffer(
             std::mem::size_of_val(instances.as_slice()) as vk::DeviceSize,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         )?;
-        memory.write_mapped_bytes(&instance_buffer, bytes_of_slice(instances.as_slice()))?;
-        let instance_address = memory.buffer_device_address(&instance_buffer);
+        self.memory
+            .write_mapped_bytes(&instance_buffer, acceleration_instances_as_bytes(instances.as_slice()))?;
+        let instance_address = self.memory.buffer_device_address(&instance_buffer);
 
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::default()
             .array_of_pointers(false)
@@ -152,7 +123,6 @@ impl RtContext {
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
 
         let handle = self.build_acceleration_structure(
-            memory,
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
             spec.flags,
             std::slice::from_ref(&geometry),
@@ -171,7 +141,6 @@ impl RtContext {
 
     fn build_acceleration_structure(
         &self,
-        memory: &GpuAllocator,
         ty: vk::AccelerationStructureTypeKHR,
         flags: vk::BuildAccelerationStructureFlagsKHR,
         geometries: &[vk::AccelerationStructureGeometryKHR<'_>],
@@ -198,7 +167,7 @@ impl RtContext {
         }
 
         // The AS object is backed by a buffer owned by the returned handle.
-        let storage = memory.create_device_address_buffer(
+        let storage = self.memory.create_device_address_buffer(
             size_info.acceleration_structure_size,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
         )?;
@@ -213,12 +182,13 @@ impl RtContext {
         };
 
         // Scratch is temporary; the synchronous build below finishes before it drops.
-        let scratch =
-            memory.create_device_address_buffer(size_info.build_scratch_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
+        let scratch = self
+            .memory
+            .create_device_address_buffer(size_info.build_scratch_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let build_info = build_info
             .dst_acceleration_structure(handle)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: memory.buffer_device_address(&scratch),
+                device_address: self.memory.buffer_device_address(&scratch),
             });
 
         self.compute.submit_compute_and_wait(|command_buffer| unsafe {
@@ -243,8 +213,43 @@ impl RtContext {
             device_context: self.device_context.clone(),
         })
     }
+
+    fn resolve_instances(&self, specs: &[RtInstanceSpec]) -> SoundResult<Vec<vk::AccelerationStructureInstanceKHR>> {
+        let blas = self
+            .blas
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
+
+        specs
+            .iter()
+            .map(|instance| {
+                let blas_handle = blas
+                    .get(&instance.blas_id)
+                    .ok_or_else(|| SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0)))?;
+
+                Ok(vk::AccelerationStructureInstanceKHR {
+                    transform: vk::TransformMatrixKHR {
+                        matrix: instance.transform,
+                    },
+                    instance_custom_index_and_mask: vk::Packed24_8::new(instance.custom_index, instance.mask),
+                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                        instance.sbt_record_offset,
+                        0,
+                    ),
+                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                        device_handle: blas_handle.device_address,
+                    },
+                })
+            })
+            .collect::<SoundResult<Vec<_>>>()
+    }
 }
 
-fn bytes_of_slice<T>(slice: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+fn acceleration_instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
+    // SAFETY:
+    // - Vulkan defines VkAccelerationStructureInstanceKHR as the exact byte layout
+    //   consumed for TLAS instance builds.
+    // - ash represents it as a repr(C)-compatible Vulkan FFI type.
+    // - The returned byte slice is only used immediately for copying into mapped memory.
+    unsafe { std::slice::from_raw_parts(instances.as_ptr().cast::<u8>(), std::mem::size_of_val(instances)) }
 }

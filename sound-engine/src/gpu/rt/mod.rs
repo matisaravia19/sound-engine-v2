@@ -1,6 +1,6 @@
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::ComputeContext;
-use crate::gpu::memory::BufferHandle;
+use crate::gpu::memory::{BufferHandle, GpuAllocator};
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use std::collections::HashMap;
@@ -27,6 +27,7 @@ const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 /// can build scenes and record traces without managing raw Vulkan lifetimes.
 pub struct RtContext {
     device_context: Arc<VkDeviceContext>,
+    memory: Arc<GpuAllocator>,
     compute: Arc<ComputeContext>,
     shaders: Arc<ShaderLibrary>,
     blas: Mutex<HashMap<BlasId, AccelerationStructureHandle>>,
@@ -56,13 +57,16 @@ struct RayTracingPipeline {
 }
 
 impl RtContext {
+    /// Creates an RT context sharing backend-owned device, memory, shader, and queue state.
     pub(super) fn new(
         device_context: Arc<VkDeviceContext>,
+        memory: Arc<GpuAllocator>,
         shaders: Arc<ShaderLibrary>,
         compute: Arc<ComputeContext>,
     ) -> Self {
         Self {
             device_context,
+            memory,
             compute,
             shaders,
             blas: Mutex::new(HashMap::new()),

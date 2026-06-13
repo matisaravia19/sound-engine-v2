@@ -1,7 +1,6 @@
 use crate::acoustics::{ContributionRecord, IrBuilder, IrConfig, IrSnapshot, MAX_CONTRIBUTIONS_PER_QUERY};
 use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
-use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{
     RtDescriptorBindingSpec, RtDescriptorWrite, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
@@ -85,31 +84,28 @@ impl AcousticPipeline {
         let closest_hit = gpu
             .shaders()
             .load_glsl_file(ShaderStage::RayClosestHit, shader_path("direct_visibility.rchit.glsl"))?;
-        let contribution_pipeline = gpu.rt().create_pipeline(
-            gpu.memory(),
-            RtPipelineSpec {
-                shaders: vec![
-                    RtShaderStageSpec::new(raygen),
-                    RtShaderStageSpec::new(miss),
-                    RtShaderStageSpec::new(closest_hit),
-                ],
-                groups: vec![
-                    RtShaderGroupSpec::Raygen { shader: 0 },
-                    RtShaderGroupSpec::Miss { shader: 1 },
-                    RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
-                ],
-                descriptor_bindings: vec![
-                    RtDescriptorBindingSpec::acceleration_structure(0),
-                    RtDescriptorBindingSpec::StorageBuffer {
-                        binding: 1,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-                    },
-                ],
-                push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
-                max_ray_recursion_depth: 1,
-            },
-        )?;
+        let contribution_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
+            shaders: vec![
+                RtShaderStageSpec::new(raygen),
+                RtShaderStageSpec::new(miss),
+                RtShaderStageSpec::new(closest_hit),
+            ],
+            groups: vec![
+                RtShaderGroupSpec::Raygen { shader: 0 },
+                RtShaderGroupSpec::Miss { shader: 1 },
+                RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
+            ],
+            descriptor_bindings: vec![
+                RtDescriptorBindingSpec::acceleration_structure(0),
+                RtDescriptorBindingSpec::StorageBuffer {
+                    binding: 1,
+                    descriptor_count: 1,
+                    stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+                },
+            ],
+            push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
+            max_ray_recursion_depth: 1,
+        })?;
         let contribution_buffer = gpu.memory().create_storage_buffer(contribution_buffer_size() as u64)?;
         let ir_builder = IrBuilder::new(IrConfig {
             sample_rate: cfg.sample_rate,

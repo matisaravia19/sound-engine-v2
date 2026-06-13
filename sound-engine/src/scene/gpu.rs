@@ -57,21 +57,15 @@ impl GpuSceneResources {
         let mut uploaded_meshes = previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
         for mesh in store.meshes() {
             if !uploaded_meshes.contains_key(&mesh.id) {
-                let buffers = gpu.rt().upload_mesh(
-                    gpu.memory(),
-                    RtMeshSpec {
-                        vertices: &mesh.vertices,
-                        indices: (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
-                        opaque: mesh.opaque,
-                    },
-                )?;
-                let blas_id = gpu.rt().build_blas(
-                    gpu.memory(),
-                    BlasBuildSpec {
-                        mesh: &buffers,
-                        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                    },
-                )?;
+                let buffers = gpu.rt().upload_mesh(RtMeshSpec {
+                    vertices: &mesh.vertices,
+                    indices: (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
+                    opaque: mesh.opaque,
+                })?;
+                let blas_id = gpu.rt().build_blas(BlasBuildSpec {
+                    mesh: &buffers,
+                    flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+                })?;
                 uploaded_meshes.insert(
                     mesh.id,
                     UploadedMesh {
@@ -104,13 +98,10 @@ impl GpuSceneResources {
         let tlas_id = if instances.is_empty() {
             None
         } else {
-            Some(gpu.rt().build_tlas(
-                gpu.memory(),
-                TlasBuildSpec {
-                    instances: &instances,
-                    flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                },
-            )?)
+            Some(gpu.rt().build_tlas(TlasBuildSpec {
+                instances: &instances,
+                flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            })?)
         };
 
         let material_buffer = upload_materials(gpu, store)?;
