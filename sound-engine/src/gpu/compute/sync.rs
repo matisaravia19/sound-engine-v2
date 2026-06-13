@@ -22,6 +22,16 @@ impl MemoryBarrierSpec {
             dst_access: vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
         }
     }
+
+    /// Synchronizes ray tracing shader writes with later host reads.
+    pub fn ray_tracing_shader_write_to_host_read() -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            dst_stage: vk::PipelineStageFlags::HOST,
+            src_access: vk::AccessFlags::SHADER_WRITE,
+            dst_access: vk::AccessFlags::HOST_READ,
+        }
+    }
 }
 
 /// Pipeline barrier for dependencies on a single buffer.
@@ -77,6 +87,25 @@ impl BufferBarrierSpec {
         }
     }
 
+    /// Synchronizes transfer writes with later shader or acceleration-structure reads.
+    pub fn transfer_write_to_device_read(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
+                | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            src_access: vk::AccessFlags::TRANSFER_WRITE,
+            dst_access: vk::AccessFlags::SHADER_READ
+                | vk::AccessFlags::SHADER_WRITE
+                | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
     /// Synchronizes compute shader writes with later transfer reads on the same buffer.
     pub fn compute_shader_write_to_transfer_read(buffer: vk::Buffer) -> Self {
         Self {
@@ -84,6 +113,21 @@ impl BufferBarrierSpec {
             dst_stage: vk::PipelineStageFlags::TRANSFER,
             src_access: vk::AccessFlags::SHADER_WRITE,
             dst_access: vk::AccessFlags::TRANSFER_READ,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
+    /// Synchronizes transfer writes with later host reads on the same buffer.
+    pub fn transfer_write_to_host_read(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            dst_stage: vk::PipelineStageFlags::HOST,
+            src_access: vk::AccessFlags::TRANSFER_WRITE,
+            dst_access: vk::AccessFlags::HOST_READ,
             src_queue_family: vk::QUEUE_FAMILY_IGNORED,
             dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
             buffer,

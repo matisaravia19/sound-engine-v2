@@ -11,7 +11,6 @@ mod descriptor;
 mod dispatch;
 mod pipeline;
 mod scene;
-mod submit;
 
 pub use acceleration::{BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
@@ -19,7 +18,6 @@ pub use pipeline::{
     RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec,
 };
 pub use scene::{RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
-pub use submit::RtFrameToken;
 
 const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 

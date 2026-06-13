@@ -2,7 +2,7 @@ use super::descriptor::aggregate_pool_sizes;
 use super::*;
 use crate::error::{SoundError, SoundResult};
 use crate::gpu::memory::GpuAllocator;
-use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
+use crate::gpu::shader::{ShaderId, ShaderStage, SHADER_ENTRY_POINT};
 use std::ffi::CString;
 
 /// Stable handle to a ray tracing pipeline stored in `RtContext`.

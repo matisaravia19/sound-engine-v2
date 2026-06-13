@@ -1,5 +1,8 @@
 use super::*;
-use crate::error::{ErrorCode, SoundError, SoundResult};
+use crate::{
+    error::{ErrorCode, SoundError, SoundResult},
+    gpu::compute::{BufferBarrierSpec, MemoryBarrierSpec},
+};
 
 /// One ray tracing dispatch recorded into a command buffer.
 pub struct RtTraceSpec {
@@ -125,17 +128,9 @@ impl RtContext {
 
             if spec.barrier_after_trace {
                 // Required when the host reads storage-buffer results immediately.
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::HOST_READ);
-                self.device_context.device.cmd_pipeline_barrier(
+                self.compute.record_memory_barrier(
                     command_buffer,
-                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                    vk::PipelineStageFlags::HOST,
-                    vk::DependencyFlags::empty(),
-                    std::slice::from_ref(&barrier),
-                    &[],
-                    &[],
+                    &MemoryBarrierSpec::ray_tracing_shader_write_to_host_read(),
                 );
             }
         }

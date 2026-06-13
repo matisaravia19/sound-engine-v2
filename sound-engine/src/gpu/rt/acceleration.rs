@@ -226,20 +226,6 @@ impl RtContext {
                 .acceleration_structure
                 .cmd_build_acceleration_structures(command_buffer, std::slice::from_ref(&build_info), &[ranges]);
 
-            // Make AS writes visible to later AS reads and RT shader traversal.
-            let barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
-            self.device_context.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
-                    | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                std::slice::from_ref(&barrier),
-                &[],
-                &[],
-            );
             Ok(())
         })?;
 

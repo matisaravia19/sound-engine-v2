@@ -89,6 +89,7 @@ impl PartitionedConvolver {
         self.gpu.compute().submit_compute_and_wait(|command_buffer| {
             plan.append(command_buffer)
                 .map_err(|e| SoundError::external(format!("IR forward launch failed: {e:?}")))?;
+
             Ok(())
         })?;
 

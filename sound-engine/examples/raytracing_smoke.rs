@@ -102,7 +102,7 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
         },
     )?;
 
-    gpu.rt().submit_rt_and_wait(|command_buffer| {
+    gpu.compute().submit_compute_and_wait(|command_buffer| {
         gpu.rt().record_trace(
             command_buffer,
             &RtTraceSpec {

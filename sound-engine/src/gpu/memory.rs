@@ -1,6 +1,6 @@
 use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
-use crate::gpu::compute::ComputeContext;
+use crate::gpu::compute::{BufferBarrierSpec, ComputeContext};
 use ash::vk;
 use bytemuck::Pod;
 use std::sync::{Arc, Mutex};
@@ -214,7 +214,7 @@ impl GpuAllocator {
         // Grow staging lazily so large scene uploads do not require a fixed cap.
         self.ensure_staging_capacity(&mut transfer, data.len() as u64)?;
         self.upload_to_staging(&transfer, data)?;
-        self.copy_buffer(&transfer.staging_buffer, destination, copy_size)?;
+        self.copy_buffer(&transfer.staging_buffer, destination, copy_size, None)?;
         Ok(())
     }
 
@@ -246,7 +246,14 @@ impl GpuAllocator {
             .map_err(|_| SoundError::poisoned_lock("Transfer lock is poisoned"))?;
 
         self.ensure_staging_capacity(&mut transfer, copy_size)?;
-        self.copy_buffer(src, &transfer.staging_buffer, copy_size)?;
+        self.copy_buffer(
+            src,
+            &transfer.staging_buffer,
+            copy_size,
+            Some(BufferBarrierSpec::transfer_write_to_host_read(
+                transfer.staging_buffer.buffer,
+            )),
+        )?;
         self.download_from_staging(&transfer, size, out)?;
 
         Ok(())
@@ -394,6 +401,7 @@ impl GpuAllocator {
         src: &BufferHandle,
         dst: &BufferHandle,
         size: vk::DeviceSize,
+        barrier: Option<BufferBarrierSpec>,
     ) -> SoundResult<()> {
         if size > src.size {
             return Err(SoundError::invalid_argument(format!(
@@ -422,6 +430,10 @@ impl GpuAllocator {
                 dst.buffer,
                 std::slice::from_ref(&region),
             );
+
+            if let Some(barrier) = barrier {
+                self.compute.record_buffer_barrier(command_buffer, &barrier);
+            }
 
             Ok(())
         })
