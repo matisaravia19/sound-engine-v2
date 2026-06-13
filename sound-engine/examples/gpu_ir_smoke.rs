@@ -1,8 +1,11 @@
 use glam::vec3;
 use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
+use sound_engine::debug::export_ir;
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+
+const IR_EXPORT_PATH: &str = "target/gpu_ir_smoke_ir.csv";
 
 fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
@@ -37,6 +40,8 @@ fn main() -> SoundResult<()> {
         ir.samples.len(),
         ir.energy
     );
+    export_ir(&ir, IR_EXPORT_PATH)?;
+    println!("  exported ir: {IR_EXPORT_PATH}");
 
     for (sample_idx, sample) in ir.samples.iter().enumerate() {
         if *sample > 0.0 {

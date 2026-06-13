@@ -3,6 +3,7 @@
 pub mod acoustics;
 pub mod auralization;
 pub mod core;
+pub mod debug;
 pub mod error;
 pub mod gpu;
 pub mod scene;

@@ -56,7 +56,7 @@ impl GpuSceneResources {
     pub(crate) fn build(gpu: &VkBackend, store: &SceneStore, previous: Option<Self>) -> SoundResult<Self> {
         let mut uploaded_meshes = previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
         for mesh in store.meshes() {
-            if !uploaded_meshes.contains_key(&mesh.id) {
+            if uploaded_meshes.contains_key(&mesh.id) {
                 continue;
             }
 
