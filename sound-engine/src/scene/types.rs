@@ -1,18 +1,14 @@
 /// Stable identifier for a triangle mesh asset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MeshId(pub u32);
+pub type MeshId = u32;
 
 /// Stable identifier for acoustic material parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MaterialId(pub u32);
+pub type MaterialId = u32;
 
 /// Stable identifier for an object instance in the scene.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ObjectId(pub u32);
+pub type ObjectId = u32;
 
 /// Monotonic scene revision used to decide when GPU resources are stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SceneVersion(pub u64);
+pub type SceneVersion = u64;
 
 /// CPU-side triangle mesh shared by one or more scene objects.
 #[derive(Debug, Clone)]
@@ -69,17 +65,31 @@ pub struct SceneDescription {
 /// Incremental scene changes applied to the canonical CPU store.
 #[derive(Debug, Default, Clone)]
 pub struct SceneUpdates {
-    /// Object transform, active-state, and material changes.
-    pub object_updates: Vec<ObjectUpdate>,
-    /// In-place material parameter changes.
-    pub material_updates: Vec<MaterialUpdate>,
-    /// Mesh/object add, replace, and remove operations.
-    pub topology_changes: Vec<TopologyChange>,
+    /// Ordered updates applied atomically to the scene store.
+    pub updates: Vec<SceneUpdate>,
 }
 
-/// Object-only update that does not replace mesh topology.
+/// One ordered scene mutation.
 #[derive(Debug, Clone)]
-pub enum ObjectUpdate {
+pub enum SceneUpdate {
+    /// Insert a new mesh asset.
+    AddMesh(MeshAsset),
+    /// Replace an existing mesh asset and rebuild its GPU geometry.
+    ReplaceMesh(MeshAsset),
+    /// Remove an unreferenced mesh asset.
+    RemoveMesh(MeshId),
+    /// Insert a new material.
+    AddMaterial(Material),
+    /// Replace an existing material.
+    ReplaceMaterial(Material),
+    /// Remove a material that is not referenced by any object.
+    RemoveMaterial(MaterialId),
+    /// Insert a new object instance.
+    AddObject(SceneObject),
+    /// Replace an existing object instance.
+    ReplaceObject(SceneObject),
+    /// Remove an object instance.
+    RemoveObject(ObjectId),
     /// Replace an object's world transform.
     SetTransform {
         /// Object to mutate.
@@ -101,40 +111,4 @@ pub enum ObjectUpdate {
         /// Existing material to use.
         material_id: MaterialId,
     },
-}
-
-/// Partial material update; `None` fields keep their previous value.
-#[derive(Debug, Clone)]
-pub struct MaterialUpdate {
-    /// Material to mutate.
-    pub id: MaterialId,
-    /// Replacement absorption bands.
-    pub absorption_bands: Option<Vec<f32>>,
-    /// Replacement scattering coefficient.
-    pub scattering: Option<f32>,
-    /// Replacement transmission setting; `Some(None)` clears transmission.
-    pub transmission: Option<Option<Vec<f32>>>,
-}
-
-/// Coarse topology changes that may require BLAS/TLAS rebuilds.
-#[derive(Debug, Clone)]
-pub enum TopologyChange {
-    /// Insert a new mesh asset.
-    AddMesh(MeshAsset),
-    /// Replace an existing mesh asset and rebuild its GPU geometry.
-    ReplaceMesh(MeshAsset),
-    /// Remove an unreferenced mesh asset.
-    RemoveMesh(MeshId),
-    /// Insert a new object instance.
-    AddObject(SceneObject),
-    /// Replace an existing object instance.
-    ReplaceObject(SceneObject),
-    /// Remove an object instance.
-    RemoveObject(ObjectId),
-}
-
-impl Default for SceneVersion {
-    fn default() -> Self {
-        Self(0)
-    }
 }

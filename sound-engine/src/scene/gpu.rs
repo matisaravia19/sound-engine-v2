@@ -57,23 +57,27 @@ impl GpuSceneResources {
         let mut uploaded_meshes = previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
         for mesh in store.meshes() {
             if !uploaded_meshes.contains_key(&mesh.id) {
-                let buffers = gpu.rt().upload_mesh(RtMeshSpec {
-                    vertices: &mesh.vertices,
-                    indices: (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
-                    opaque: mesh.opaque,
-                })?;
-                let blas_id = gpu.rt().build_blas(BlasBuildSpec {
-                    mesh: &buffers,
-                    flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                })?;
-                uploaded_meshes.insert(
-                    mesh.id,
-                    UploadedMesh {
-                        _buffers: buffers,
-                        blas_id,
-                    },
-                );
+                continue;
             }
+
+            let buffers = gpu.rt().upload_mesh(RtMeshSpec {
+                vertices: &mesh.vertices,
+                indices: (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
+                opaque: mesh.opaque,
+            })?;
+
+            let blas_id = gpu.rt().build_blas(BlasBuildSpec {
+                mesh: &buffers,
+                flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            })?;
+
+            uploaded_meshes.insert(
+                mesh.id,
+                UploadedMesh {
+                    _buffers: buffers,
+                    blas_id,
+                },
+            );
         }
         uploaded_meshes.retain(|mesh_id, _| store.meshes.contains_key(mesh_id));
 
@@ -83,11 +87,11 @@ impl GpuSceneResources {
             .map(|object| {
                 let uploaded = uploaded_meshes
                     .get(&object.mesh_id)
-                    .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id.0)))?;
+                    .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id)))?;
                 Ok(RtInstanceSpec {
                     blas_id: uploaded.blas_id,
                     transform: object.transform,
-                    custom_index: object.id.0,
+                    custom_index: object.id,
                     mask: 0xff,
                     sbt_record_offset: 0,
                 })
@@ -179,9 +183,9 @@ fn upload_objects(gpu: &VkBackend, store: &SceneStore) -> SoundResult<Option<Buf
     let objects = store
         .objects()
         .map(|object| GpuObject {
-            object_id: object.id.0,
-            material_id: object.material_id.0,
-            mesh_id: object.mesh_id.0,
+            object_id: object.id,
+            material_id: object.material_id,
+            mesh_id: object.mesh_id,
             active: u32::from(object.active),
         })
         .collect::<Vec<_>>();

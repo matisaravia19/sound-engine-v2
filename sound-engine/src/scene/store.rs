@@ -1,6 +1,6 @@
 use super::types::{
-    Material, MaterialId, MaterialUpdate, MeshAsset, MeshId, ObjectId, ObjectUpdate, SceneDescription, SceneObject,
-    SceneUpdates, SceneVersion, TopologyChange,
+    Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
+    SceneVersion,
 };
 use crate::error::{SoundError, SoundResult};
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 ///
 /// `SceneStore` owns validated mesh, material, and object records. Any accepted
 /// mutation increments `SceneVersion`, which drives lazy GPU synchronization.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SceneStore {
     pub(super) version: SceneVersion,
     pub(super) meshes: HashMap<MeshId, MeshAsset>,
@@ -45,32 +45,23 @@ impl SceneStore {
             }
         }
 
-        next.version = SceneVersion(self.version.0.saturating_add(1));
+        next.version = self.version.saturating_add(1);
         *self = next;
         Ok(())
     }
 
     /// Applies incremental changes and increments the version if anything changed.
     pub fn apply_updates(&mut self, updates: SceneUpdates) -> SoundResult<()> {
-        let mut changed = false;
+        let changed = !updates.updates.is_empty();
+        let mut next = self.clone();
 
-        for change in updates.topology_changes {
-            changed = true;
-            self.apply_topology_change(change)?;
-        }
-
-        for update in updates.material_updates {
-            changed = true;
-            self.apply_material_update(update)?;
-        }
-
-        for update in updates.object_updates {
-            changed = true;
-            self.apply_object_update(update)?;
+        for update in updates.updates {
+            next.apply_update(update)?;
         }
 
         if changed {
-            self.version.0 = self.version.0.saturating_add(1);
+            next.version = self.version.saturating_add(1);
+            *self = next;
         }
         Ok(())
     }
@@ -95,81 +86,87 @@ impl SceneStore {
         self.objects.values()
     }
 
-    fn apply_topology_change(&mut self, change: TopologyChange) -> SoundResult<()> {
-        match change {
-            TopologyChange::AddMesh(mesh) => {
+    fn apply_update(&mut self, update: SceneUpdate) -> SoundResult<()> {
+        match update {
+            SceneUpdate::AddMesh(mesh) => {
                 validate_mesh(&mesh)?;
                 if self.meshes.insert(mesh.id, mesh).is_some() {
                     return Err(SoundError::invalid_argument("AddMesh received an existing mesh id"));
                 }
             }
-            TopologyChange::ReplaceMesh(mesh) => {
+            SceneUpdate::ReplaceMesh(mesh) => {
                 validate_mesh(&mesh)?;
                 if !self.meshes.contains_key(&mesh.id) {
-                    return Err(SoundError::not_found(format!("Mesh {} does not exist", mesh.id.0)));
+                    return Err(SoundError::not_found(format!("Mesh {} does not exist", mesh.id)));
                 }
                 self.meshes.insert(mesh.id, mesh);
             }
-            TopologyChange::RemoveMesh(id) => {
+            SceneUpdate::RemoveMesh(id) => {
                 if self.objects.values().any(|object| object.mesh_id == id) {
-                    return Err(SoundError::invalid_state(format!("Mesh {} is still referenced", id.0)));
+                    return Err(SoundError::invalid_state(format!("Mesh {} is still referenced", id)));
                 }
                 self.meshes
                     .remove(&id)
-                    .ok_or_else(|| SoundError::not_found(format!("Mesh {} does not exist", id.0)))?;
+                    .ok_or_else(|| SoundError::not_found(format!("Mesh {} does not exist", id)))?;
             }
-            TopologyChange::AddObject(object) => {
+            SceneUpdate::AddMaterial(material) => {
+                validate_material(&material)?;
+                if self.materials.insert(material.id, material).is_some() {
+                    return Err(SoundError::invalid_argument(
+                        "AddMaterial received an existing material id",
+                    ));
+                }
+            }
+            SceneUpdate::ReplaceMaterial(material) => {
+                validate_material(&material)?;
+                if !self.materials.contains_key(&material.id) {
+                    return Err(SoundError::not_found(format!(
+                        "Material {} does not exist",
+                        material.id
+                    )));
+                }
+                self.materials.insert(material.id, material);
+            }
+            SceneUpdate::RemoveMaterial(id) => {
+                if self.objects.values().any(|object| object.material_id == id) {
+                    return Err(SoundError::invalid_state(format!(
+                        "Material {} is still referenced",
+                        id
+                    )));
+                }
+                self.materials
+                    .remove(&id)
+                    .ok_or_else(|| SoundError::not_found(format!("Material {} does not exist", id)))?;
+            }
+            SceneUpdate::AddObject(object) => {
                 validate_object_refs(self, &object)?;
                 if self.objects.insert(object.id, object).is_some() {
                     return Err(SoundError::invalid_argument("AddObject received an existing object id"));
                 }
             }
-            TopologyChange::ReplaceObject(object) => {
+            SceneUpdate::ReplaceObject(object) => {
                 validate_object_refs(self, &object)?;
                 if !self.objects.contains_key(&object.id) {
-                    return Err(SoundError::not_found(format!("Object {} does not exist", object.id.0)));
+                    return Err(SoundError::not_found(format!("Object {} does not exist", object.id)));
                 }
                 self.objects.insert(object.id, object);
             }
-            TopologyChange::RemoveObject(id) => {
+            SceneUpdate::RemoveObject(id) => {
                 self.objects
                     .remove(&id)
-                    .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id.0)))?;
+                    .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id)))?;
             }
-        }
-        Ok(())
-    }
-
-    fn apply_material_update(&mut self, update: MaterialUpdate) -> SoundResult<()> {
-        let material = self
-            .materials
-            .get_mut(&update.id)
-            .ok_or_else(|| SoundError::not_found(format!("Material {} does not exist", update.id.0)))?;
-        if let Some(absorption_bands) = update.absorption_bands {
-            material.absorption_bands = absorption_bands;
-        }
-        if let Some(scattering) = update.scattering {
-            material.scattering = scattering;
-        }
-        if let Some(transmission) = update.transmission {
-            material.transmission = transmission;
-        }
-        validate_material(material)
-    }
-
-    fn apply_object_update(&mut self, update: ObjectUpdate) -> SoundResult<()> {
-        match update {
-            ObjectUpdate::SetTransform { id, transform } => {
+            SceneUpdate::SetTransform { id, transform } => {
                 self.object_mut(id)?.transform = transform;
             }
-            ObjectUpdate::SetActive { id, active } => {
+            SceneUpdate::SetActive { id, active } => {
                 self.object_mut(id)?.active = active;
             }
-            ObjectUpdate::SetMaterial { id, material_id } => {
+            SceneUpdate::SetMaterial { id, material_id } => {
                 if !self.materials.contains_key(&material_id) {
                     return Err(SoundError::not_found(format!(
                         "Material {} does not exist",
-                        material_id.0
+                        material_id
                     )));
                 }
                 self.object_mut(id)?.material_id = material_id;
@@ -181,7 +178,7 @@ impl SceneStore {
     fn object_mut(&mut self, id: ObjectId) -> SoundResult<&mut SceneObject> {
         self.objects
             .get_mut(&id)
-            .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id.0)))
+            .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id)))
     }
 }
 
@@ -189,19 +186,19 @@ fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
     if mesh.vertices.is_empty() {
         return Err(SoundError::invalid_argument(format!(
             "Mesh {} has no vertices",
-            mesh.id.0
+            mesh.id
         )));
     }
     if mesh.indices.is_empty() && mesh.vertices.len() < 3 {
         return Err(SoundError::invalid_argument(format!(
             "Mesh {} has less than one triangle",
-            mesh.id.0
+            mesh.id
         )));
     }
     if !mesh.indices.is_empty() && mesh.indices.len() < 3 {
         return Err(SoundError::invalid_argument(format!(
             "Mesh {} has less than one indexed triangle",
-            mesh.id.0
+            mesh.id
         )));
     }
     Ok(())
@@ -211,13 +208,13 @@ fn validate_material(material: &Material) -> SoundResult<()> {
     if material.absorption_bands.is_empty() {
         return Err(SoundError::invalid_argument(format!(
             "Material {} must contain at least one absorption band",
-            material.id.0
+            material.id
         )));
     }
     if !(0.0..=1.0).contains(&material.scattering) {
         return Err(SoundError::invalid_argument(format!(
             "Material {} scattering must be in [0, 1]",
-            material.id.0
+            material.id
         )));
     }
     Ok(())
@@ -225,16 +222,131 @@ fn validate_material(material: &Material) -> SoundResult<()> {
 
 fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult<()> {
     if !store.meshes.contains_key(&object.mesh_id) {
-        return Err(SoundError::not_found(format!(
-            "Mesh {} does not exist",
-            object.mesh_id.0
-        )));
+        return Err(SoundError::not_found(format!("Mesh {} does not exist", object.mesh_id)));
     }
     if !store.materials.contains_key(&object.material_id) {
         return Err(SoundError::not_found(format!(
             "Material {} does not exist",
-            object.material_id.0
+            object.material_id
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorCode;
+
+    #[test]
+    fn apply_updates_can_remove_object_and_its_mesh_in_one_batch() {
+        let mut store = populated_store();
+
+        store
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::RemoveObject(10), SceneUpdate::RemoveMesh(1)],
+            })
+            .unwrap();
+
+        assert!(!store.meshes.contains_key(&1));
+        assert!(!store.objects.contains_key(&10));
+        assert!(store.meshes.contains_key(&2));
+        assert!(store.objects.contains_key(&20));
+        assert_eq!(store.version(), 2);
+    }
+
+    #[test]
+    fn apply_updates_rejects_mesh_removal_when_current_scene_still_references_it() {
+        let mut store = populated_store();
+        let original_version = store.version();
+
+        let error = store
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::RemoveMesh(1)],
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidState);
+        assert!(store.meshes.contains_key(&1));
+        assert!(store.objects.contains_key(&10));
+        assert_eq!(store.version(), original_version);
+    }
+
+    #[test]
+    fn apply_updates_can_add_reassign_and_remove_materials_in_order() {
+        let mut store = populated_store();
+
+        store
+            .apply_updates(SceneUpdates {
+                updates: vec![
+                    SceneUpdate::AddMaterial(Material {
+                        id: 2,
+                        absorption_bands: vec![0.4],
+                        scattering: 0.2,
+                        transmission: None,
+                    }),
+                    SceneUpdate::SetMaterial { id: 10, material_id: 2 },
+                    SceneUpdate::SetMaterial { id: 20, material_id: 2 },
+                    SceneUpdate::RemoveMaterial(1),
+                ],
+            })
+            .unwrap();
+
+        assert!(!store.materials.contains_key(&1));
+        assert!(store.materials.contains_key(&2));
+        assert_eq!(store.objects.get(&10).unwrap().material_id, 2);
+        assert_eq!(store.objects.get(&20).unwrap().material_id, 2);
+    }
+
+    #[test]
+    fn apply_updates_rejects_material_removal_when_current_scene_still_references_it() {
+        let mut store = populated_store();
+        let original_version = store.version();
+
+        let error = store
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::RemoveMaterial(1)],
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidState);
+        assert!(store.materials.contains_key(&1));
+        assert_eq!(store.version(), original_version);
+    }
+
+    fn populated_store() -> SceneStore {
+        let mut store = SceneStore::new();
+        store
+            .load(SceneDescription {
+                meshes: vec![mesh(1), mesh(2)],
+                materials: vec![Material {
+                    id: 1,
+                    absorption_bands: vec![0.2],
+                    scattering: 0.1,
+                    transmission: None,
+                }],
+                objects: vec![object(10, 1), object(20, 2)],
+            })
+            .unwrap();
+        store
+    }
+
+    fn mesh(id: MeshId) -> MeshAsset {
+        MeshAsset {
+            id,
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: Vec::new(),
+            opaque: true,
+        }
+    }
+
+    fn object(id: ObjectId, mesh_id: MeshId) -> SceneObject {
+        SceneObject {
+            id,
+            mesh_id,
+            material_id: 1,
+            transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            active: true,
+        }
+    }
 }

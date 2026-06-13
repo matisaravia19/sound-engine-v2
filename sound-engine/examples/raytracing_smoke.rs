@@ -34,35 +34,26 @@ struct SmokeTraceResult {
 
 fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
     let vertices: [[f32; 3]; 3] = [[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]];
-    let mesh = gpu.rt().upload_mesh(
-        gpu.memory(),
-        RtMeshSpec {
-            vertices: &vertices,
-            indices: None,
-            opaque: true,
-        },
-    )?;
+    let mesh = gpu.rt().upload_mesh(RtMeshSpec {
+        vertices: &vertices,
+        indices: None,
+        opaque: true,
+    })?;
 
-    let blas_id = gpu.rt().build_blas(
-        gpu.memory(),
-        BlasBuildSpec {
-            mesh: &mesh,
-            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        },
-    )?;
-    let tlas_id = gpu.rt().build_tlas(
-        gpu.memory(),
-        TlasBuildSpec {
-            instances: &[RtInstanceSpec {
-                blas_id,
-                transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                custom_index: 0,
-                mask: 0xff,
-                sbt_record_offset: 0,
-            }],
-            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        },
-    )?;
+    let blas_id = gpu.rt().build_blas(BlasBuildSpec {
+        mesh: &mesh,
+        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+    })?;
+    let tlas_id = gpu.rt().build_tlas(TlasBuildSpec {
+        instances: &[RtInstanceSpec {
+            blas_id,
+            transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            custom_index: 0,
+            mask: 0xff,
+            sbt_record_offset: 0,
+        }],
+        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+    })?;
 
     let result_buffer = gpu.memory().create_host_device_address_buffer(
         (2 * size_of::<u32>()) as vk::DeviceSize,
@@ -72,35 +63,32 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
         .write_mapped_bytes(&result_buffer, bytemuck::cast_slice(&[0_u32; 2]))?;
 
     let shader_ids = load_smoke_shaders(gpu.shaders())?;
-    let pipeline_id = gpu.rt().create_pipeline(
-        gpu.memory(),
-        RtPipelineSpec {
-            shaders: vec![
-                RtShaderStageSpec::new(shader_ids.raygen),
-                RtShaderStageSpec::new(shader_ids.miss),
-                RtShaderStageSpec::new(shader_ids.closest_hit),
-            ],
-            groups: vec![
-                RtShaderGroupSpec::Raygen { shader: 0 },
-                RtShaderGroupSpec::Miss { shader: 1 },
-                RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
-            ],
-            descriptor_bindings: vec![
-                RtDescriptorBindingSpec::AccelerationStructure {
-                    binding: 0,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-                },
-                RtDescriptorBindingSpec::StorageBuffer {
-                    binding: 1,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-                },
-            ],
-            push_constant_ranges: Vec::<RtPushConstantSpec>::new(),
-            max_ray_recursion_depth: 1,
-        },
-    )?;
+    let pipeline_id = gpu.rt().create_pipeline(RtPipelineSpec {
+        shaders: vec![
+            RtShaderStageSpec::new(shader_ids.raygen),
+            RtShaderStageSpec::new(shader_ids.miss),
+            RtShaderStageSpec::new(shader_ids.closest_hit),
+        ],
+        groups: vec![
+            RtShaderGroupSpec::Raygen { shader: 0 },
+            RtShaderGroupSpec::Miss { shader: 1 },
+            RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
+        ],
+        descriptor_bindings: vec![
+            RtDescriptorBindingSpec::AccelerationStructure {
+                binding: 0,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            },
+            RtDescriptorBindingSpec::StorageBuffer {
+                binding: 1,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            },
+        ],
+        push_constant_ranges: Vec::<RtPushConstantSpec>::new(),
+        max_ray_recursion_depth: 1,
+    })?;
 
     gpu.compute().submit_compute_and_wait(|command_buffer| {
         gpu.rt().record_trace(

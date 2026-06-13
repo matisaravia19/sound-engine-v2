@@ -1,9 +1,7 @@
 use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{
-    Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneManager, SceneObject, identity_transform,
-};
+use sound_engine::scene::{identity_transform, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
 
 fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
@@ -33,7 +31,7 @@ fn main() -> SoundResult<()> {
 
     println!(
         "gpu ir smoke: version={}, query={}, samples={}, energy={}",
-        ir.scene_version.0,
+        ir.scene_version,
         ir.query_id,
         ir.samples.len(),
         ir.energy
@@ -55,21 +53,21 @@ fn main() -> SoundResult<()> {
 fn smoke_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
-            id: MeshId(1),
+            id: 1,
             vertices: vec![[-0.5, -0.5, -1.0], [0.5, -0.5, -1.0], [0.0, 0.5, -1.0]],
             indices: Vec::new(),
             opaque: true,
         }],
         materials: vec![Material {
-            id: MaterialId(1),
+            id: 1,
             absorption_bands: vec![0.2],
             scattering: 0.1,
             transmission: None,
         }],
         objects: vec![SceneObject {
-            id: ObjectId(1),
-            mesh_id: MeshId(1),
-            material_id: MaterialId(1),
+            id: 1,
+            mesh_id: 1,
+            material_id: 1,
             transform: identity_transform(),
             active: true,
         }],

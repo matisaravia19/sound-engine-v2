@@ -15,6 +15,6 @@ pub use manager::SceneManager;
 pub use store::SceneStore;
 pub use transform::{identity_transform, translation_transform};
 pub use types::{
-    Material, MaterialId, MaterialUpdate, MeshAsset, MeshId, ObjectId, ObjectUpdate, SceneDescription, SceneObject,
-    SceneUpdates, SceneVersion, TopologyChange,
+    Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
+    SceneVersion,
 };
