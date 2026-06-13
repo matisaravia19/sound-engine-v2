@@ -3,13 +3,13 @@ use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{
-    RtDescriptorBindingSpec, RtDescriptorWrite, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
-    RtShaderStageSpec, RtTraceSpec,
+    AabbBlasBuildSpec, BlasId, RtAabbBuffers, RtAabbSpec, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
+    RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
 };
 use crate::gpu::shader::ShaderStage;
 use crate::scene::SceneManager;
 use ash::vk;
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use std::mem::size_of;
 use std::path::PathBuf;
 
@@ -22,6 +22,8 @@ pub struct AcousticConfig {
     pub sample_rate: u32,
     /// Number of mono samples in each generated impulse response.
     pub ir_len_samples: u32,
+    /// Listener AABB half extent in world meters, centered on each query listener position.
+    pub listener_half_extent: Vec3,
     /// Ray budget reserved for future stochastic reflection tracing.
     pub rays_per_query: u32,
     /// Maximum path depth reserved for future reflection tracing.
@@ -50,6 +52,8 @@ pub struct AcousticPipeline {
     cfg: AcousticConfig,
     contribution_pipeline: RtPipelineId,
     contribution_buffer: BufferHandle,
+    _listener_aabbs: RtAabbBuffers,
+    listener_blas: BlasId,
     ir_builder: IrBuilder,
 }
 
@@ -58,6 +62,7 @@ pub struct AcousticPipeline {
 struct VisibilityPushConstants {
     source: [f32; 4],
     listener: [f32; 4],
+    listener_half_extent: [f32; 4],
 }
 
 unsafe impl bytemuck::Zeroable for VisibilityPushConstants {}
@@ -76,6 +81,8 @@ unsafe impl bytemuck::Pod for ContributionHeader {}
 impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
     pub fn new(gpu: &VkBackend, cfg: AcousticConfig) -> SoundResult<Self> {
+        validate_listener_half_extent(cfg.listener_half_extent)?;
+
         let raygen = gpu
             .shaders()
             .load_glsl_file(ShaderStage::RayGeneration, shader_path("direct_visibility.rgen.glsl"))?;
@@ -85,29 +92,44 @@ impl AcousticPipeline {
         let closest_hit = gpu
             .shaders()
             .load_glsl_file(ShaderStage::RayClosestHit, shader_path("direct_visibility.rchit.glsl"))?;
+        let listener_closest_hit = gpu.shaders().load_glsl_file(
+            ShaderStage::RayClosestHit,
+            shader_path("direct_visibility_listener.rchit.glsl"),
+        )?;
+        let listener_intersection = gpu.shaders().load_glsl_file(
+            ShaderStage::RayIntersection,
+            shader_path("direct_visibility_listener.rint.glsl"),
+        )?;
         let contribution_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
                 RtShaderStageSpec::new(raygen),
                 RtShaderStageSpec::new(miss),
                 RtShaderStageSpec::new(closest_hit),
+                RtShaderStageSpec::new(listener_closest_hit),
+                RtShaderStageSpec::new(listener_intersection),
             ],
             groups: vec![
                 RtShaderGroupSpec::Raygen { shader: 0 },
                 RtShaderGroupSpec::Miss { shader: 1 },
                 RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
+                RtShaderGroupSpec::ProceduralHit {
+                    closest_hit_shader: 3,
+                    intersection_shader: 4,
+                },
             ],
             descriptor_bindings: vec![
                 RtDescriptorBindingSpec::acceleration_structure(0),
-                RtDescriptorBindingSpec::StorageBuffer {
-                    binding: 1,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
-                },
+                RtDescriptorBindingSpec::storage_buffer(1),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
             max_ray_recursion_depth: 1,
         })?;
         let contribution_buffer = gpu.memory().create_storage_buffer(contribution_buffer_size() as u64)?;
+        let listener_aabbs = create_listener_aabb(gpu, cfg.listener_half_extent)?;
+        let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
+            aabbs: &listener_aabbs,
+            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+        })?;
         let ir_builder = IrBuilder::new(IrConfig {
             sample_rate: cfg.sample_rate,
             ir_len_samples: cfg.ir_len_samples,
@@ -117,6 +139,8 @@ impl AcousticPipeline {
             cfg,
             contribution_pipeline,
             contribution_buffer,
+            _listener_aabbs: listener_aabbs,
+            listener_blas,
             ir_builder,
         })
     }
@@ -129,9 +153,7 @@ impl AcousticPipeline {
         query: AcousticQuery,
     ) -> SoundResult<IrSnapshot> {
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id = gpu_scene.tlas_id().ok_or_else(|| {
-            SoundError::invalid_state("Cannot run acoustic IR generation without at least one active scene object")
-        })?;
+        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), query.listener_position)?;
 
         let _ray_budget = self.cfg.rays_per_query;
         let _max_bounces = self.cfg.max_bounces;
@@ -141,6 +163,7 @@ impl AcousticPipeline {
                 .listener_position
                 .extend(SPEED_OF_SOUND_METERS_PER_SECOND)
                 .to_array(),
+            listener_half_extent: self.cfg.listener_half_extent.extend(0.0).to_array(),
         };
 
         gpu.compute().submit_compute_and_wait(|command_buffer| {
@@ -195,6 +218,28 @@ impl AcousticPipeline {
         let records = bytemuck::cast_slice::<u8, ContributionRecord>(records_bytes);
         Ok(records[..count].to_vec())
     }
+
+    fn build_query_tlas(
+        &self,
+        gpu: &VkBackend,
+        scene_instances: &[RtInstanceSpec],
+        listener_position: Vec3,
+    ) -> SoundResult<crate::gpu::rt::TlasId> {
+        let mut instances = Vec::with_capacity(scene_instances.len() + 1);
+        instances.extend_from_slice(scene_instances);
+        instances.push(RtInstanceSpec {
+            blas_id: self.listener_blas,
+            transform: Mat4::from_translation(listener_position),
+            custom_index: LISTENER_INSTANCE_CUSTOM_INDEX,
+            mask: 0xff,
+            sbt_record_offset: LISTENER_HIT_GROUP_OFFSET,
+        });
+
+        gpu.rt().build_tlas(TlasBuildSpec {
+            instances: &instances,
+            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+        })
+    }
 }
 
 fn shader_path(file: &str) -> PathBuf {
@@ -202,6 +247,29 @@ fn shader_path(file: &str) -> PathBuf {
 }
 
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
+const LISTENER_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX;
+const LISTENER_HIT_GROUP_OFFSET: u32 = 1;
+
+fn validate_listener_half_extent(listener_half_extent: Vec3) -> SoundResult<()> {
+    let extent = listener_half_extent.to_array();
+    if extent
+        .iter()
+        .any(|component| !component.is_finite() || *component <= 0.0)
+    {
+        return Err(SoundError::invalid_argument(
+            "listener_half_extent components must be finite and > 0",
+        ));
+    }
+    Ok(())
+}
+
+fn create_listener_aabb(gpu: &VkBackend, listener_half_extent: Vec3) -> SoundResult<RtAabbBuffers> {
+    gpu.rt().upload_aabbs(&[RtAabbSpec {
+        min: -listener_half_extent,
+        max: listener_half_extent,
+        opaque: true,
+    }])
+}
 
 fn contribution_buffer_size() -> usize {
     size_of::<ContributionHeader>() + MAX_CONTRIBUTIONS_PER_QUERY * size_of::<ContributionRecord>()

@@ -18,6 +18,7 @@ pub struct GpuSceneResources {
     material_buffer: Option<BufferHandle>,
     object_buffer: Option<BufferHandle>,
     tlas_id: Option<TlasId>,
+    instances: Vec<RtInstanceSpec>,
     instance_count: u32,
 }
 
@@ -118,6 +119,7 @@ impl GpuSceneResources {
             object_buffer,
             tlas_id,
             instance_count: instances.len() as u32,
+            instances,
         })
     }
 
@@ -134,6 +136,11 @@ impl GpuSceneResources {
     /// Returns the number of active object instances in the TLAS.
     pub fn instance_count(&self) -> u32 {
         self.instance_count
+    }
+
+    /// Returns active scene BLAS instances used to build the scene TLAS.
+    pub fn instances(&self) -> &[RtInstanceSpec] {
+        &self.instances
     }
 
     /// Returns the compact GPU material buffer when the scene has materials.

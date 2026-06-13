@@ -38,6 +38,13 @@ pub enum RtShaderGroupSpec {
     Miss { shader: u32 },
     /// Triangle hit group referencing a closest-hit shader stage index.
     TrianglesHit { closest_hit_shader: u32 },
+    /// Procedural hit group referencing closest-hit and intersection shader stage indices.
+    ProceduralHit {
+        /// Closest-hit shader stage index.
+        closest_hit_shader: u32,
+        /// Intersection shader stage index.
+        intersection_shader: u32,
+    },
     /// Callable group referencing a general shader stage index.
     Callable { shader: u32 },
 }
@@ -261,10 +268,10 @@ impl RtContext {
 
         Ok((
             sbt,
-            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Raygen),
-            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Miss),
-            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Hit),
-            region_for(groups, base_address, record_stride, region_size, RtGroupKind::Callable),
+            region_for(groups, base_address, region_size, RtGroupKind::Raygen),
+            region_for(groups, base_address, region_size, RtGroupKind::Miss),
+            region_for(groups, base_address, region_size, RtGroupKind::Hit),
+            region_for(groups, base_address, region_size, RtGroupKind::Callable),
         ))
     }
 }
@@ -280,7 +287,6 @@ enum RtGroupKind {
 fn region_for(
     groups: &[RtShaderGroupSpec],
     base_address: vk::DeviceAddress,
-    record_stride: usize,
     region_size: usize,
     kind: RtGroupKind,
 ) -> vk::StridedDeviceAddressRegionKHR {
@@ -293,8 +299,8 @@ fn region_for(
 
     vk::StridedDeviceAddressRegionKHR {
         device_address: base_address + (start * region_size) as vk::DeviceAddress,
-        stride: record_stride as vk::DeviceSize,
-        size: (count * record_stride) as vk::DeviceSize,
+        stride: region_size as vk::DeviceSize,
+        size: (count * region_size) as vk::DeviceSize,
     }
 }
 
@@ -304,6 +310,7 @@ impl RtShaderGroupSpec {
             Self::Raygen { .. } => RtGroupKind::Raygen,
             Self::Miss { .. } => RtGroupKind::Miss,
             Self::TrianglesHit { .. } => RtGroupKind::Hit,
+            Self::ProceduralHit { .. } => RtGroupKind::Hit,
             Self::Callable { .. } => RtGroupKind::Callable,
         }
     }
@@ -325,6 +332,15 @@ fn build_shader_group(spec: &RtShaderGroupSpec) -> vk::RayTracingShaderGroupCrea
             .closest_hit_shader(closest_hit_shader)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
             .intersection_shader(vk::SHADER_UNUSED_KHR),
+        RtShaderGroupSpec::ProceduralHit {
+            closest_hit_shader,
+            intersection_shader,
+        } => vk::RayTracingShaderGroupCreateInfoKHR::default()
+            .ty(vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP)
+            .general_shader(vk::SHADER_UNUSED_KHR)
+            .closest_hit_shader(closest_hit_shader)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(intersection_shader),
     }
 }
 
@@ -378,6 +394,13 @@ fn validate_groups(stages: &[vk::PipelineShaderStageCreateInfo<'_>], groups: &[R
             }
             RtShaderGroupSpec::TrianglesHit { closest_hit_shader } => {
                 validate_group_stage(stages, closest_hit_shader, vk::ShaderStageFlags::CLOSEST_HIT_KHR)?
+            }
+            RtShaderGroupSpec::ProceduralHit {
+                closest_hit_shader,
+                intersection_shader,
+            } => {
+                validate_group_stage(stages, closest_hit_shader, vk::ShaderStageFlags::CLOSEST_HIT_KHR)?;
+                validate_group_stage(stages, intersection_shader, vk::ShaderStageFlags::INTERSECTION_KHR)?;
             }
         }
     }

@@ -1,5 +1,6 @@
 use glam::{Mat4, Vec3};
 
+use super::scene::rt_aabb_stride;
 use super::*;
 use crate::error::{SoundError, SoundResult};
 use std::mem::size_of;
@@ -16,6 +17,14 @@ pub struct TlasId(pub u32);
 pub struct BlasBuildSpec<'a> {
     /// Uploaded mesh buffers used as build input.
     pub mesh: &'a RtMeshBuffers,
+    /// Vulkan build flags, such as `PREFER_FAST_TRACE`.
+    pub flags: vk::BuildAccelerationStructureFlagsKHR,
+}
+
+/// Parameters for building a BLAS from uploaded procedural AABB buffers.
+pub struct AabbBlasBuildSpec<'a> {
+    /// Uploaded AABB buffer used as build input.
+    pub aabbs: &'a RtAabbBuffers,
     /// Vulkan build flags, such as `PREFER_FAST_TRACE`.
     pub flags: vk::BuildAccelerationStructureFlagsKHR,
 }
@@ -70,6 +79,50 @@ impl RtContext {
             geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
         }
 
+        let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
+        let handle = self.build_acceleration_structure(
+            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            spec.flags,
+            std::slice::from_ref(&geometry),
+            std::slice::from_ref(&primitive_count),
+            std::slice::from_ref(&range),
+        )?;
+
+        let mut blas = self
+            .blas
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
+        let id = BlasId(blas.len() as u32);
+        blas.insert(id, handle);
+        Ok(id)
+    }
+
+    /// Builds a bottom-level acceleration structure from procedural AABBs.
+    ///
+    /// The build is submitted to the compute queue and completed before the new
+    /// `BlasId` is returned. The returned BLAS requires a procedural hit group
+    /// with an intersection shader when instanced in a traced TLAS.
+    pub fn build_aabb_blas(&self, spec: AabbBlasBuildSpec<'_>) -> SoundResult<BlasId> {
+        if spec.aabbs.primitive_count == 0 {
+            return Err(SoundError::invalid_argument(
+                "RT AABB BLAS must contain at least one primitive",
+            ));
+        }
+
+        let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
+            .data(vk::DeviceOrHostAddressConstKHR {
+                device_address: self.memory.buffer_device_address(&spec.aabbs.aabb_buffer),
+            })
+            .stride(rt_aabb_stride());
+
+        let mut geometry = vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::AABBS)
+            .geometry(vk::AccelerationStructureGeometryDataKHR { aabbs });
+        if spec.aabbs.opaque {
+            geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
+        }
+
+        let primitive_count = spec.aabbs.primitive_count;
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
         let handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,

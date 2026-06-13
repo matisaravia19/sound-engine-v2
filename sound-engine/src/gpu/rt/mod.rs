@@ -12,12 +12,12 @@ mod dispatch;
 mod pipeline;
 mod scene;
 
-pub use acceleration::{BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
+pub use acceleration::{AabbBlasBuildSpec, BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
 pub use pipeline::{
     RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec,
 };
-pub use scene::{RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
+pub use scene::{RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
 
 const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 
