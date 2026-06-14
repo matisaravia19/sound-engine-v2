@@ -1,7 +1,7 @@
 use glam::Vec3;
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use sound_engine::acoustics::IrSample;
-use sound_engine::auralization::ImpulseResponseId;
+use sound_engine::auralization::Voice;
 use sound_engine::auralization::convolver::PartitionedConvolver;
 use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion.wav";
 const DEFAULT_OUTPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion-output.wav";
-const IR_ID: ImpulseResponseId = 1;
 const BLOCK_SIZE: usize = 1024;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -27,13 +26,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ir = build_sample_ir(sample_rate);
 
     let backend = Arc::new(VkBackend::new()?);
-    let mut convolver = PartitionedConvolver::new(
+    let convolver = PartitionedConvolver::new(
         backend,
         engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Mono),
     )?;
     let stereo_ir = mono_to_stereo_ir(&ir);
-    convolver.register_impulse_response(IR_ID, &stereo_ir)?;
-    let voice_id = convolver.start_sound(IR_ID)?;
+    let impulse_response = convolver.create_impulse_response(&stereo_ir)?;
+    let mut voice = Voice::new(1, 0, 1.0, impulse_response, convolver.tail_size(), convolver.fft_size());
 
     let block_size = BLOCK_SIZE;
     let mut processed = Vec::with_capacity(input_samples.len() + block_size);
@@ -44,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         input_block.fill(0.0);
         input_block[..chunk.len()].copy_from_slice(chunk);
 
-        convolver.process_block(voice_id, &input_block, &mut output_block)?;
+        convolver.process_block(&mut voice, &input_block, &mut output_block)?;
         processed.extend_from_slice(&output_block[..chunk.len()]);
         if chunk.len() < block_size {
             processed.extend_from_slice(&output_block[chunk.len()..]);
@@ -52,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Flush overlap tail so the reverb/echo decay is not truncated.
-    while convolver.flush_tail_block(voice_id, &mut output_block)? {
+    while convolver.flush_tail_block(&mut voice, &mut output_block)? {
         processed.extend_from_slice(&output_block);
     }
 

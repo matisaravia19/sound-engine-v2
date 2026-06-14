@@ -1,9 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glam::Vec3;
-use hound::{SampleFormat, WavReader};
 use sound_engine::acoustics::IrSample;
-use sound_engine::auralization::Voice;
-use sound_engine::auralization::convolver::PartitionedConvolver;
+use sound_engine::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest};
 use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
 };
@@ -14,32 +12,25 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/circus.wav";
+const DEFAULT_INPUT_A: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/circus.wav";
+const DEFAULT_INPUT_B: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/music.wav";
+const IR_A_ID: ImpulseResponseId = 1;
+const IR_B_ID: ImpulseResponseId = 2;
 const BLOCK_SIZE: usize = 1024;
 const PREFILL_BLOCKS: usize = 8;
 const MAX_QUEUED_BLOCKS: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let input_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_INPUT.to_string());
-
-    let (input_samples, sample_rate) = read_mono_wav_as_f32(&input_path)?;
-    if input_samples.is_empty() {
-        return Err(std::io::Error::other("Input WAV has no samples").into());
-    }
+    let mut args = std::env::args().skip(1);
+    let input_a = args.next().unwrap_or_else(|| DEFAULT_INPUT_A.to_string());
+    let input_b = args.next().unwrap_or_else(|| DEFAULT_INPUT_B.to_string());
 
     let host = cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or_else(|| std::io::Error::other("No default output device available"))?;
     let supported_config = device.default_output_config()?;
-
-    if supported_config.sample_rate().0 != sample_rate {
-        return Err(std::io::Error::other(format!(
-            "Input WAV sample rate ({sample_rate} Hz) must match output device sample rate ({} Hz)",
-            supported_config.sample_rate().0
-        ))
-        .into());
-    }
+    let sample_rate = supported_config.sample_rate().0;
 
     let channels = supported_config.channels() as usize;
     if channels < 2 {
@@ -48,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ))
         .into());
     }
+
     let stream_config: cpal::StreamConfig = supported_config.clone().into();
     let queue = Arc::new(SampleQueue::new(MAX_QUEUED_BLOCKS * BLOCK_SIZE * 2));
     let producer_done = Arc::new(AtomicBool::new(false));
@@ -56,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let producer_queue = queue.clone();
     let producer_done_flag = producer_done.clone();
     let producer = thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let result = run_convolver_producer(input_samples, sample_rate, producer_queue.clone());
+        let result = run_engine_producer(input_a, input_b, sample_rate, producer_queue.clone());
         producer_done_flag.store(true, Ordering::Release);
         producer_queue.notify_all();
         result
@@ -66,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if producer_done.load(Ordering::Acquire) && queue.is_empty() {
         producer
             .join()
-            .map_err(|_| std::io::Error::other("Convolver producer thread panicked"))??;
+            .map_err(|_| std::io::Error::other("Auralization producer thread panicked"))??;
         return Ok(());
     }
 
@@ -133,43 +125,43 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     producer
         .join()
-        .map_err(|_| std::io::Error::other("Convolver producer thread panicked"))??;
+        .map_err(|_| std::io::Error::other("Auralization producer thread panicked"))??;
 
     Ok(())
 }
 
-fn run_convolver_producer(
-    input_samples: Vec<f32>,
+fn run_engine_producer(
+    input_a: String,
+    input_b: String,
     sample_rate: u32,
     queue: Arc<SampleQueue>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ir = build_sample_ir(sample_rate);
+    let ir_a = build_ping_pong_ir(sample_rate);
+    let ir_b = build_room_ir(sample_rate);
+    let ir_num_samples = ir_a.len().max(ir_b.len()) as u32;
 
     let backend = Arc::new(VkBackend::new()?);
-    let convolver = PartitionedConvolver::new(
+    let mut engine = AuralizationEngine::new(
         backend,
-        engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Stereo),
+        engine_config(sample_rate, BLOCK_SIZE, ir_num_samples, OutputChannels::Stereo),
     )?;
-    let impulse_response = convolver.create_impulse_response(&ir)?;
-    let mut voice = Voice::new(1, 0, 1.0, impulse_response, convolver.tail_size(), convolver.fft_size());
 
-    let block_size = BLOCK_SIZE;
-    let mut input_block = vec![0.0f32; block_size];
-    let mut output_block = vec![0.0f32; block_size * 2];
+    engine.register_impulse_response(IR_A_ID, &ir_a)?;
+    engine.register_impulse_response(IR_B_ID, &ir_b)?;
+    let sound_a = engine.load_wav_sound(input_a)?;
+    let sound_b = engine.load_wav_sound(input_b)?;
 
-    for chunk in input_samples.chunks(block_size) {
-        input_block.fill(0.0);
-        input_block[..chunk.len()].copy_from_slice(chunk);
+    engine.play_sound(PlaySoundRequest::new(sound_a, IR_A_ID))?;
+    engine.play_sound(PlaySoundRequest {
+        sound_id: sound_b,
+        impulse_response_id: IR_B_ID,
+        gain: 0.8,
+    })?;
 
+    let mut output_block = vec![0.0f32; BLOCK_SIZE * 2];
+    while engine.has_active_voices() {
         output_block.fill(0.0);
-        convolver.process_block(&mut voice, &input_block, &mut output_block)?;
-        queue.push_block(&output_block[..chunk.len() * 2]);
-        if chunk.len() < block_size {
-            queue.push_block(&output_block[chunk.len() * 2..]);
-        }
-    }
-
-    while convolver.flush_tail_block(&mut voice, &mut output_block)? {
+        engine.render_block(&mut output_block)?;
         queue.push_block(&output_block);
     }
 
@@ -274,127 +266,56 @@ impl SampleQueue {
     }
 }
 
-fn read_mono_wav_as_f32(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error + Send + Sync>> {
-    let mut reader = WavReader::open(path)?;
-    let spec = reader.spec();
-    if spec.channels != 1 {
-        return Err(std::io::Error::other("Input must be mono WAV (1 channel)").into());
-    }
-
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (SampleFormat::Float, 32) => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
-        (SampleFormat::Int, 16) => reader
-            .samples::<i16>()
-            .map(|s| s.map(|x| x as f32 / i16::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()?,
-        (SampleFormat::Int, 24) => reader
-            .samples::<i32>()
-            .map(|s| s.map(|x| x as f32 / 8_388_607.0))
-            .collect::<Result<Vec<_>, _>>()?,
-        (SampleFormat::Int, 32) => reader
-            .samples::<i32>()
-            .map(|s| s.map(|x| x as f32 / i32::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()?,
-        _ => {
-            return Err(std::io::Error::other(format!(
-                "Unsupported WAV format: {:?} {} bits",
-                spec.sample_format, spec.bits_per_sample
-            ))
-            .into());
-        }
-    };
-
-    Ok((samples, spec.sample_rate))
-}
-
-// fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
-//     let size = sample_rate as usize;
-//     let mut ir = vec![IrSample::zero(); size];
-//     ir[0] = IrSample::new(1.0, 0.0);
-//     ir[size - 1] = IrSample::new(0.0, 1.0);
-//     // let d1 = (sample_rate as usize / 4).min(size - 1);
-//     // let d2 = (sample_rate as usize / 2).min(size - 1);
-//     // ir[d1] = 0.45;
-//     // ir[d2] = 0.25;
-
-//     // Add a light exponentially decaying tail.
-//     // for (i, s) in ir.iter_mut().enumerate().skip(1) {
-//     //     let t = i as f32 / sample_rate as f32;
-//     //     *s += (-8.0 * t).exp() * 0.02 * (2.0 * std::f32::consts::PI * 180.0 * t).sin();
-//     // }
-
-//     ir
-// }
-
-// fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
-//     let size = sample_rate as usize; // 1 second IR
-
-//     let mut ir = vec![IrSample::zero(); size];
-
-//     // Direct sound
-//     ir[0] = IrSample { left: 1.0, right: 0.8 };
-
-//     // Early reflections
-//     ir[(0.015 * sample_rate as f32) as usize] = IrSample { left: 0.5, right: 0.3 };
-
-//     ir[(0.032 * sample_rate as f32) as usize] = IrSample { left: 0.25, right: 0.4 };
-
-//     ir[(0.055 * sample_rate as f32) as usize] = IrSample {
-//         left: 0.18,
-//         right: 0.12,
-//     };
-
-//     // Late reverberation tail
-//     for i in (0.08 * sample_rate as f32) as usize..size {
-//         let t = i as f32 / sample_rate as f32;
-
-//         let decay = (-4.0 * t).exp();
-
-//         let left_mod = (t * 120.0).sin() * 0.02 + (t * 340.0).sin() * 0.01;
-
-//         let right_mod = (t * 100.0).sin() * 0.02 + (t * 290.0).sin() * 0.01;
-
-//         ir[i].left += decay * left_mod;
-//         ir[i].right += decay * right_mod;
-//     }
-
-//     ir
-// }
-
-fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
+fn build_ping_pong_ir(sample_rate: u32) -> Vec<IrSample> {
     let size = (2.0 * sample_rate as f32) as usize;
     let mut ir = vec![IrSample::zero(); size];
-
     let echoes = [
         (0.000, 1.00),
-        (0.125, 0.90),
-        (0.250, 0.70),
-        (0.375, 0.50),
-        (0.500, 0.30),
-        (0.625, 0.18),
-        (0.750, 0.12),
-        (0.875, 0.08),
+        (0.125, 0.80),
+        (0.250, 0.55),
+        (0.375, 0.36),
+        (0.500, 0.22),
+        (0.625, 0.13),
     ];
 
     for (i, (time, amplitude)) in echoes.iter().enumerate() {
         let sample = (time * sample_rate as f32) as usize;
-
         if sample >= size {
             continue;
         }
-
-        // Ping-pong between ears.
         if i % 2 == 0 {
-            ir[sample] = IrSample {
-                left: *amplitude,
-                right: 0.0,
-            };
+            ir[sample] = IrSample::new(*amplitude, 0.0);
         } else {
-            ir[sample] = IrSample {
-                left: 0.0,
-                right: *amplitude,
-            };
+            ir[sample] = IrSample::new(0.0, *amplitude);
         }
+    }
+
+    ir
+}
+
+fn build_room_ir(sample_rate: u32) -> Vec<IrSample> {
+    let size = (2.0 * sample_rate as f32) as usize;
+    let mut ir = vec![IrSample::zero(); size];
+    ir[0] = IrSample::new(0.8, 1.0);
+
+    let reflections = [
+        (0.018, 0.35, 0.20),
+        (0.041, 0.18, 0.28),
+        (0.073, 0.14, 0.12),
+        (0.117, 0.08, 0.10),
+    ];
+    for (time, left, right) in reflections {
+        let sample = (time * sample_rate as f32) as usize;
+        if sample < size {
+            ir[sample] = IrSample::new(left, right);
+        }
+    }
+
+    for (i, sample) in ir.iter_mut().enumerate().skip((0.140 * sample_rate as f32) as usize) {
+        let t = i as f32 / sample_rate as f32;
+        let decay = (-3.5 * t).exp();
+        sample.left += decay * 0.015 * (2.0 * std::f32::consts::PI * 173.0 * t).sin();
+        sample.right += decay * 0.015 * (2.0 * std::f32::consts::PI * 211.0 * t).sin();
     }
 
     ir

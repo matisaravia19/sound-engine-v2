@@ -1,5 +1,5 @@
 use crate::acoustics::IrSample;
-use crate::auralization::{ImpulseResponseId, VoiceId};
+use crate::auralization::voice::Voice;
 use crate::core::config::EngineConfig;
 use crate::core::config::OutputChannels;
 use crate::error::{ErrorCode, SoundError, SoundResult};
@@ -11,9 +11,7 @@ use crate::gpu::compute::{
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::shader::ShaderStage;
 use ash::vk;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vkfft_rs::plan::{DeviceHandles, FFTPlan, FFTPlanBuilder};
 
 const MULTIPLY_SHADER_PATH: &str = concat!(
@@ -29,9 +27,6 @@ const MULTIPLY_SHADER_PATH: &str = concat!(
 pub struct PartitionedConvolver {
     gpu: Arc<VkBackend>,
     config: EngineConfig,
-    id_counter: AtomicU64,
-    voices: Mutex<HashMap<VoiceId, Voice>>,
-    impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
     signal_plan: FFTPlan,
     signal_buffer: BufferHandle,
     multiply_pipeline_id: PipelineId,
@@ -39,14 +34,13 @@ pub struct PartitionedConvolver {
     tail_size: usize,
 }
 
-struct Voice {
-    impulse_response: Arc<ImpulseResponse>,
-    tail: Vec<[f32; 2]>,
-    tail_position: usize,
-    complex_cpu_buffer: Vec<[f32; 2]>,
-}
-
-struct ImpulseResponse {
+/// Uploaded frequency-domain impulse response produced by the convolver.
+///
+/// The wrapper owns the GPU storage buffer for the transformed IR. Registries
+/// should store it behind `Arc` so active voices can keep using an IR after its
+/// application-facing id is removed.
+pub struct ImpulseResponse {
+    /// GPU storage buffer containing the FFT-transformed stereo IR.
     buffer: BufferHandle,
 }
 
@@ -62,9 +56,6 @@ impl PartitionedConvolver {
         Ok(Self {
             gpu,
             config,
-            id_counter: AtomicU64::new(0),
-            voices: Mutex::new(HashMap::new()),
-            impulse_responses: HashMap::new(),
             signal_plan,
             signal_buffer,
             multiply_pipeline_id,
@@ -73,8 +64,8 @@ impl PartitionedConvolver {
         })
     }
 
-    /// Registers an impulse response and uploads its frequency-domain form.
-    pub fn register_impulse_response(&mut self, id: ImpulseResponseId, samples: &[IrSample]) -> SoundResult<()> {
+    /// Uploads an impulse response and transforms it into frequency-domain form.
+    pub fn create_impulse_response(&self, samples: &[IrSample]) -> SoundResult<Arc<ImpulseResponse>> {
         crate::debug_validate!(
             !samples.is_empty(),
             ErrorCode::InvalidArgument,
@@ -102,78 +93,35 @@ impl PartitionedConvolver {
             Ok(())
         })?;
 
-        let ir = Arc::new(ImpulseResponse { buffer });
-        self.impulse_responses.insert(id, ir);
-
-        Ok(())
+        Ok(Arc::new(ImpulseResponse { buffer }))
     }
 
-    /// Removes an impulse response from the convolver.
-    pub fn forget_impulse_response(&mut self, id: ImpulseResponseId) {
-        self.impulse_responses.remove(&id);
+    /// Returns the FFT size used for signal and IR buffers.
+    pub fn fft_size(&self) -> usize {
+        self.fft_size
     }
 
-    /// Starts a voice that uses a registered impulse response.
-    pub fn start_sound(&mut self, ir_id: ImpulseResponseId) -> SoundResult<VoiceId> {
-        let ir = self
-            .impulse_responses
-            .get(&ir_id)
-            .ok_or_else(|| SoundError::not_found(format!("Unknown impulse response id {ir_id}")))?;
-
-        let voice_id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-
-        let mut voices = self
-            .voices
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Voices lock is poisoned"))?;
-
-        voices.insert(
-            voice_id,
-            Voice {
-                impulse_response: ir.clone(),
-                tail: vec![[0.0, 0.0]; self.tail_size],
-                tail_position: 0,
-                complex_cpu_buffer: vec![[0.0, 0.0]; self.fft_size],
-            },
-        );
-
-        Ok(voice_id)
-    }
-
-    /// Stops a voice and releases its overlap state.
-    pub fn stop_sound(&mut self, voice_id: VoiceId) -> SoundResult<()> {
-        let mut voices = self
-            .voices
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Voices lock is poisoned"))?;
-        voices.remove(&voice_id);
-        Ok(())
+    /// Returns the number of overlap frames kept per voice.
+    pub fn tail_size(&self) -> usize {
+        self.tail_size
     }
 
     /// Processes one mono input block for a voice into the configured output layout.
-    pub fn process_block(&self, voice_id: VoiceId, input_block: &[f32], output_block: &mut [f32]) -> SoundResult<()> {
+    pub fn process_block(&self, voice: &mut Voice, input_block: &[f32], output_block: &mut [f32]) -> SoundResult<()> {
         self.validate_block_lengths(input_block, output_block)?;
 
-        let mut voices = self
-            .voices
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Voices lock is poisoned"))?;
-
-        let voice = voices
-            .get_mut(&voice_id)
-            .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {voice_id}")))?;
-
         crate::debug_validate!(
-            voice.tail_position == 0,
+            voice.convolution.tail_position == 0,
             ErrorCode::InvalidArgument,
-            "voice {voice_id} has already started flushing its tail and cannot process more input blocks"
+            "voice {} has already started flushing its tail and cannot process more input blocks",
+            voice.id()
         );
 
         self.convolve(voice, input_block)?;
-        self.overlap_add(&mut voice.complex_cpu_buffer, &mut voice.tail);
+        self.overlap_add(&mut voice.convolution.complex_cpu_buffer, &mut voice.convolution.tail);
 
         self.copy_samples(
-            &voice.complex_cpu_buffer,
+            &voice.convolution.complex_cpu_buffer,
             0,
             self.config.auralization.block_size,
             output_block,
@@ -188,8 +136,7 @@ impl PartitionedConvolver {
     /// once the voice has no pending overlap tail; No additional convolution is
     /// performed; the method only drains the voice overlap state. Once a voice
     /// starts flushing its tail, it cannot process more input blocks until restarted.
-    /// After the tail is fully flushed, the voice is removed.
-    pub fn flush_tail_block(&self, voice_id: VoiceId, output_block: &mut [f32]) -> SoundResult<bool> {
+    pub fn flush_tail_block(&self, voice: &mut Voice, output_block: &mut [f32]) -> SoundResult<bool> {
         let output_channels = self.config.sound.output_channels.count();
         crate::debug_validate!(
             output_block.len() == self.config.auralization.block_size * output_channels,
@@ -200,26 +147,24 @@ impl PartitionedConvolver {
             output_channels,
         );
 
-        let mut voices = self
-            .voices
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Voices lock is poisoned"))?;
-
-        let voice = voices
-            .get_mut(&voice_id)
-            .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {voice_id}")))?;
-
-        output_block.fill(0.0);
-        let tail_remaining = voice.tail.len().saturating_sub(voice.tail_position);
-        let frames_to_copy = self.config.auralization.block_size.min(tail_remaining);
-
-        self.copy_samples(&voice.tail, voice.tail_position, frames_to_copy, output_block);
-        voice.tail_position = voice.tail_position.saturating_add(self.config.auralization.block_size);
-
-        if voice.tail_position >= voice.tail.len() {
-            voices.remove(&voice_id);
+        if voice.convolution.tail_position >= voice.convolution.tail.len() {
             return Ok(false);
         }
+
+        output_block.fill(0.0);
+        let tail_remaining = voice.convolution.tail.len() - voice.convolution.tail_position;
+        let frames_to_copy = self.config.auralization.block_size.min(tail_remaining);
+
+        self.copy_samples(
+            &voice.convolution.tail,
+            voice.convolution.tail_position,
+            frames_to_copy,
+            output_block,
+        );
+        voice.convolution.tail_position = voice
+            .convolution
+            .tail_position
+            .saturating_add(self.config.auralization.block_size);
 
         Ok(true)
     }
@@ -255,12 +200,12 @@ impl PartitionedConvolver {
 
     fn convolve(&self, voice: &mut Voice, input_block: &[f32]) -> SoundResult<()> {
         // Pack real mono input as complex for the FFT, zeroing the imaginary part.
-        voice.complex_cpu_buffer.fill([0.0, 0.0]);
+        voice.convolution.complex_cpu_buffer.fill([0.0, 0.0]);
         for (i, &sample) in input_block.iter().enumerate() {
-            voice.complex_cpu_buffer[i] = [sample, 0.0];
+            voice.convolution.complex_cpu_buffer[i] = [sample, 0.0];
         }
 
-        self.upload_signal(&voice.complex_cpu_buffer)?;
+        self.upload_signal(&voice.convolution.complex_cpu_buffer)?;
 
         // One submission keeps FFT, multiply, and inverse FFT ordered on the GPU.
         self.gpu.compute().submit_compute_and_wait(|command_buffer| {
@@ -272,8 +217,12 @@ impl PartitionedConvolver {
                 &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(self.signal_buffer.buffer),
             );
 
-            self.append_multiply(command_buffer, &voice.impulse_response.buffer, self.fft_size as u32)
-                .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
+            self.append_multiply(
+                command_buffer,
+                &voice.convolution.impulse_response.buffer,
+                self.fft_size as u32,
+            )
+            .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
             self.gpu.compute().record_buffer_barrier(
                 command_buffer,
                 &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(self.signal_buffer.buffer),
@@ -286,7 +235,7 @@ impl PartitionedConvolver {
             Ok(())
         })?;
 
-        self.download_convolution_output(&mut voice.complex_cpu_buffer)?;
+        self.download_convolution_output(&mut voice.convolution.complex_cpu_buffer)?;
 
         Ok(())
     }
@@ -338,14 +287,14 @@ impl PartitionedConvolver {
     fn copy_samples(&self, from: &[[f32; 2]], start_index: usize, count: usize, to: &mut [f32]) {
         match self.config.sound.output_channels {
             OutputChannels::Mono => {
-                for i in start_index..start_index + count {
-                    to[i] = from[i][0]; // Take left channel as mono output
+                for (dest_frame, source_frame) in (start_index..start_index + count).enumerate() {
+                    to[dest_frame] = from[source_frame][0]; // Take left channel as mono output
                 }
             }
             OutputChannels::Stereo | OutputChannels::Binaural => {
-                for i in start_index..start_index + count {
-                    to[2 * i] = from[i][0]; // Left channel
-                    to[2 * i + 1] = from[i][1]; // Right channel
+                for (dest_frame, source_frame) in (start_index..start_index + count).enumerate() {
+                    to[2 * dest_frame] = from[source_frame][0]; // Left channel
+                    to[2 * dest_frame + 1] = from[source_frame][1]; // Right channel
                 }
             }
         }
