@@ -1,21 +1,31 @@
+use glam::Vec3;
+use sound_engine::acoustics::IrSample;
+use sound_engine::auralization::ImpulseResponseId;
 use sound_engine::auralization::convolver::PartitionedConvolver;
-use sound_engine::auralization::{BLOCK_SIZE, ImpulseResponseId};
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use std::sync::Arc;
 
 const IR_ID: ImpulseResponseId = 7;
+const BLOCK_SIZE: usize = 1024;
 
 fn main() -> SoundResult<()> {
     let backend = Arc::new(VkBackend::new()?);
-    let mut convolver = PartitionedConvolver::new(backend)?;
+    let ir: Vec<f32> = vec![1.0, 0.5, -0.25, 0.125];
+    let mut convolver = PartitionedConvolver::new(
+        backend,
+        engine_config(44_100, BLOCK_SIZE, ir.len() as u32, OutputChannels::Mono),
+    )?;
 
     // Small deterministic IR so expected output is easy to validate.
-    let ir: Vec<f32> = vec![1.0, 0.5, -0.25, 0.125];
-    convolver.register_impulse_response(IR_ID, &ir)?;
+    let stereo_ir = mono_to_stereo_ir(&ir);
+    convolver.register_impulse_response(IR_ID, &stereo_ir)?;
     let voice_id = convolver.start_sound(IR_ID)?;
 
-    let block_size = BLOCK_SIZE as usize;
+    let block_size = BLOCK_SIZE;
     let mut input_block = vec![0.0_f32; block_size];
     input_block[..8].copy_from_slice(&[1.0, -0.5, 0.25, 0.0, 0.5, 0.0, -0.25, 0.125]);
 
@@ -57,4 +67,30 @@ fn cpu_linear_convolution(signal: &[f32], ir: &[f32]) -> Vec<f32> {
         *out_sample = acc;
     }
     out
+}
+
+fn mono_to_stereo_ir(ir: &[f32]) -> Vec<IrSample> {
+    ir.iter().map(|&sample| IrSample::new(sample, sample)).collect()
+}
+
+fn engine_config(
+    sample_rate: u32,
+    block_size: usize,
+    ir_num_samples: u32,
+    output_channels: OutputChannels,
+) -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels,
+            sample_rate,
+            ir_num_samples,
+        },
+        acoustics: AcousticsConfig {
+            listener_half_extent: Vec3::splat(0.2),
+            rays_per_query: 1,
+            max_bounces: 0,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size },
+    }
 }

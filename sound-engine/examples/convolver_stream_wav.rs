@@ -1,7 +1,12 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use glam::Vec3;
 use hound::{SampleFormat, WavReader};
+use sound_engine::acoustics::IrSample;
+use sound_engine::auralization::ImpulseResponseId;
 use sound_engine::auralization::convolver::PartitionedConvolver;
-use sound_engine::auralization::{BLOCK_SIZE, ImpulseResponseId};
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::gpu::backend::VkBackend;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +16,7 @@ use std::time::Duration;
 
 const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/music.wav";
 const IR_ID: ImpulseResponseId = 1;
+const BLOCK_SIZE: usize = 1024;
 const PREFILL_BLOCKS: usize = 8;
 const MAX_QUEUED_BLOCKS: usize = 32;
 
@@ -37,8 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let channels = supported_config.channels() as usize;
+    if channels < 2 {
+        return Err(std::io::Error::other(format!(
+            "Default output device must expose at least 2 channels for stereo playback, got {channels}"
+        ))
+        .into());
+    }
     let stream_config: cpal::StreamConfig = supported_config.clone().into();
-    let queue = Arc::new(SampleQueue::new(MAX_QUEUED_BLOCKS * BLOCK_SIZE as usize));
+    let queue = Arc::new(SampleQueue::new(MAX_QUEUED_BLOCKS * BLOCK_SIZE * 2));
     let producer_done = Arc::new(AtomicBool::new(false));
     let playback_done = Arc::new(AtomicBool::new(false));
 
@@ -51,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         result
     });
 
-    queue.wait_until_len_or_done(PREFILL_BLOCKS * BLOCK_SIZE as usize, &producer_done);
+    queue.wait_until_len_or_done(PREFILL_BLOCKS * BLOCK_SIZE * 2, &producer_done);
     if producer_done.load(Ordering::Acquire) && queue.is_empty() {
         producer
             .join()
@@ -135,24 +147,28 @@ fn run_convolver_producer(
     let ir = build_sample_ir(sample_rate);
 
     let backend = Arc::new(VkBackend::new()?);
-    let mut convolver = PartitionedConvolver::new(backend)?;
+    let mut convolver = PartitionedConvolver::new(
+        backend,
+        engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Stereo),
+    )?;
     convolver.register_impulse_response(IR_ID, &ir)?;
     let voice_id = convolver.start_sound(IR_ID)?;
 
-    let block_size = BLOCK_SIZE as usize;
+    let block_size = BLOCK_SIZE;
     let mut input_block = vec![0.0f32; block_size];
-    let mut output_block = vec![0.0f32; block_size];
+    let mut output_block = vec![0.0f32; block_size * 2];
 
     for chunk in input_samples.chunks(block_size) {
         input_block.fill(0.0);
         input_block[..chunk.len()].copy_from_slice(chunk);
 
+        output_block.fill(0.0);
         convolver.process_block(voice_id, &input_block, &mut output_block)?;
-        queue.push_block(&output_block[..chunk.len()]);
+        queue.push_block(&output_block[..chunk.len() * 2]);
     }
 
     input_block.fill(0.0);
-    let flush_blocks = sound_engine::auralization::TAIL_SIZE.div_ceil(block_size);
+    let flush_blocks = convolution_tail_size(block_size, ir.len()).div_ceil(block_size);
     for _ in 0..flush_blocks {
         output_block.fill(0.0);
         convolver.process_block(voice_id, &input_block, &mut output_block)?;
@@ -174,7 +190,14 @@ fn write_output<T>(
     let mut missing_sample = false;
 
     for frame in data.chunks_mut(channels) {
-        let sample = match queue.pop_sample() {
+        let left = match queue.pop_sample() {
+            Some(sample) => sample.clamp(-1.0, 1.0),
+            None => {
+                missing_sample = true;
+                0.0
+            }
+        };
+        let right = match queue.pop_sample() {
             Some(sample) => sample.clamp(-1.0, 1.0),
             None => {
                 missing_sample = true;
@@ -182,8 +205,10 @@ fn write_output<T>(
             }
         };
 
-        for channel in frame {
-            *channel = T::from_sample(sample);
+        frame[0] = T::from_sample(left);
+        frame[1] = T::from_sample(right);
+        for channel in &mut frame[2..] {
+            *channel = T::from_sample(0.0);
         }
     }
 
@@ -284,11 +309,11 @@ fn read_mono_wav_as_f32(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::erro
     Ok((samples, spec.sample_rate))
 }
 
-fn build_sample_ir(sample_rate: u32) -> Vec<f32> {
+fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
     let size = sample_rate as usize;
-    let mut ir = vec![0.0f32; size];
-    ir[0] = 1.0;
-    ir[size - 1] = 1.0;
+    let mut ir = vec![IrSample::zero(); size];
+    ir[0] = IrSample::new(1.0, 0.0);
+    ir[size - 1] = IrSample::new(0.0, 1.0);
     // let d1 = (sample_rate as usize / 4).min(size - 1);
     // let d2 = (sample_rate as usize / 2).min(size - 1);
     // ir[d1] = 0.45;
@@ -301,4 +326,30 @@ fn build_sample_ir(sample_rate: u32) -> Vec<f32> {
     // }
 
     ir
+}
+
+fn convolution_tail_size(block_size: usize, ir_len: usize) -> usize {
+    (block_size + ir_len - 1).next_power_of_two() - block_size
+}
+
+fn engine_config(
+    sample_rate: u32,
+    block_size: usize,
+    ir_num_samples: u32,
+    output_channels: OutputChannels,
+) -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels,
+            sample_rate,
+            ir_num_samples,
+        },
+        acoustics: AcousticsConfig {
+            listener_half_extent: Vec3::splat(0.2),
+            rays_per_query: 1,
+            max_bounces: 0,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size },
+    }
 }

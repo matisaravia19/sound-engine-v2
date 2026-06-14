@@ -1,5 +1,6 @@
-use glam::{vec3, Mat4, Vec3};
+use glam::{Mat4, Vec3, vec3};
 use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
+use sound_engine::core::config::OutputChannels;
 use sound_engine::debug::export_ir;
 use sound_engine::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
@@ -20,7 +21,8 @@ fn main() -> SoundResult<()> {
         &gpu,
         AcousticConfig {
             sample_rate,
-            ir_len_samples: sample_rate,
+            num_samples: sample_rate,
+            output_channels: OutputChannels::Stereo,
             listener_half_extent,
             rays_per_query: 16_384,
             max_bounces: 2,
@@ -34,6 +36,7 @@ fn main() -> SoundResult<()> {
             query_id: 2,
             source_position,
             listener_position,
+            listener_right: vec3(1.0, 0.0, 0.0),
             gain: 1.0,
         },
     )?;
@@ -54,12 +57,12 @@ fn main() -> SoundResult<()> {
     let mut nonzero = 0;
     let mut late_nonzero = 0;
     for (sample_idx, sample) in ir.samples.iter().enumerate() {
-        if *sample > 0.0 {
+        if sample.left != 0.0 || sample.right != 0.0 {
             nonzero += 1;
             if sample_idx >= late_start {
                 late_nonzero += 1;
             }
-            println!("  sample {}: {}", sample_idx, sample);
+            println!("  sample {}: left={}, right={}", sample_idx, sample.left, sample.right);
         }
     }
 

@@ -1,12 +1,18 @@
+use glam::Vec3;
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
+use sound_engine::acoustics::IrSample;
+use sound_engine::auralization::ImpulseResponseId;
 use sound_engine::auralization::convolver::PartitionedConvolver;
-use sound_engine::auralization::{BLOCK_SIZE, ImpulseResponseId};
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::gpu::backend::VkBackend;
 use std::sync::Arc;
 
 const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion.wav";
 const DEFAULT_OUTPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion-output.wav";
 const IR_ID: ImpulseResponseId = 1;
+const BLOCK_SIZE: usize = 1024;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut args = std::env::args().skip(1);
@@ -21,11 +27,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ir = build_sample_ir(sample_rate);
 
     let backend = Arc::new(VkBackend::new()?);
-    let mut convolver = PartitionedConvolver::new(backend)?;
-    convolver.register_impulse_response(IR_ID, &ir)?;
+    let mut convolver = PartitionedConvolver::new(
+        backend,
+        engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Mono),
+    )?;
+    let stereo_ir = mono_to_stereo_ir(&ir);
+    convolver.register_impulse_response(IR_ID, &stereo_ir)?;
     let voice_id = convolver.start_sound(IR_ID)?;
 
-    let block_size = BLOCK_SIZE as usize;
+    let block_size = BLOCK_SIZE;
     let mut processed = Vec::with_capacity(input_samples.len() + block_size);
     let mut input_block = vec![0.0f32; block_size];
     let mut output_block = vec![0.0f32; block_size];
@@ -39,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Flush overlap tail so the reverb/echo decay is not truncated.
-    let flush_blocks = sound_engine::auralization::TAIL_SIZE.div_ceil(block_size);
+    let flush_blocks = convolution_tail_size(block_size, ir.len()).div_ceil(block_size);
     input_block.fill(0.0);
     for _ in 0..flush_blocks {
         output_block.fill(0.0);
@@ -133,5 +143,35 @@ fn normalize_if_needed(samples: &mut [f32]) {
         for s in samples {
             *s *= gain;
         }
+    }
+}
+
+fn mono_to_stereo_ir(ir: &[f32]) -> Vec<IrSample> {
+    ir.iter().map(|&sample| IrSample::new(sample, sample)).collect()
+}
+
+fn convolution_tail_size(block_size: usize, ir_len: usize) -> usize {
+    (block_size + ir_len - 1).next_power_of_two() - block_size
+}
+
+fn engine_config(
+    sample_rate: u32,
+    block_size: usize,
+    ir_num_samples: u32,
+    output_channels: OutputChannels,
+) -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels,
+            sample_rate,
+            ir_num_samples,
+        },
+        acoustics: AcousticsConfig {
+            listener_half_extent: Vec3::splat(0.2),
+            rays_per_query: 1,
+            max_bounces: 0,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size },
     }
 }
