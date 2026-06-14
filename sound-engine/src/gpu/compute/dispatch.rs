@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::ErrorCode;
+use crate::core::error::ErrorCode;
 
 /// One compute dispatch recorded into a command buffer.
 pub struct DispatchSpec {

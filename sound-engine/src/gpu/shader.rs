@@ -1,4 +1,4 @@
-use crate::error::{ErrorCode, SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
 use std::collections::HashMap;

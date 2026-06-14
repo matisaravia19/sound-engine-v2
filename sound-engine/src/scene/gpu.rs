@@ -1,6 +1,6 @@
 use super::store::SceneStore;
 use super::types::{MaterialId, MeshId, SceneObject, SceneVersion};
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{BlasBuildSpec, BlasId, RtInstanceSpec, RtMeshBuffers, RtMeshSpec, TlasBuildSpec, TlasId};

@@ -1,7 +1,7 @@
 use super::gpu::GpuSceneResources;
 use super::store::SceneStore;
 use super::types::{SceneDescription, SceneUpdates, SceneVersion};
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 
 /// High-level scene owner used by the acoustic pipeline.

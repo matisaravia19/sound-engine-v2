@@ -1,4 +1,4 @@
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::{QueueSet, VkDeviceContext};
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;

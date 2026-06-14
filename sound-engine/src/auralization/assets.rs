@@ -1,4 +1,4 @@
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use hound::{SampleFormat, WavReader};
 use std::collections::HashMap;
 use std::path::Path;
@@ -154,7 +154,7 @@ impl DecodedWav {
     fn read(path: impl AsRef<Path>) -> SoundResult<Self> {
         let mut reader = WavReader::open(path.as_ref()).map_err(|source| {
             SoundError::with_source(
-                crate::error::ErrorCode::Io,
+                ErrorCode::Io,
                 format!("Failed to open WAV file {}", path.as_ref().display()),
                 source,
             )
@@ -164,30 +164,22 @@ impl DecodedWav {
             (SampleFormat::Float, 32) => reader
                 .samples::<f32>()
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(crate::error::ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
+                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
             (SampleFormat::Int, 16) => reader
                 .samples::<i16>()
                 .map(|sample| sample.map(|x| x as f32 / i16::MAX as f32))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(crate::error::ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
+                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
             (SampleFormat::Int, 24) => reader
                 .samples::<i32>()
                 .map(|sample| sample.map(|x| x as f32 / 8_388_607.0))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(crate::error::ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
+                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
             (SampleFormat::Int, 32) => reader
                 .samples::<i32>()
                 .map(|sample| sample.map(|x| x as f32 / i32::MAX as f32))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(crate::error::ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
+                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
             _ => {
                 return Err(SoundError::unsupported_feature(format!(
                     "Unsupported WAV format: {:?} {} bits",

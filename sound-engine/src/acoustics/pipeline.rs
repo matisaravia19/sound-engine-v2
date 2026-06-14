@@ -1,6 +1,6 @@
 use crate::acoustics::{ContributionRecord, IrBuilder, IrSnapshot, MAX_CONTRIBUTIONS_PER_QUERY};
 use crate::core::config::OutputChannels;
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{

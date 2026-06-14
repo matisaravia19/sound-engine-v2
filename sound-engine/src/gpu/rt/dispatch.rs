@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    error::{ErrorCode, SoundError, SoundResult},
+    core::error::{ErrorCode, SoundError, SoundResult},
     gpu::compute::{BufferBarrierSpec, MemoryBarrierSpec},
 };
 

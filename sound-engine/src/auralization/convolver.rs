@@ -2,7 +2,7 @@ use crate::acoustics::IrSample;
 use crate::auralization::voice::Voice;
 use crate::core::config::EngineConfig;
 use crate::core::config::OutputChannels;
-use crate::error::{ErrorCode, SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
     BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,

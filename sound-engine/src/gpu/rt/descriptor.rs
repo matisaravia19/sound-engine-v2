@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::SoundResult;
+use crate::core::error::SoundResult;
 
 impl RtContext {
     pub(super) fn acquire_descriptor_set(&self, pipeline: &mut RayTracingPipeline) -> SoundResult<vk::DescriptorSet> {

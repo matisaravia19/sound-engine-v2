@@ -2,7 +2,7 @@ use super::types::{
     Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
     SceneVersion,
 };
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use std::collections::HashMap;
 
 /// Canonical CPU-side scene state.
@@ -236,7 +236,7 @@ fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ErrorCode;
+    use crate::core::error::ErrorCode;
     use glam::{Mat4, vec3};
 
     #[test]

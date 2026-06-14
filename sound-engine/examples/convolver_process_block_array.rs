@@ -5,7 +5,7 @@ use sound_engine::auralization::convolver::PartitionedConvolver;
 use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
 };
-use sound_engine::error::SoundResult;
+use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use std::sync::Arc;
 

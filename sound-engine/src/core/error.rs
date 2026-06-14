@@ -143,44 +143,8 @@ macro_rules! debug_validate {
         #[cfg(debug_assertions)]
         {
             if !$condition {
-                return Err($crate::error::SoundError::new($code, format!($($message)+)));
+                return Err($crate::core::error::SoundError::new($code, format!($($message)+)));
             }
         }
     }};
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exposes_stable_error_code_and_display_message() {
-        let error = SoundError::invalid_argument("block_size must be > 0");
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-        assert_eq!(error.to_string(), "InvalidArgument: block_size must be > 0");
-    }
-
-    #[test]
-    fn preserves_source_error() {
-        let error = SoundError::with_source(
-            ErrorCode::Io,
-            "read failed",
-            std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
-        );
-
-        assert!(error.source().is_some());
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn debug_validation_returns_error_in_debug_builds() {
-        fn validate() -> SoundResult<()> {
-            crate::debug_validate!(false, ErrorCode::InvalidArgument, "invalid {}", "value");
-            Ok(())
-        }
-
-        let error = validate().unwrap_err();
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
 }

@@ -1,4 +1,4 @@
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::{BufferBarrierSpec, ComputeContext};
 use ash::vk;

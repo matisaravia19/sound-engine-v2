@@ -1,4 +1,4 @@
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::compute::ComputeContext;
 use crate::gpu::memory::GpuAllocator;
 use crate::gpu::rt::RtContext;

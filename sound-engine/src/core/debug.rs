@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use crate::acoustics::IrSnapshot;
-use crate::error::SoundResult;
+use crate::core::error::SoundResult;
 
 /// Writes an acoustic impulse response snapshot to a CSV debug file.
 ///

@@ -1,6 +1,6 @@
 use super::descriptor::aggregate_pool_sizes;
 use super::*;
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
 use std::ffi::CString;
 

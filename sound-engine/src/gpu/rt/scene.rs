@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
 

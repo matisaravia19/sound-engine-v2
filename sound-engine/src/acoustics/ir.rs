@@ -1,5 +1,5 @@
 use crate::core::config::OutputChannels;
-use crate::error::{SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::scene::SceneVersion;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;

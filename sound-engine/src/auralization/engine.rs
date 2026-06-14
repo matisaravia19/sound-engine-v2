@@ -4,7 +4,7 @@ use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
 use crate::auralization::voice::{Voice, VoiceState};
 use crate::auralization::{ImpulseResponseId, VoiceId};
 use crate::core::config::EngineConfig;
-use crate::error::{ErrorCode, SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use std::collections::HashMap;
 use std::path::Path;

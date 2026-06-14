@@ -1,5 +1,5 @@
 use glam::vec3;
-use sound_engine::error::{SoundError, SoundResult};
+use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{
     Material, MeshAsset, SceneDescription, SceneManager, SceneObject, SceneUpdate, SceneUpdates,
