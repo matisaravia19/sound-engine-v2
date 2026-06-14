@@ -4,7 +4,7 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 struct AcousticPayload {
-    float ray_gain;
+    float ray_energy;
     float path_distance;
     uint reflection_order;
 };
@@ -13,13 +13,16 @@ layout(location = 0) rayPayloadEXT AcousticPayload payload;
 
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) vec3 source_position;
-    layout(offset = 12) float source_gain;
+    layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
     layout(offset = 32) vec3 listener_half_extent;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
-    layout(offset = 52) uint max_contributions;
+    layout(offset = 64) vec3 listener_right;
+    layout(offset = 76) uint sample_rate;
+    layout(offset = 80) uint sample_count;
+    layout(offset = 84) uint output_channels;
 } pc;
 
 vec3 fibonacciSphereDirection(uint ray_index, uint ray_count) {
@@ -36,8 +39,8 @@ void main() {
     uint ray_count = max(pc.ray_count, 1);
     vec3 ray_direction = fibonacciSphereDirection(gl_LaunchIDEXT.x, ray_count);
 
-    // Split the source gain evenly across all sampled directions.
-    payload.ray_gain = pc.source_gain / float(ray_count);
+    // Split the source energy evenly across all sampled directions.
+    payload.ray_energy = pc.source_energy / float(ray_count);
     payload.path_distance = 0.0;
     payload.reflection_order = 0;
     traceRayEXT(

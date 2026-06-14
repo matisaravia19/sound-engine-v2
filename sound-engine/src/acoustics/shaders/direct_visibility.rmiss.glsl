@@ -2,7 +2,7 @@
 #extension GL_EXT_ray_tracing : require
 
 struct AcousticPayload {
-    float ray_gain;
+    float ray_energy;
     float path_distance;
     uint reflection_order;
 };

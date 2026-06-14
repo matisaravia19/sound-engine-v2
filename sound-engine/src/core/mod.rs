@@ -26,8 +26,8 @@ pub struct ListenerPose {
 pub struct PointSource {
     /// Source position in world meters.
     pub position: Vec3,
-    /// Linear source gain before acoustic attenuation.
-    pub gain: f32,
+    /// Acoustic source energy before acoustic attenuation.
+    pub energy: f32,
 }
 
 /// Scene-to-audio renderer that owns scene sync, IR caching, and convolution.
@@ -115,7 +115,7 @@ pub struct AcousticRenderer {
 //             scene_version: self.scene.version(),
 //             query_id: 0,
 //             source_position: source.position,
-//             source_gain: source.gain,
+//             source_energy: source.energy,
 //             listener_position: listener.position,
 //             listener_right: listener.right,
 //         };
@@ -137,7 +137,7 @@ pub struct AcousticRenderer {
 //                         source_position: source.position,
 //                         listener_position: listener.position,
 //                         listener_right: listener.right,
-//                         gain: source.gain,
+//                         source_energy: source.energy,
 //                     },
 //                 )?;
 //                 self.cache.insert(cache_query, snapshot.clone());
@@ -171,7 +171,7 @@ pub struct AcousticRenderer {
 //     fn can_reuse_active(&self, active: IrCacheQuery, query: IrCacheQuery) -> bool {
 //         active.scene_version == query.scene_version
 //             && active.source_position.distance(query.source_position) <= self.cache_cfg.reuse_distance_meters
-//             && (active.source_gain - query.source_gain).abs() <= f32::EPSILON
+//             && (active.source_energy - query.source_energy).abs() <= f32::EPSILON
 //             && active.listener_position.distance(query.listener_position) <= self.cache_cfg.reuse_distance_meters
 //             && active
 //                 .listener_right

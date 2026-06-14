@@ -36,8 +36,8 @@ pub struct IrCacheQuery {
     pub query_id: u32,
     /// Source position in world meters.
     pub source_position: Vec3,
-    /// Linear source gain baked into the cached IR.
-    pub source_gain: f32,
+    /// Acoustic source energy baked into the cached IR.
+    pub source_energy: f32,
     /// Listener position in world meters.
     pub listener_position: Vec3,
     /// Listener right-ear direction in world space.
@@ -132,7 +132,7 @@ impl IrCache {
     fn can_reuse(&self, entry: &IrCacheEntry, query: IrCacheQuery) -> bool {
         entry.query.scene_version == query.scene_version
             && entry.query.source_position.distance(query.source_position) <= self.cfg.reuse_distance_meters
-            && (entry.query.source_gain - query.source_gain).abs() <= f32::EPSILON
+            && (entry.query.source_energy - query.source_energy).abs() <= f32::EPSILON
             && entry.query.listener_position.distance(query.listener_position) <= self.cfg.reuse_distance_meters
             && entry
                 .query

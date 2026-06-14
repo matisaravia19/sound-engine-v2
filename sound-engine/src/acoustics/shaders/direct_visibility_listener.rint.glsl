@@ -1,15 +1,20 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
+hitAttributeEXT vec2 listener_hit;
+
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) vec3 source_position;
-    layout(offset = 12) float source_gain;
+    layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
     layout(offset = 32) vec3 listener_half_extent;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
-    layout(offset = 52) uint max_contributions;
+    layout(offset = 64) vec3 listener_right;
+    layout(offset = 76) uint sample_rate;
+    layout(offset = 80) uint sample_count;
+    layout(offset = 84) uint output_channels;
 } pc;
 
 void main() {
@@ -44,5 +49,6 @@ void main() {
         }
     }
 
+    listener_hit = vec2(max(t_far - t_near, 0.0), 0.0);
     reportIntersectionEXT(t_near, 0);
 }

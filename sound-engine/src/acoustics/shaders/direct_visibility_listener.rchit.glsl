@@ -1,54 +1,67 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-struct Contribution {
-    float arrival_time_seconds;
-    float linear_gain;
-    float _pad0;
-    float _pad1;
-    vec3 incoming_direction;
-    float path_order;
+const float IR_FIXED_POINT_SCALE = 1048576.0;
+const uint OUTPUT_CHANNELS_MONO = 0;
+
+struct IrSample {
+    int left;
+    int right;
 };
 
-layout(std430, set = 0, binding = 1) buffer ContributionBuffer {
-    uint contribution_count;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
-    Contribution records[];
-} contributions;
+layout(std430, set = 0, binding = 1) buffer IrBuffer {
+    IrSample samples[];
+} ir;
 
 struct AcousticPayload {
-    float ray_gain;
+    float ray_energy;
     float path_distance;
     uint reflection_order;
 };
 
 layout(location = 0) rayPayloadInEXT AcousticPayload payload;
+hitAttributeEXT vec2 listener_hit;
 
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) vec3 source_position;
-    layout(offset = 12) float source_gain;
+    layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
     layout(offset = 32) vec3 listener_half_extent;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
-    layout(offset = 52) uint max_contributions;
+    layout(offset = 64) vec3 listener_right;
+    layout(offset = 76) uint sample_rate;
+    layout(offset = 80) uint sample_count;
+    layout(offset = 84) uint output_channels;
 } pc;
 
+int toFixedPoint(float value) {
+    float clamped = clamp(value * IR_FIXED_POINT_SCALE, -2147483008.0, 2147483007.0);
+    return int(round(clamped));
+}
+
 void main() {
-    uint record_index = atomicAdd(contributions.contribution_count, 1);
-    if (record_index >= pc.max_contributions) {
+    float distance = payload.path_distance + gl_HitTEXT;
+    float arrival_time_seconds = distance / max(pc.speed_of_sound, 0.001);
+    uint sample_index = uint(round(arrival_time_seconds * float(pc.sample_rate)));
+    if (sample_index >= pc.sample_count) {
         return;
     }
 
-    float distance = payload.path_distance + gl_HitTEXT;
-    float ray_gain = payload.ray_gain;
+    float listener_distance = listener_hit.x;
+    float listener_volume = 8.0 * pc.listener_half_extent.x * pc.listener_half_extent.y * pc.listener_half_extent.z;
+    float ray_intensity = payload.ray_energy * listener_distance / max(listener_volume, 0.000001);
+    vec3 incoming_direction = normalize(-gl_WorldRayDirectionEXT);
+    float left_factor = 1.0;
+    float right_factor = 1.0;
+    if (pc.output_channels != OUTPUT_CHANNELS_MONO) {
+        float pan = clamp(dot(incoming_direction, normalize(pc.listener_right)), -1.0, 1.0);
+        left_factor = sqrt(0.5 * (1.0 - pan));
+        right_factor = sqrt(0.5 * (1.0 + pan));
+    }
 
-    // Store arrival time and distance-attenuated gain for CPU IR binning.
-    contributions.records[record_index].arrival_time_seconds = distance / max(pc.speed_of_sound, 0.001);
-    contributions.records[record_index].linear_gain = ray_gain;
-    contributions.records[record_index].incoming_direction = normalize(-gl_WorldRayDirectionEXT);
-    contributions.records[record_index].path_order = float(payload.reflection_order);
+    // Multiple rays can land on the same IR sample, so accumulation is atomic.
+    atomicAdd(ir.samples[sample_index].left, toFixedPoint(ray_intensity * left_factor));
+    atomicAdd(ir.samples[sample_index].right, toFixedPoint(ray_intensity * right_factor));
 }

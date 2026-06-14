@@ -7,7 +7,7 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 struct AcousticPayload {
-    float ray_gain;
+    float ray_energy;
     float path_distance;
     uint reflection_order;
 };
@@ -49,13 +49,16 @@ layout(location = 0) rayPayloadInEXT AcousticPayload payload;
 
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) vec3 source_position;
-    layout(offset = 12) float source_gain;
+    layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
     layout(offset = 32) vec3 listener_half_extent;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
-    layout(offset = 52) uint max_contributions;
+    layout(offset = 64) vec3 listener_right;
+    layout(offset = 76) uint sample_rate;
+    layout(offset = 80) uint sample_count;
+    layout(offset = 84) uint output_channels;
 } pc;
 
 vec3 loadVertex(VertexBuffer vertices, uint vertex_index) {
@@ -107,8 +110,8 @@ void main() {
     // Only the absorption coefficient is used for now; scattering is reserved
     // in the material record for later diffuse reflection paths.
     float absorption = clamp(scene_materials.materials[object.material_index].absorption, 0.0, 1.0);
-    payload.ray_gain *= (1.0 - absorption);
-    if (payload.ray_gain <= 0.000001) {
+    payload.ray_energy *= (1.0 - absorption);
+    if (payload.ray_energy <= 0.000001) {
         return;
     }
 

@@ -1,4 +1,4 @@
-use crate::acoustics::{ContributionRecord, IrBuilder, IrSnapshot};
+use crate::acoustics::{IrSample, IrSnapshot};
 use crate::core::config::OutputChannels;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -13,9 +13,9 @@ use ash::vk;
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
+const IR_FIXED_POINT_SCALE: f32 = 1_048_576.0;
 
 /// Runtime configuration for acoustic IR generation.
 #[derive(Debug, Clone, Copy)]
@@ -32,8 +32,6 @@ pub struct AcousticConfig {
     pub rays_per_query: u32,
     /// Maximum path depth reserved for future reflection tracing.
     pub max_bounces: u32,
-    /// Maximum listener-hit contributions retained for IR construction.
-    pub max_contributions: usize,
 }
 
 /// Source/listener pair that should produce one impulse response.
@@ -47,36 +45,38 @@ pub struct AcousticQuery {
     pub listener_position: Vec3,
     /// Listener right-ear direction in world space, used for directional stereo binning.
     pub listener_right: Vec3,
-    /// Linear source gain applied before distance attenuation.
-    pub gain: f32,
+    /// Acoustic source energy split across the traced ray directions.
+    pub source_energy: f32,
 }
 
-/// Acoustic pipeline that traces path contributions and builds stereo IR snapshots.
+/// Acoustic pipeline that traces acoustic paths into stereo IR snapshots.
 ///
-/// The pipeline owns long-lived RT resources and a contribution buffer. Calls
-/// are synchronous today: GPU ray tracing finishes, contributions are downloaded,
-/// and CPU IR construction completes before `build_ir` returns.
+/// The pipeline owns long-lived RT resources and an IR accumulation buffer.
+/// Calls are synchronous today: GPU ray tracing writes the IR, the final samples
+/// are downloaded, and `build_ir` returns an immutable snapshot.
 pub struct AcousticPipeline {
     cfg: AcousticConfig,
     contribution_pipeline: RtPipelineId,
-    contribution_buffer: BufferHandle,
-    contribution_capacity: usize,
+    ir_buffer: BufferHandle,
     _listener_aabbs: RtAabbBuffers,
     listener_blas: BlasId,
-    ir_builder: IrBuilder,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct VisibilityPushConstants {
     source_position: [f32; 3],
-    source_gain: f32,
+    source_energy: f32,
     listener_position: [f32; 3],
     speed_of_sound: f32,
     listener_half_extent: [f32; 3],
     ray_count: u32,
     max_bounces: u32,
-    max_contributions: u32,
+    _pad0: [u32; 3],
+    listener_right: [f32; 3],
+    sample_rate: u32,
+    sample_count: u32,
+    output_channels: u32,
 }
 
 unsafe impl bytemuck::Zeroable for VisibilityPushConstants {}
@@ -84,19 +84,19 @@ unsafe impl bytemuck::Pod for VisibilityPushConstants {}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct ContributionHeader {
-    count: u32,
-    _pad: [u32; 3],
+struct GpuIrSample {
+    left: i32,
+    right: i32,
 }
 
-unsafe impl bytemuck::Zeroable for ContributionHeader {}
-unsafe impl bytemuck::Pod for ContributionHeader {}
+unsafe impl bytemuck::Zeroable for GpuIrSample {}
+unsafe impl bytemuck::Pod for GpuIrSample {}
 
 impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
     pub fn new(gpu: &VkBackend, cfg: AcousticConfig) -> SoundResult<Self> {
         validate_listener_half_extent(cfg.listener_half_extent)?;
-        let contribution_capacity = cfg.max_contributions.max(1);
+        validate_ir_dimensions(cfg.sample_rate, cfg.num_samples)?;
 
         let raygen = gpu
             .shaders()
@@ -141,25 +141,21 @@ impl AcousticPipeline {
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
             max_ray_recursion_depth: cfg.max_bounces.saturating_add(1).max(1),
         })?;
-        let contribution_buffer =
-            gpu.memory()
-                .create_storage_buffer(contribution_buffer_size(contribution_capacity) as u64)?;
+        let ir_buffer = gpu
+            .memory()
+            .create_storage_buffer(ir_buffer_size(cfg.num_samples) as u64)?;
         let listener_aabbs = create_listener_aabb(gpu, cfg.listener_half_extent)?;
         let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
             aabbs: &listener_aabbs,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
 
-        let ir_builder = IrBuilder::new(cfg.sample_rate, cfg.num_samples, cfg.output_channels)?;
-
         Ok(Self {
             cfg,
             contribution_pipeline,
-            contribution_buffer,
-            contribution_capacity,
+            ir_buffer,
             _listener_aabbs: listener_aabbs,
             listener_blas,
-            ir_builder,
         })
     }
 
@@ -177,16 +173,20 @@ impl AcousticPipeline {
         let _max_bounces = self.cfg.max_bounces;
         let visibility_constants = VisibilityPushConstants {
             source_position: query.source_position.to_array(),
-            source_gain: query.gain,
+            source_energy: query.source_energy,
             listener_position: query.listener_position.to_array(),
             speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
             listener_half_extent: self.cfg.listener_half_extent.to_array(),
             ray_count: self.cfg.rays_per_query.max(1),
             max_bounces: self.cfg.max_bounces,
-            max_contributions: self.contribution_capacity.min(u32::MAX as usize) as u32,
+            _pad0: [0; 3],
+            listener_right: query.listener_right.to_array(),
+            sample_rate: self.cfg.sample_rate,
+            sample_count: self.cfg.num_samples,
+            output_channels: output_channels_to_shader(self.cfg.output_channels),
         };
 
-        gpu.memory().clear_buffer(&self.contribution_buffer)?;
+        gpu.memory().clear_buffer(&self.ir_buffer)?;
         gpu.compute().submit_compute_and_wait(|command_buffer| {
             gpu.rt().record_trace(
                 command_buffer,
@@ -194,7 +194,7 @@ impl AcousticPipeline {
                     pipeline_id: self.contribution_pipeline,
                     descriptor_writes: vec![
                         RtDescriptorWrite::acceleration_structure(0, tlas_id),
-                        RtDescriptorWrite::storage_buffer(1, self.contribution_buffer.buffer),
+                        RtDescriptorWrite::storage_buffer(1, self.ir_buffer.buffer),
                         RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
                     ],
@@ -208,16 +208,7 @@ impl AcousticPipeline {
             Ok(())
         })?;
 
-        let contributions = self.download_contributions(gpu)?;
-
-        let ir = self.ir_builder.build_from_contributions(
-            gpu_scene.version(),
-            query.query_id,
-            &contributions,
-            query.listener_right,
-        );
-
-        Ok(ir)
+        self.download_ir(gpu, gpu_scene.version(), query.query_id)
     }
 
     /// Builds stereo IR snapshots for a batch of source/listener queries.
@@ -234,18 +225,34 @@ impl AcousticPipeline {
         Ok(snapshots)
     }
 
-    fn download_contributions(&self, gpu: &VkBackend) -> SoundResult<Vec<ContributionRecord>> {
-        let mut raw = vec![0_u8; contribution_buffer_size(self.contribution_capacity)];
+    fn download_ir(
+        &self,
+        gpu: &VkBackend,
+        scene_version: crate::scene::SceneVersion,
+        query_id: u32,
+    ) -> SoundResult<IrSnapshot> {
+        let mut gpu_samples = vec![GpuIrSample { left: 0, right: 0 }; self.cfg.num_samples as usize];
         gpu.memory()
-            .download_bytes(&self.contribution_buffer, raw.len(), &mut raw)?;
+            .download_typed(&self.ir_buffer, gpu_samples.len(), &mut gpu_samples)?;
 
-        let header_size = size_of::<ContributionHeader>();
-        let header = bytemuck::from_bytes::<ContributionHeader>(&raw[..header_size]);
-        let count = (header.count as usize).min(self.contribution_capacity);
-        let records_bytes =
-            &raw[header_size..header_size + self.contribution_capacity * size_of::<ContributionRecord>()];
-        let records = bytemuck::cast_slice::<u8, ContributionRecord>(records_bytes);
-        Ok(records[..count].to_vec())
+        let mut energy = 0.0f32;
+        let samples = gpu_samples
+            .into_iter()
+            .map(|sample| {
+                let left = sample.left as f32 / IR_FIXED_POINT_SCALE;
+                let right = sample.right as f32 / IR_FIXED_POINT_SCALE;
+                energy += left * left + right * right;
+                IrSample::new(left, right)
+            })
+            .collect();
+
+        Ok(IrSnapshot {
+            sample_rate: self.cfg.sample_rate,
+            samples,
+            energy,
+            scene_version,
+            query_id,
+        })
     }
 
     fn build_query_tlas(
@@ -292,6 +299,16 @@ fn validate_listener_half_extent(listener_half_extent: Vec3) -> SoundResult<()> 
     Ok(())
 }
 
+fn validate_ir_dimensions(sample_rate: u32, num_samples: u32) -> SoundResult<()> {
+    if sample_rate == 0 {
+        return Err(SoundError::invalid_argument("IR sample_rate must be > 0"));
+    }
+    if num_samples == 0 {
+        return Err(SoundError::invalid_argument("IR length must be > 0"));
+    }
+    Ok(())
+}
+
 fn create_listener_aabb(gpu: &VkBackend, listener_half_extent: Vec3) -> SoundResult<RtAabbBuffers> {
     gpu.rt().upload_aabbs(&[RtAabbSpec {
         min: -listener_half_extent,
@@ -300,6 +317,14 @@ fn create_listener_aabb(gpu: &VkBackend, listener_half_extent: Vec3) -> SoundRes
     }])
 }
 
-fn contribution_buffer_size(capacity: usize) -> usize {
-    size_of::<ContributionHeader>() + capacity * size_of::<ContributionRecord>()
+fn ir_buffer_size(sample_count: u32) -> usize {
+    sample_count as usize * size_of::<GpuIrSample>()
+}
+
+fn output_channels_to_shader(output_channels: OutputChannels) -> u32 {
+    match output_channels {
+        OutputChannels::Mono => 0,
+        OutputChannels::Stereo => 1,
+        OutputChannels::Binaural => 2,
+    }
 }

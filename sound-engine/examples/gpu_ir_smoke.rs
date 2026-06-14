@@ -22,7 +22,6 @@ fn main() -> SoundResult<()> {
             listener_half_extent: vec3(0.2, 0.2, 0.2),
             rays_per_query: 1024,
             max_bounces: 0,
-            max_contributions: 4096,
         },
     )?;
 
@@ -34,7 +33,7 @@ fn main() -> SoundResult<()> {
             source_position: vec3(0.0, 0.0, 0.0),
             listener_position: vec3(1.0, 0.0, 0.0),
             listener_right: vec3(1.0, 0.0, 0.0),
-            gain: 1.0,
+            source_energy: 1.0,
         },
     )?;
 
