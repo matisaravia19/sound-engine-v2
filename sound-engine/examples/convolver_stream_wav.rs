@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/music.wav";
+const DEFAULT_INPUT: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/circus.wav";
 const IR_ID: ImpulseResponseId = 1;
 const BLOCK_SIZE: usize = 1024;
 const PREFILL_BLOCKS: usize = 8;
@@ -165,13 +165,12 @@ fn run_convolver_producer(
         output_block.fill(0.0);
         convolver.process_block(voice_id, &input_block, &mut output_block)?;
         queue.push_block(&output_block[..chunk.len() * 2]);
+        if chunk.len() < block_size {
+            queue.push_block(&output_block[chunk.len() * 2..]);
+        }
     }
 
-    input_block.fill(0.0);
-    let flush_blocks = convolution_tail_size(block_size, ir.len()).div_ceil(block_size);
-    for _ in 0..flush_blocks {
-        output_block.fill(0.0);
-        convolver.process_block(voice_id, &input_block, &mut output_block)?;
+    while convolver.flush_tail_block(voice_id, &mut output_block)? {
         queue.push_block(&output_block);
     }
 
@@ -309,27 +308,97 @@ fn read_mono_wav_as_f32(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::erro
     Ok((samples, spec.sample_rate))
 }
 
-fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
-    let size = sample_rate as usize;
-    let mut ir = vec![IrSample::zero(); size];
-    ir[0] = IrSample::new(1.0, 0.0);
-    ir[size - 1] = IrSample::new(0.0, 1.0);
-    // let d1 = (sample_rate as usize / 4).min(size - 1);
-    // let d2 = (sample_rate as usize / 2).min(size - 1);
-    // ir[d1] = 0.45;
-    // ir[d2] = 0.25;
+// fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
+//     let size = sample_rate as usize;
+//     let mut ir = vec![IrSample::zero(); size];
+//     ir[0] = IrSample::new(1.0, 0.0);
+//     ir[size - 1] = IrSample::new(0.0, 1.0);
+//     // let d1 = (sample_rate as usize / 4).min(size - 1);
+//     // let d2 = (sample_rate as usize / 2).min(size - 1);
+//     // ir[d1] = 0.45;
+//     // ir[d2] = 0.25;
 
-    // Add a light exponentially decaying tail.
-    // for (i, s) in ir.iter_mut().enumerate().skip(1) {
-    //     let t = i as f32 / sample_rate as f32;
-    //     *s += (-8.0 * t).exp() * 0.02 * (2.0 * std::f32::consts::PI * 180.0 * t).sin();
-    // }
+//     // Add a light exponentially decaying tail.
+//     // for (i, s) in ir.iter_mut().enumerate().skip(1) {
+//     //     let t = i as f32 / sample_rate as f32;
+//     //     *s += (-8.0 * t).exp() * 0.02 * (2.0 * std::f32::consts::PI * 180.0 * t).sin();
+//     // }
+
+//     ir
+// }
+
+// fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
+//     let size = sample_rate as usize; // 1 second IR
+
+//     let mut ir = vec![IrSample::zero(); size];
+
+//     // Direct sound
+//     ir[0] = IrSample { left: 1.0, right: 0.8 };
+
+//     // Early reflections
+//     ir[(0.015 * sample_rate as f32) as usize] = IrSample { left: 0.5, right: 0.3 };
+
+//     ir[(0.032 * sample_rate as f32) as usize] = IrSample { left: 0.25, right: 0.4 };
+
+//     ir[(0.055 * sample_rate as f32) as usize] = IrSample {
+//         left: 0.18,
+//         right: 0.12,
+//     };
+
+//     // Late reverberation tail
+//     for i in (0.08 * sample_rate as f32) as usize..size {
+//         let t = i as f32 / sample_rate as f32;
+
+//         let decay = (-4.0 * t).exp();
+
+//         let left_mod = (t * 120.0).sin() * 0.02 + (t * 340.0).sin() * 0.01;
+
+//         let right_mod = (t * 100.0).sin() * 0.02 + (t * 290.0).sin() * 0.01;
+
+//         ir[i].left += decay * left_mod;
+//         ir[i].right += decay * right_mod;
+//     }
+
+//     ir
+// }
+
+fn build_sample_ir(sample_rate: u32) -> Vec<IrSample> {
+    let size = (2.0 * sample_rate as f32) as usize;
+    let mut ir = vec![IrSample::zero(); size];
+
+    let echoes = [
+        (0.000, 1.00),
+        (0.125, 0.90),
+        (0.250, 0.70),
+        (0.375, 0.50),
+        (0.500, 0.30),
+        (0.625, 0.18),
+        (0.750, 0.12),
+        (0.875, 0.08),
+    ];
+
+    for (i, (time, amplitude)) in echoes.iter().enumerate() {
+        let sample = (time * sample_rate as f32) as usize;
+
+        if sample >= size {
+            continue;
+        }
+
+        // Ping-pong between ears.
+        if i % 2 == 0 {
+            ir[sample] = IrSample {
+                left: *amplitude,
+                right: 0.0,
+            };
+        } else {
+            ir[sample] = IrSample {
+                left: 0.0,
+                right: *amplitude,
+            };
+        }
+    }
 
     ir
-}
-
-fn convolution_tail_size(block_size: usize, ir_len: usize) -> usize {
-    (block_size + ir_len - 1).next_power_of_two() - block_size
 }
 
 fn engine_config(

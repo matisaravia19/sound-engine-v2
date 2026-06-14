@@ -46,14 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         convolver.process_block(voice_id, &input_block, &mut output_block)?;
         processed.extend_from_slice(&output_block[..chunk.len()]);
+        if chunk.len() < block_size {
+            processed.extend_from_slice(&output_block[chunk.len()..]);
+        }
     }
 
     // Flush overlap tail so the reverb/echo decay is not truncated.
-    let flush_blocks = convolution_tail_size(block_size, ir.len()).div_ceil(block_size);
-    input_block.fill(0.0);
-    for _ in 0..flush_blocks {
-        output_block.fill(0.0);
-        convolver.process_block(voice_id, &input_block, &mut output_block)?;
+    while convolver.flush_tail_block(voice_id, &mut output_block)? {
         processed.extend_from_slice(&output_block);
     }
 
@@ -148,10 +147,6 @@ fn normalize_if_needed(samples: &mut [f32]) {
 
 fn mono_to_stereo_ir(ir: &[f32]) -> Vec<IrSample> {
     ir.iter().map(|&sample| IrSample::new(sample, sample)).collect()
-}
-
-fn convolution_tail_size(block_size: usize, ir_len: usize) -> usize {
-    (block_size + ir_len - 1).next_power_of_two() - block_size
 }
 
 fn engine_config(
