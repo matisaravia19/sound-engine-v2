@@ -1,5 +1,5 @@
 use super::*;
-use crate::gpu::shader::{ShaderId, ShaderStage, SHADER_ENTRY_POINT};
+use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
 use std::ffi::CString;
 
 /// Description used to create a compute pipeline and its descriptor layout.

@@ -237,7 +237,7 @@ fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use glam::{vec3, Mat4};
+    use glam::{Mat4, vec3};
 
     #[test]
     fn apply_updates_can_remove_object_and_its_mesh_in_one_batch() {

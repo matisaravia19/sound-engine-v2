@@ -1,4 +1,5 @@
-use crate::acoustics::{ContributionRecord, IrBuilder, IrConfig, IrSnapshot, MAX_CONTRIBUTIONS_PER_QUERY};
+use crate::acoustics::{ContributionRecord, IrBuilder, IrSnapshot, MAX_CONTRIBUTIONS_PER_QUERY};
+use crate::core::config::OutputChannels;
 use crate::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
@@ -12,6 +13,7 @@ use ash::vk;
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 
@@ -20,8 +22,10 @@ const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/sha
 pub struct AcousticConfig {
     /// Sample rate used when binning path arrivals into IR samples.
     pub sample_rate: u32,
-    /// Number of mono samples in each generated impulse response.
-    pub ir_len_samples: u32,
+    /// Number of samples in each generated impulse response.
+    pub num_samples: u32,
+    /// Output layout used when constructing stereo IR channel gains.
+    pub output_channels: OutputChannels,
     /// Listener AABB half extent in world meters, centered on each query listener position.
     pub listener_half_extent: Vec3,
     /// Ray budget reserved for future stochastic reflection tracing.
@@ -39,11 +43,13 @@ pub struct AcousticQuery {
     pub source_position: Vec3,
     /// Listener position in world meters.
     pub listener_position: Vec3,
+    /// Listener right-ear direction in world space, used for directional stereo binning.
+    pub listener_right: Vec3,
     /// Linear source gain applied before distance attenuation.
     pub gain: f32,
 }
 
-/// Acoustic pipeline that traces path contributions and builds mono IR snapshots.
+/// Acoustic pipeline that traces path contributions and builds stereo IR snapshots.
 ///
 /// The pipeline owns long-lived RT resources and a contribution buffer. Calls
 /// are synchronous today: GPU ray tracing finishes, contributions are downloaded,
@@ -133,10 +139,8 @@ impl AcousticPipeline {
             aabbs: &listener_aabbs,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
-        let ir_builder = IrBuilder::new(IrConfig {
-            sample_rate: cfg.sample_rate,
-            ir_len_samples: cfg.ir_len_samples,
-        })?;
+
+        let ir_builder = IrBuilder::new(cfg.sample_rate, cfg.num_samples, cfg.output_channels)?;
 
         Ok(Self {
             cfg,
@@ -148,7 +152,7 @@ impl AcousticPipeline {
         })
     }
 
-    /// Builds one mono IR for a scene/source/listener query.
+    /// Builds one stereo IR for a scene/source/listener query.
     pub fn build_ir(
         &mut self,
         gpu: &VkBackend,
@@ -193,12 +197,18 @@ impl AcousticPipeline {
         })?;
 
         let contributions = self.download_contributions(gpu)?;
-        Ok(self
-            .ir_builder
-            .build_from_contributions(gpu_scene.version(), query.query_id, &contributions))
+
+        let ir = self.ir_builder.build_from_contributions(
+            gpu_scene.version(),
+            query.query_id,
+            &contributions,
+            query.listener_right,
+        );
+
+        Ok(ir)
     }
 
-    /// Builds mono IR snapshots for a batch of source/listener queries.
+    /// Builds stereo IR snapshots for a batch of source/listener queries.
     pub fn build_irs(
         &mut self,
         gpu: &VkBackend,

@@ -1,4 +1,4 @@
-﻿use std::env;
+use std::env;
 use std::path::PathBuf;
 
 fn main() {
@@ -7,8 +7,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    let vulkan_sdk = env::var("VULKAN_SDK")
-        .expect("VULKAN_SDK environment variable not set. Install Vulkan SDK.");
+    let vulkan_sdk = env::var("VULKAN_SDK").expect("VULKAN_SDK environment variable not set. Install Vulkan SDK.");
 
     let vulkan_include = PathBuf::from(&vulkan_sdk).join("Include");
     let glslang_include = vulkan_include.join("glslang").join("Include");
@@ -18,7 +17,10 @@ fn main() {
     build.cpp(true);
     build.file("src/ffi.cpp");
 
-    build.include(&vulkan_include).include(&glslang_include).include(&vkfft_include);
+    build
+        .include(&vulkan_include)
+        .include(&glslang_include)
+        .include(&vkfft_include);
 
     build.flag_if_supported("-std=c++17");
 
