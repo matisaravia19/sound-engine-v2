@@ -25,12 +25,19 @@ const MULTIPLY_SHADER_PATH: &str = concat!(
 /// before the IR FFT. A mono dry signal can then produce both ears with the
 /// same FFT, multiply, and inverse FFT used for mono convolution.
 pub struct PartitionedConvolver {
+    /// Shared GPU backend for FFT and compute dispatch operations.
     gpu: Arc<VkBackend>,
+    /// Engine configuration containing block size, channel layout, and IR length.
     config: EngineConfig,
+    /// Shared FFT plan for transforming mono input signals to frequency-domain.
     signal_plan: FFTPlan,
+    /// Reusable GPU storage buffer for signal FFT input and output.
     signal_buffer: BufferHandle,
+    /// Compiled compute pipeline for complex-domain frequency multiplication.
     multiply_pipeline_id: PipelineId,
+    /// FFT size: next power of two of (block_size + ir_samples - 1).
     fft_size: usize,
+    /// Overlap tail length: fft_size - block_size samples preserved between blocks.
     tail_size: usize,
 }
 
@@ -169,6 +176,7 @@ impl PartitionedConvolver {
         Ok(true)
     }
 
+    /// Validates that input and output block sizes match expected channel layout and FFT capacity.
     fn validate_block_lengths(&self, input_block: &[f32], output_block: &[f32]) -> SoundResult<()> {
         crate::debug_validate!(
             input_block.len() == self.config.auralization.block_size,
@@ -198,8 +206,12 @@ impl PartitionedConvolver {
         Ok(())
     }
 
+    /// Performs FFT, frequency-domain multiply with IR spectrum, and inverse FFT for one block.
+    ///
+    /// Updates the voice's CPU complex buffer in-place with the convolved result.
     fn convolve(&self, voice: &mut Voice, input_block: &[f32]) -> SoundResult<()> {
         // Pack real mono input as complex for the FFT, zeroing the imaginary part.
+        // This allows us to use the same FFT pipeline for stereo IR (packed as left + i*right).
         voice.convolution.complex_cpu_buffer.fill([0.0, 0.0]);
         for (i, &sample) in input_block.iter().enumerate() {
             voice.convolution.complex_cpu_buffer[i] = [sample, 0.0];
@@ -207,7 +219,7 @@ impl PartitionedConvolver {
 
         self.upload_signal(&voice.convolution.complex_cpu_buffer)?;
 
-        // One submission keeps FFT, multiply, and inverse FFT ordered on the GPU.
+        // Single submission preserves GPU command ordering: forward FFT -> multiply -> inverse FFT.
         self.gpu.compute().submit_compute_and_wait(|command_buffer| {
             self.signal_plan
                 .append(command_buffer)
@@ -240,17 +252,23 @@ impl PartitionedConvolver {
         Ok(())
     }
 
+    /// Uploads a complex signal block to the GPU, overwriting the previous contents.
     fn upload_signal(&self, signal: &[[f32; 2]]) -> SoundResult<()> {
         self.gpu.memory().clear_buffer(&self.signal_buffer)?;
         self.gpu.memory().upload_typed(&self.signal_buffer, signal)
     }
 
+    /// Downloads the convolved frequency-domain result from GPU to CPU buffer.
     fn download_convolution_output(&self, output: &mut [[f32; 2]]) -> SoundResult<()> {
         self.gpu
             .memory()
             .download_typed::<[f32; 2]>(&self.signal_buffer, output.len(), output)
     }
 
+    /// Records a complex frequency-domain multiply dispatch.
+    ///
+    /// Multiplies `count` complex elements from the signal buffer with the IR spectrum buffer,
+    /// storing results back into the signal buffer.
     fn append_multiply(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -271,6 +289,10 @@ impl PartitionedConvolver {
         self.gpu.compute().record_dispatch(command_buffer, &dispatch_spec)
     }
 
+    /// Applies overlap-add to combine FFT output with carried tail for seamless convolution.
+    ///
+    /// Adds the previous block's tail into the output head, then extracts and saves
+    /// the new tail for the next block. This ensures output continuity across blocks.
     fn overlap_add(&self, output: &mut [[f32; 2]], tail: &mut [[f32; 2]]) {
         // Add previous block tail into the current block head.
         for i in 0..tail.len() {
@@ -278,42 +300,56 @@ impl PartitionedConvolver {
             output[i][1] += tail[i][1];
         }
 
-        // Store new overlap tail from current convolution result.
+        // Store new overlap tail from current convolution result for the next block.
         let tail_start = self.config.auralization.block_size;
         let tail_end = tail_start + tail.len();
         tail.copy_from_slice(&output[tail_start..tail_end]);
     }
 
+    /// Extracts interleaved output samples from complex frequency-domain data.
+    ///
+    /// Reads `count` complex frames starting at `start_index` and formats them according
+    /// to the configured output channel layout (mono, stereo, or binaural).
     fn copy_samples(&self, from: &[[f32; 2]], start_index: usize, count: usize, to: &mut [f32]) {
         match self.config.sound.output_channels {
             OutputChannels::Mono => {
+                // Mono output uses only the real (left channel) part of complex samples.
                 for (dest_frame, source_frame) in (start_index..start_index + count).enumerate() {
-                    to[dest_frame] = from[source_frame][0]; // Take left channel as mono output
+                    to[dest_frame] = from[source_frame][0];
                 }
             }
             OutputChannels::Stereo | OutputChannels::Binaural => {
+                // Stereo output uses real (left) and imaginary (right) as separate channels.
+                // Real and imaginary were packed during IR upload as stereo IR data.
                 for (dest_frame, source_frame) in (start_index..start_index + count).enumerate() {
-                    to[2 * dest_frame] = from[source_frame][0]; // Left channel
-                    to[2 * dest_frame + 1] = from[source_frame][1]; // Right channel
+                    to[2 * dest_frame] = from[source_frame][0];
+                    to[2 * dest_frame + 1] = from[source_frame][1];
                 }
             }
         }
     }
 
+    /// Constructs an FFT plan and allocates GPU storage for one FFT transformation.
+    ///
+    /// Safety: The raw Vulkan handles passed to VkFFT are borrowed from the GPU backend
+    /// and remain valid for the lifetime of the returned FFTPlan. The plan does not take
+    /// ownership. Set `normalize` true to divide FFT output by fft_size (for signal FFT).
     fn build_fft_plan(gpu: &VkBackend, fft_size: u64, normalize: bool) -> SoundResult<(FFTPlan, BufferHandle)> {
         unsafe {
-            // VkFFT consumes raw Vulkan handles but does not own them.
+            // VkFFT consumes raw Vulkan handles but does not take ownership.
+            // Handles remain valid for the lifetime of the plan and the GPU backend.
             let handles = DeviceHandles {
                 physical_device: gpu.device().physical_device,
                 device: gpu.device().device.handle(),
                 queue: gpu.compute().queue_handle()?,
                 command_pool: gpu.compute().command_pool_handle()?,
-                fence: vk::Fence::null(), // Not used for the global signal plan
+                fence: vk::Fence::null(), // Not used with the plan append pattern
             };
 
+            // Allocate storage for complex-domain FFT: fft_size complex numbers = fft_size * 2 f32 values.
             let buffer = gpu
                 .memory()
-                .create_storage_buffer(fft_size * 2 * std::mem::size_of::<f32>() as u64)?; // Placeholder size, will be updated per voice
+                .create_storage_buffer(fft_size * 2 * std::mem::size_of::<f32>() as u64)?;
 
             let builder = FFTPlanBuilder::new(&handles)
                 .with_single_dimension(fft_size)
@@ -331,6 +367,11 @@ impl PartitionedConvolver {
         }
     }
 
+    /// Compiles the frequency-domain multiply compute pipeline.
+    ///
+    /// The pipeline performs element-wise complex multiplication:
+    /// (a + i*b) * (c + i*d) = (ac - bd) + i(ad + bc).
+    /// Descriptor 0: signal FFT buffer (read-write), Descriptor 1: IR spectrum buffer (read-only).
     fn create_multiply_pipeline(gpu: &VkBackend) -> SoundResult<PipelineId> {
         let multiply_shader_id = gpu
             .shaders()
@@ -339,10 +380,10 @@ impl PartitionedConvolver {
         let pipeline_spec = ComputePipelineSpec {
             shader_id: multiply_shader_id,
             descriptor_bindings: vec![
-                DescriptorBindingSpec::storage_buffer(0),
-                DescriptorBindingSpec::storage_buffer(1),
+                DescriptorBindingSpec::storage_buffer(0), // Signal FFT buffer
+                DescriptorBindingSpec::storage_buffer(1), // IR spectrum buffer
             ],
-            push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<u32>() as u32)],
+            push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<u32>() as u32)], // Element count
         };
 
         gpu.compute().create_pipeline(pipeline_spec)

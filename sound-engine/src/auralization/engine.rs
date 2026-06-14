@@ -166,6 +166,11 @@ impl AuralizationEngine {
     }
 
     /// Renders and mixes one output block from all active voices.
+    ///
+    /// The provided `output_block` must have length equal to `block_size * output_channels`.
+    /// This method will zero-fill the buffer and then accumulate (mix) the rendered
+    /// audio from all active voices into it. For multichannel output (e.g. stereo),
+    /// samples are written interleaved (e.g. L,R,L,R...).
     pub fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
         let output_channels = self.config.sound.output_channels.count();
         crate::debug_validate!(
