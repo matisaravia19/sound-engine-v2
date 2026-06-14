@@ -2,15 +2,19 @@
 #extension GL_EXT_ray_tracing : require
 
 layout(push_constant) uniform PushConstants {
-    vec4 source;
-    vec4 listener;
-    vec4 listener_half_extent;
-    uvec4 ray_config;
+    layout(offset = 0) vec3 source_position;
+    layout(offset = 12) float source_gain;
+    layout(offset = 16) vec3 listener_position;
+    layout(offset = 28) float speed_of_sound;
+    layout(offset = 32) vec3 listener_half_extent;
+    layout(offset = 44) uint ray_count;
+    layout(offset = 48) uint max_bounces;
+    layout(offset = 52) uint max_contributions;
 } pc;
 
 void main() {
-    vec3 box_min = -pc.listener_half_extent.xyz;
-    vec3 box_max = pc.listener_half_extent.xyz;
+    vec3 box_min = -pc.listener_half_extent;
+    vec3 box_max = pc.listener_half_extent;
     vec3 origin = gl_ObjectRayOriginEXT;
     vec3 direction = gl_ObjectRayDirectionEXT;
     float t_near = gl_RayTminEXT;

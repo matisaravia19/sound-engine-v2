@@ -7,8 +7,9 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 struct AcousticPayload {
-    vec4 throughput_distance;
-    uvec4 control;
+    float ray_gain;
+    float path_distance;
+    uint reflection_order;
 };
 
 struct SceneObject {
@@ -22,7 +23,10 @@ struct SceneObject {
 };
 
 struct SceneMaterial {
-    vec4 absorption_scattering;
+    float absorption;
+    float scattering;
+    float transmission;
+    float _pad0;
 };
 
 layout(std430, set = 0, binding = 2) readonly buffer SceneObjectBuffer {
@@ -44,10 +48,14 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Ind
 layout(location = 0) rayPayloadInEXT AcousticPayload payload;
 
 layout(push_constant) uniform PushConstants {
-    vec4 source;
-    vec4 listener;
-    vec4 listener_half_extent;
-    uvec4 ray_config;
+    layout(offset = 0) vec3 source_position;
+    layout(offset = 12) float source_gain;
+    layout(offset = 16) vec3 listener_position;
+    layout(offset = 28) float speed_of_sound;
+    layout(offset = 32) vec3 listener_half_extent;
+    layout(offset = 44) uint ray_count;
+    layout(offset = 48) uint max_bounces;
+    layout(offset = 52) uint max_contributions;
 } pc;
 
 vec3 loadVertex(VertexBuffer vertices, uint vertex_index) {
@@ -61,9 +69,9 @@ vec3 transformPoint(mat4 object_to_world, vec3 point) {
 
 void main() {
     float hit_distance = gl_HitTEXT;
-    payload.throughput_distance.y += hit_distance;
+    payload.path_distance += hit_distance;
 
-    if (payload.control.x >= pc.ray_config.y) {
+    if (payload.reflection_order >= pc.max_bounces) {
         return;
     }
 
@@ -96,19 +104,22 @@ void main() {
         normal = -normal;
     }
 
-    float absorption = clamp(scene_materials.materials[object.material_index].absorption_scattering.x, 0.0, 1.0);
-    payload.throughput_distance.x *= (1.0 - absorption);
-    if (payload.throughput_distance.x <= 0.000001) {
+    // Only the absorption coefficient is used for now; scattering is reserved
+    // in the material record for later diffuse reflection paths.
+    float absorption = clamp(scene_materials.materials[object.material_index].absorption, 0.0, 1.0);
+    payload.ray_gain *= (1.0 - absorption);
+    if (payload.ray_gain <= 0.000001) {
         return;
     }
 
     vec3 reflected_direction = normalize(reflect(gl_WorldRayDirectionEXT, normal));
     vec3 hit_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * hit_distance;
-    payload.control.x += 1;
+    payload.reflection_order += 1;
 
+    // Offset the secondary ray to avoid immediately re-hitting the same triangle.
     traceRayEXT(
         tlas,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        gl_RayFlagsOpaqueEXT,
         0xff,
         0,
         0,

@@ -32,7 +32,10 @@ struct UploadedMesh {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuMaterial {
-    absorption_scattering: [f32; 4],
+    absorption: f32,
+    scattering: f32,
+    transmission: f32,
+    _pad0: f32,
 }
 
 #[repr(C)]
@@ -224,26 +227,27 @@ fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u
         let material_index = materials.len() as u32;
         material_indices.insert(material.id, material_index);
         materials.push(GpuMaterial {
-            absorption_scattering: [
-                material
-                    .absorption_bands
-                    .first()
-                    .copied()
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 1.0),
-                material.scattering,
-                material
-                    .transmission
-                    .as_ref()
-                    .and_then(|bands| bands.first().copied())
-                    .unwrap_or(0.0),
-                0.0,
-            ],
+            absorption: material
+                .absorption_bands
+                .first()
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0),
+            scattering: material.scattering,
+            transmission: material
+                .transmission
+                .as_ref()
+                .and_then(|bands| bands.first().copied())
+                .unwrap_or(0.0),
+            _pad0: 0.0,
         });
     }
     if materials.is_empty() {
         materials.push(GpuMaterial {
-            absorption_scattering: [1.0, 0.0, 0.0, 0.0],
+            absorption: 1.0,
+            scattering: 0.0,
+            transmission: 0.0,
+            _pad0: 0.0,
         });
     }
 

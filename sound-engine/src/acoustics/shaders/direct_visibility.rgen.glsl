@@ -4,17 +4,22 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 struct AcousticPayload {
-    vec4 throughput_distance;
-    uvec4 control;
+    float ray_gain;
+    float path_distance;
+    uint reflection_order;
 };
 
 layout(location = 0) rayPayloadEXT AcousticPayload payload;
 
 layout(push_constant) uniform PushConstants {
-    vec4 source;
-    vec4 listener;
-    vec4 listener_half_extent;
-    uvec4 ray_config;
+    layout(offset = 0) vec3 source_position;
+    layout(offset = 12) float source_gain;
+    layout(offset = 16) vec3 listener_position;
+    layout(offset = 28) float speed_of_sound;
+    layout(offset = 32) vec3 listener_half_extent;
+    layout(offset = 44) uint ray_count;
+    layout(offset = 48) uint max_bounces;
+    layout(offset = 52) uint max_contributions;
 } pc;
 
 vec3 fibonacciSphereDirection(uint ray_index, uint ray_count) {
@@ -27,15 +32,17 @@ vec3 fibonacciSphereDirection(uint ray_index, uint ray_count) {
 }
 
 void main() {
-    vec3 origin = pc.source.xyz;
-    uint ray_count = max(pc.ray_config.x, 1);
+    vec3 origin = pc.source_position;
+    uint ray_count = max(pc.ray_count, 1);
     vec3 ray_direction = fibonacciSphereDirection(gl_LaunchIDEXT.x, ray_count);
 
-    payload.throughput_distance = vec4(pc.source.w / float(ray_count), 0.0, 0.0, 0.0);
-    payload.control = uvec4(0, 0, 0, 0);
+    // Split the source gain evenly across all sampled directions.
+    payload.ray_gain = pc.source_gain / float(ray_count);
+    payload.path_distance = 0.0;
+    payload.reflection_order = 0;
     traceRayEXT(
         tlas,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        gl_RayFlagsOpaqueEXT,
         0xff,
         0,
         0,

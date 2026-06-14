@@ -23,7 +23,7 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def read_ir(path: Path) -> tuple[dict[str, str], list[float], list[float]]:
+def read_ir(path: Path) -> tuple[dict[str, str], list[float], dict[str, list[float]]]:
     metadata: dict[str, str] = {}
     rows: list[str] = []
 
@@ -37,42 +37,57 @@ def read_ir(path: Path) -> tuple[dict[str, str], list[float], list[float]]:
             rows.append(line)
 
     reader = csv.DictReader(rows)
+    if not reader.fieldnames:
+        raise ValueError("IR CSV is missing a header row")
+
+    channel_names = ["left", "right"]
+    missing_columns = [name for name in ("time_seconds", *channel_names) if name not in reader.fieldnames]
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"IR CSV is missing required column(s): {missing}")
+
     times_ms: list[float] = []
-    amplitudes: list[float] = []
+    channels: dict[str, list[float]] = {name: [] for name in channel_names}
     for row in reader:
         times_ms.append(float(row["time_seconds"]) * 1000.0)
-        amplitudes.append(float(row["amplitude"]))
+        for channel_name in channel_names:
+            channels[channel_name].append(float(row[channel_name]))
 
-    return metadata, times_ms, amplitudes
+    return metadata, times_ms, channels
 
 
 def bin_ir(
     times_ms: list[float],
-    amplitudes: list[float],
+    channels: dict[str, list[float]],
     bin_size: int,
     mode: str,
-) -> tuple[list[float], list[float]]:
-    binned_times: list[float] = []
-    binned_amplitudes: list[float] = []
+) -> tuple[list[float], dict[str, list[float]]]:
+    if not channels:
+        return times_ms, channels
 
-    for start in range(0, len(amplitudes), bin_size):
+    first_channel = next(iter(channels.values()))
+    binned_times: list[float] = []
+    binned_channels: dict[str, list[float]] = {name: [] for name in channels}
+
+    for start in range(0, len(first_channel), bin_size):
         bin_times = times_ms[start : start + bin_size]
-        bin_amplitudes = amplitudes[start : start + bin_size]
-        if not bin_amplitudes:
+        if not bin_times:
             continue
 
         binned_times.append(sum(bin_times) / len(bin_times))
-        if mode == "mean":
-            binned_amplitudes.append(sum(bin_amplitudes) / len(bin_amplitudes))
-        elif mode == "rms":
-            energy = sum(sample * sample for sample in bin_amplitudes)
-            binned_amplitudes.append((energy / len(bin_amplitudes)) ** 0.5)
-        elif mode == "peak":
-            binned_amplitudes.append(max(bin_amplitudes, key=abs))
-        else:
-            raise ValueError(f"unsupported bin mode {mode}")
+        for channel_name, amplitudes in channels.items():
+            bin_amplitudes = amplitudes[start : start + bin_size]
+            if mode == "mean":
+                binned_channels[channel_name].append(sum(bin_amplitudes) / len(bin_amplitudes))
+            elif mode == "rms":
+                energy = sum(sample * sample for sample in bin_amplitudes)
+                binned_channels[channel_name].append((energy / len(bin_amplitudes)) ** 0.5)
+            elif mode == "peak":
+                binned_channels[channel_name].append(max(bin_amplitudes, key=abs))
+            else:
+                raise ValueError(f"unsupported bin mode {mode}")
 
-    return binned_times, binned_amplitudes
+    return binned_times, binned_channels
 
 
 def samples_per_ms(metadata: dict[str, str], times_ms: list[float]) -> float:
@@ -103,7 +118,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    metadata, times_ms, amplitudes = read_ir(args.ir_csv)
+    metadata, times_ms, channels = read_ir(args.ir_csv)
     sample_rate = metadata.get("sample_rate", "unknown")
     query_id = metadata.get("query_id", "unknown")
     energy = metadata.get("energy", "unknown")
@@ -117,11 +132,14 @@ def main() -> None:
     _, axis = plt.subplots(figsize=(12, 5))
     if args.bin_ms is not None:
         bin_size = max(1, round(args.bin_ms * samples_per_ms(metadata, times_ms)))
-        times_ms, amplitudes = bin_ir(times_ms, amplitudes, bin_size, args.bin_mode)
+        times_ms, channels = bin_ir(times_ms, channels, bin_size, args.bin_mode)
     elif args.bin_samples is not None:
-        times_ms, amplitudes = bin_ir(times_ms, amplitudes, args.bin_samples, args.bin_mode)
+        times_ms, channels = bin_ir(times_ms, channels, args.bin_samples, args.bin_mode)
 
-    axis.plot(times_ms, amplitudes, linewidth=1.0)
+    for channel_name, amplitudes in channels.items():
+        axis.plot(times_ms, amplitudes, linewidth=1.0, label=channel_name)
+    if len(channels) > 1:
+        axis.legend()
     axis.set_title(f"Impulse response query={query_id}, sample_rate={sample_rate} Hz, energy={energy}")
     axis.set_xlabel("Time (ms)")
     axis.set_ylabel(f"Amplitude ({args.bin_mode} bins)" if args.bin_ms or args.bin_samples else "Amplitude")

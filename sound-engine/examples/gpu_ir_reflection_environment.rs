@@ -13,7 +13,7 @@ fn main() -> SoundResult<()> {
     let mut scene = SceneManager::new();
     scene.load(reflective_environment_scene())?;
 
-    let sample_rate = 44_100;
+    let sample_rate = 48_000;
     let source_position = vec3(0.0, 0.0, 0.0);
     let listener_position = vec3(0.0, 0.7, 0.0);
     let listener_half_extent = vec3(0.35, 0.35, 0.35);
@@ -24,8 +24,9 @@ fn main() -> SoundResult<()> {
             num_samples: sample_rate,
             output_channels: OutputChannels::Stereo,
             listener_half_extent,
-            rays_per_query: 16_384,
-            max_bounces: 2,
+            rays_per_query: 1_000_000,
+            max_bounces: 10,
+            max_contributions: 262_144,
         },
     )?;
 
@@ -37,7 +38,7 @@ fn main() -> SoundResult<()> {
             source_position,
             listener_position,
             listener_right: vec3(1.0, 0.0, 0.0),
-            gain: 1.0,
+            gain: 500.0,
         },
     )?;
 
@@ -80,7 +81,7 @@ fn reflective_environment_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: reflector_wall_vertices(2.0, 2.0),
+            vertices: reflector_wall_vertices(2.0, 20.0),
             indices: Vec::new(),
             opaque: true,
         }],

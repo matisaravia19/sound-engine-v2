@@ -1,4 +1,4 @@
-use crate::acoustics::{ContributionRecord, IrBuilder, IrSnapshot, MAX_CONTRIBUTIONS_PER_QUERY};
+use crate::acoustics::{ContributionRecord, IrBuilder, IrSnapshot};
 use crate::core::config::OutputChannels;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -32,6 +32,8 @@ pub struct AcousticConfig {
     pub rays_per_query: u32,
     /// Maximum path depth reserved for future reflection tracing.
     pub max_bounces: u32,
+    /// Maximum listener-hit contributions retained for IR construction.
+    pub max_contributions: usize,
 }
 
 /// Source/listener pair that should produce one impulse response.
@@ -58,6 +60,7 @@ pub struct AcousticPipeline {
     cfg: AcousticConfig,
     contribution_pipeline: RtPipelineId,
     contribution_buffer: BufferHandle,
+    contribution_capacity: usize,
     _listener_aabbs: RtAabbBuffers,
     listener_blas: BlasId,
     ir_builder: IrBuilder,
@@ -66,10 +69,14 @@ pub struct AcousticPipeline {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct VisibilityPushConstants {
-    source: [f32; 4],
-    listener: [f32; 4],
-    listener_half_extent: [f32; 4],
-    ray_config: [u32; 4],
+    source_position: [f32; 3],
+    source_gain: f32,
+    listener_position: [f32; 3],
+    speed_of_sound: f32,
+    listener_half_extent: [f32; 3],
+    ray_count: u32,
+    max_bounces: u32,
+    max_contributions: u32,
 }
 
 unsafe impl bytemuck::Zeroable for VisibilityPushConstants {}
@@ -89,6 +96,7 @@ impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
     pub fn new(gpu: &VkBackend, cfg: AcousticConfig) -> SoundResult<Self> {
         validate_listener_half_extent(cfg.listener_half_extent)?;
+        let contribution_capacity = cfg.max_contributions.max(1);
 
         let raygen = gpu
             .shaders()
@@ -133,7 +141,9 @@ impl AcousticPipeline {
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
             max_ray_recursion_depth: cfg.max_bounces.saturating_add(1).max(1),
         })?;
-        let contribution_buffer = gpu.memory().create_storage_buffer(contribution_buffer_size() as u64)?;
+        let contribution_buffer =
+            gpu.memory()
+                .create_storage_buffer(contribution_buffer_size(contribution_capacity) as u64)?;
         let listener_aabbs = create_listener_aabb(gpu, cfg.listener_half_extent)?;
         let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
             aabbs: &listener_aabbs,
@@ -146,6 +156,7 @@ impl AcousticPipeline {
             cfg,
             contribution_pipeline,
             contribution_buffer,
+            contribution_capacity,
             _listener_aabbs: listener_aabbs,
             listener_blas,
             ir_builder,
@@ -165,13 +176,14 @@ impl AcousticPipeline {
         let _ray_budget = self.cfg.rays_per_query;
         let _max_bounces = self.cfg.max_bounces;
         let visibility_constants = VisibilityPushConstants {
-            source: query.source_position.extend(query.gain).to_array(),
-            listener: query
-                .listener_position
-                .extend(SPEED_OF_SOUND_METERS_PER_SECOND)
-                .to_array(),
-            listener_half_extent: self.cfg.listener_half_extent.extend(0.0).to_array(),
-            ray_config: [self.cfg.rays_per_query.max(1), self.cfg.max_bounces, 0, 0],
+            source_position: query.source_position.to_array(),
+            source_gain: query.gain,
+            listener_position: query.listener_position.to_array(),
+            speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
+            listener_half_extent: self.cfg.listener_half_extent.to_array(),
+            ray_count: self.cfg.rays_per_query.max(1),
+            max_bounces: self.cfg.max_bounces,
+            max_contributions: self.contribution_capacity.min(u32::MAX as usize) as u32,
         };
 
         gpu.memory().clear_buffer(&self.contribution_buffer)?;
@@ -223,15 +235,15 @@ impl AcousticPipeline {
     }
 
     fn download_contributions(&self, gpu: &VkBackend) -> SoundResult<Vec<ContributionRecord>> {
-        let mut raw = vec![0_u8; contribution_buffer_size()];
+        let mut raw = vec![0_u8; contribution_buffer_size(self.contribution_capacity)];
         gpu.memory()
             .download_bytes(&self.contribution_buffer, raw.len(), &mut raw)?;
 
         let header_size = size_of::<ContributionHeader>();
         let header = bytemuck::from_bytes::<ContributionHeader>(&raw[..header_size]);
-        let count = (header.count as usize).min(MAX_CONTRIBUTIONS_PER_QUERY);
+        let count = (header.count as usize).min(self.contribution_capacity);
         let records_bytes =
-            &raw[header_size..header_size + MAX_CONTRIBUTIONS_PER_QUERY * size_of::<ContributionRecord>()];
+            &raw[header_size..header_size + self.contribution_capacity * size_of::<ContributionRecord>()];
         let records = bytemuck::cast_slice::<u8, ContributionRecord>(records_bytes);
         Ok(records[..count].to_vec())
     }
@@ -288,6 +300,6 @@ fn create_listener_aabb(gpu: &VkBackend, listener_half_extent: Vec3) -> SoundRes
     }])
 }
 
-fn contribution_buffer_size() -> usize {
-    size_of::<ContributionHeader>() + MAX_CONTRIBUTIONS_PER_QUERY * size_of::<ContributionRecord>()
+fn contribution_buffer_size(capacity: usize) -> usize {
+    size_of::<ContributionHeader>() + capacity * size_of::<ContributionRecord>()
 }

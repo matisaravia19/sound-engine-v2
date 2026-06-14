@@ -15,7 +15,7 @@ pub struct ContributionRecord {
     pub arrival_time_seconds: f32,
     /// Linear gain applied to the impulse response at the arrival time.
     pub linear_gain: f32,
-    /// Padding that preserves the first shader-written `vec4` lane.
+    /// Padding that aligns the following shader-written `vec3` field.
     pub _timing_padding: [f32; 2],
     /// Incoming ray direction in world space. Expected to already be normalized.
     pub incoming_direction: Vec3,

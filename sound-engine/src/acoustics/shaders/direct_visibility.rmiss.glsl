@@ -2,8 +2,9 @@
 #extension GL_EXT_ray_tracing : require
 
 struct AcousticPayload {
-    vec4 throughput_distance;
-    uvec4 control;
+    float ray_gain;
+    float path_distance;
+    uint reflection_order;
 };
 
 layout(location = 0) rayPayloadInEXT AcousticPayload payload;
