@@ -6,6 +6,8 @@ pub mod core;
 pub mod gpu;
 pub mod scene;
 
+pub use engine::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundEngine};
+
 /// Placeholder helper kept by the initial crate template.
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
