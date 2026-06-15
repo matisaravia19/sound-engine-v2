@@ -1,4 +1,3 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use glam::Vec3;
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest};
@@ -6,148 +5,58 @@ use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
 };
 use sound_engine::gpu::backend::VkBackend;
-use std::collections::VecDeque;
+use sound_engine::playback::{PlaybackConfig, SoundPlayer};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Arc;
 
 const DEFAULT_INPUT_A: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/music.wav";
 const DEFAULT_INPUT_B: &str = "C:/Users/matis/OneDrive/Documentos/Fing/Tesis/music.wav";
 const IR_A_ID: ImpulseResponseId = 1;
 const IR_B_ID: ImpulseResponseId = 2;
 const BLOCK_SIZE: usize = 1024;
-const PREFILL_BLOCKS: usize = 8;
-const MAX_QUEUED_BLOCKS: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args()?;
 
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| std::io::Error::other("No default output device available"))?;
-    let supported_config = device.default_output_config()?;
-    let sample_rate = ir_sample_rate(&args)?.unwrap_or_else(|| supported_config.sample_rate().0);
-
-    let channels = supported_config.channels() as usize;
-    if channels < 2 {
-        return Err(std::io::Error::other(format!(
-            "Default output device must expose at least 2 channels for stereo playback, got {channels}"
-        ))
-        .into());
-    }
-
-    let mut stream_config: cpal::StreamConfig = supported_config.clone().into();
-    stream_config.sample_rate = cpal::SampleRate(sample_rate);
-    let queue = Arc::new(SampleQueue::new(MAX_QUEUED_BLOCKS * BLOCK_SIZE * 2));
-    let producer_done = Arc::new(AtomicBool::new(false));
-    let playback_done = Arc::new(AtomicBool::new(false));
-
-    let producer_queue = queue.clone();
-    let producer_done_flag = producer_done.clone();
-    let producer = thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let result = run_engine_producer(
-            args.input_a,
-            args.input_b,
-            args.ir_a_csv,
-            args.ir_b_csv,
-            args.play_second_sound,
-            sample_rate,
-            producer_queue.clone(),
-        );
-        producer_done_flag.store(true, Ordering::Release);
-        producer_queue.notify_all();
-        result
-    });
-
-    queue.wait_until_len_or_done(PREFILL_BLOCKS * BLOCK_SIZE * 2, &producer_done);
-    if producer_done.load(Ordering::Acquire) && queue.is_empty() {
-        producer
-            .join()
-            .map_err(|_| std::io::Error::other("Auralization producer thread panicked"))??;
-        return Ok(());
-    }
-
-    let callback_queue = queue.clone();
-    let callback_producer_done = producer_done.clone();
-    let callback_playback_done = playback_done.clone();
-    let err_fn = |err| eprintln!("Audio stream error: {err}");
-
-    let stream = match supported_config.sample_format() {
-        cpal::SampleFormat::F32 => device.build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _| {
-                write_output(
-                    data,
-                    channels,
-                    &callback_queue,
-                    &callback_producer_done,
-                    &callback_playback_done,
-                )
-            },
-            err_fn,
-            None,
-        )?,
-        cpal::SampleFormat::I16 => device.build_output_stream(
-            &stream_config,
-            move |data: &mut [i16], _| {
-                write_output(
-                    data,
-                    channels,
-                    &callback_queue,
-                    &callback_producer_done,
-                    &callback_playback_done,
-                )
-            },
-            err_fn,
-            None,
-        )?,
-        cpal::SampleFormat::U16 => device.build_output_stream(
-            &stream_config,
-            move |data: &mut [u16], _| {
-                write_output(
-                    data,
-                    channels,
-                    &callback_queue,
-                    &callback_producer_done,
-                    &callback_playback_done,
-                )
-            },
-            err_fn,
-            None,
-        )?,
-        other => {
-            return Err(std::io::Error::other(format!("Unsupported output sample format: {other:?}")).into());
-        }
+    let sample_rate = match ir_sample_rate(&args)? {
+        Some(sample_rate) => sample_rate,
+        None => SoundPlayer::default_output_sample_rate()?,
     };
-
-    stream.play()?;
-
-    while !playback_done.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_millis(20));
+    let mut engine = build_engine(
+        args.input_a,
+        args.input_b,
+        args.ir_a_csv,
+        args.ir_b_csv,
+        args.play_second_sound,
+        sample_rate,
+    )?;
+    let player = SoundPlayer::new(
+        engine.sample_rate(),
+        engine.output_channels(),
+        engine.block_size(),
+        PlaybackConfig::default(),
+    )?;
+    let mut output_block = vec![0.0f32; engine.block_size() * engine.output_channels()];
+    while engine.has_active_voices() {
+        output_block.fill(0.0);
+        engine.render_block(&mut output_block)?;
+        player.push_block(&output_block)?;
     }
-
-    drop(stream);
-
-    producer
-        .join()
-        .map_err(|_| std::io::Error::other("Auralization producer thread panicked"))??;
+    player.finish()?;
+    player.wait_until_finished();
 
     Ok(())
 }
 
-fn run_engine_producer(
+fn build_engine(
     input_a: String,
     input_b: String,
     ir_a_csv: Option<String>,
     ir_b_csv: Option<String>,
     play_second_sound: bool,
     sample_rate: u32,
-    queue: Arc<SampleQueue>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<AuralizationEngine, Box<dyn std::error::Error + Send + Sync>> {
     let ir_a = match ir_a_csv {
         Some(path) => load_ir_csv(&path, sample_rate)?,
         None => build_ping_pong_ir(sample_rate),
@@ -182,14 +91,7 @@ fn run_engine_producer(
         })?;
     }
 
-    let mut output_block = vec![0.0f32; BLOCK_SIZE * 2];
-    while engine.has_active_voices() {
-        output_block.fill(0.0);
-        engine.render_block(&mut output_block)?;
-        queue.push_block(&output_block);
-    }
-
-    Ok(())
+    Ok(engine)
 }
 
 struct ExampleArgs {
@@ -347,104 +249,6 @@ fn read_ir_csv_sample_rate(path: &str) -> Result<u32, Box<dyn std::error::Error 
         format!("IR CSV {path} is missing required # sample_rate metadata"),
     )
     .into())
-}
-
-fn write_output<T>(
-    data: &mut [T],
-    channels: usize,
-    queue: &SampleQueue,
-    producer_done: &AtomicBool,
-    playback_done: &AtomicBool,
-) where
-    T: cpal::Sample + cpal::FromSample<f32>,
-{
-    let mut missing_sample = false;
-
-    for frame in data.chunks_mut(channels) {
-        let left = match queue.pop_sample() {
-            Some(sample) => sample.clamp(-1.0, 1.0),
-            None => {
-                missing_sample = true;
-                0.0
-            }
-        };
-        let right = match queue.pop_sample() {
-            Some(sample) => sample.clamp(-1.0, 1.0),
-            None => {
-                missing_sample = true;
-                0.0
-            }
-        };
-
-        frame[0] = T::from_sample(left);
-        frame[1] = T::from_sample(right);
-        for channel in &mut frame[2..] {
-            *channel = T::from_sample(0.0);
-        }
-    }
-
-    if missing_sample && producer_done.load(Ordering::Acquire) && queue.is_empty() {
-        playback_done.store(true, Ordering::Release);
-    }
-}
-
-struct SampleQueue {
-    samples: Mutex<VecDeque<f32>>,
-    available: Condvar,
-    capacity: usize,
-}
-
-impl SampleQueue {
-    fn new(capacity: usize) -> Self {
-        Self {
-            samples: Mutex::new(VecDeque::with_capacity(capacity)),
-            available: Condvar::new(),
-            capacity,
-        }
-    }
-
-    fn push_block(&self, block: &[f32]) {
-        loop {
-            let mut samples = self.samples.lock().expect("sample queue lock poisoned");
-            let free = self.capacity.saturating_sub(samples.len());
-            if free >= block.len() {
-                samples.extend(block);
-                self.available.notify_all();
-                return;
-            }
-
-            drop(samples);
-            thread::sleep(Duration::from_millis(2));
-        }
-    }
-
-    fn pop_sample(&self) -> Option<f32> {
-        let mut samples = self.samples.lock().expect("sample queue lock poisoned");
-        let sample = samples.pop_front();
-        if sample.is_some() {
-            self.available.notify_all();
-        }
-        sample
-    }
-
-    fn wait_until_len_or_done(&self, len: usize, done: &AtomicBool) {
-        let mut samples = self.samples.lock().expect("sample queue lock poisoned");
-        while samples.len() < len && !done.load(Ordering::Acquire) {
-            let (next_samples, _) = self
-                .available
-                .wait_timeout(samples, Duration::from_millis(10))
-                .expect("sample queue lock poisoned");
-            samples = next_samples;
-        }
-    }
-
-    fn notify_all(&self) {
-        self.available.notify_all();
-    }
-
-    fn is_empty(&self) -> bool {
-        self.samples.lock().expect("sample queue lock poisoned").is_empty()
-    }
 }
 
 fn load_ir_csv(

@@ -6,11 +6,16 @@ edition = "2024"
 [dependencies]
 ash = "0.38.0"
 bytemuck = "1.24.0"
+cpal = { version = "0.15", optional = true }
 glam = { version = "0.33.1", features = ["bytemuck"] }
 hound = "3.5.1"
 realfft = "3.5.0"
 vk-mem = "0.5.0"
 vkfft-rs = { path = "../vkfft-rs" }
 
-[dev-dependencies]
-cpal = "0.15"
+[features]
+playback = ["dep:cpal"]
+
+[[example]]
+name = "auralization_engine_stream_wav"
+required-features = ["playback"]

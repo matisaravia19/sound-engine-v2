@@ -6,6 +6,11 @@ pub struct FFTPlan {
     handles: Box<HandleStorage>,
 }
 
+// The plan owns an opaque VkFFT application and copied Vulkan handle values.
+// Moving it to another thread does not invalidate those handles; callers still
+// need external synchronization for command recording and device use.
+unsafe impl Send for FFTPlan {}
+
 pub struct FFTPlanBuilder {
     config: VkFFTConfiguration,
     handles: Box<HandleStorage>,

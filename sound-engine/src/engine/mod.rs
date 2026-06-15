@@ -1,15 +1,22 @@
-use crate::acoustics::{
-    AcousticConfig, AcousticPipeline, AcousticQuery, IrCache, IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery,
-    IrSnapshot,
-};
-use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
+//! Public sound engine facade and shared orchestration types.
+
+mod direct;
+#[cfg(feature = "playback")]
+mod runtime;
+
+use crate::acoustics::{AcousticConfig, IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery};
+use crate::auralization::{SoundAsset, SoundId, VoiceId};
 use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
 use crate::core::error::{SoundError, SoundResult};
-use crate::gpu::backend::VkBackend;
-use crate::scene::{SceneDescription, SceneManager, SceneUpdates, SceneVersion};
+use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
+use direct::EngineCore;
 use glam::Vec3;
 use std::path::Path;
-use std::sync::Arc;
+
+#[cfg(feature = "playback")]
+use crate::playback::PlaybackConfig;
+#[cfg(feature = "playback")]
+use runtime::{EngineRuntime, RuntimeStartError};
 
 /// Listener pose used for spatial acoustic queries.
 #[derive(Debug, Clone, Copy)]
@@ -67,152 +74,226 @@ impl PlaySpatialSoundRequest {
     }
 }
 
-/// Synchronous scene-to-audio facade for the sound engine.
-///
-/// `SoundEngine` owns the GPU backend, scene state, acoustic IR pipeline,
-/// IR cache, sound assets, active voices, and block rendering. It performs no
-/// device playback; callers can pull interleaved blocks with [`render_block`].
-///
-/// [`render_block`]: Self::render_block
+/// Public handle for synchronous rendering or feature-gated background playback.
 pub struct SoundEngine {
-    gpu: Arc<VkBackend>,
-    scene: SceneManager,
-    pipeline: AcousticPipeline,
-    cache: IrCache,
-    auralization: AuralizationEngine,
-    listener: ListenerPose,
-    next_impulse_response_id: ImpulseResponseId,
+    mode: Option<EngineMode>,
+}
+
+enum EngineMode {
+    Direct(EngineCore),
+    #[cfg(feature = "playback")]
+    Runtime(EngineRuntime),
 }
 
 impl SoundEngine {
     /// Creates an engine with an empty scene and sound bank.
     pub fn new(config: EngineConfig) -> SoundResult<Self> {
-        let gpu = Arc::new(VkBackend::new()?);
-        let pipeline = AcousticPipeline::new(gpu.as_ref(), acoustic_config(config))?;
-        let cache = IrCache::new(cache_config(config.cache));
-        let auralization = AuralizationEngine::new(gpu.clone(), config)?;
-
         Ok(Self {
-            gpu,
-            scene: SceneManager::new(),
-            pipeline,
-            cache,
-            auralization,
-            listener: ListenerPose::default(),
-            next_impulse_response_id: 1,
+            mode: Some(EngineMode::Direct(EngineCore::new(config)?)),
         })
     }
 
     /// Replaces the scene and invalidates cached impulse responses.
     pub fn load_scene(&mut self, scene: SceneDescription) -> SoundResult<SceneVersion> {
-        let version = self.scene.load(scene)?;
-        self.cache.clear();
-        Ok(version)
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.load_scene(scene),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.load_scene(scene),
+        }
     }
 
     /// Applies scene updates and invalidates cached impulse responses when anything changed.
     pub fn apply_scene_updates(&mut self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
-        let changed = !updates.updates.is_empty();
-        let version = self.scene.apply_updates(updates)?;
-        if changed {
-            self.cache.clear();
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.apply_scene_updates(updates),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.apply_scene_updates(updates),
         }
-        Ok(version)
     }
 
     /// Sets the listener pose used by subsequent spatial play requests.
-    pub fn set_listener_pose(&mut self, listener: ListenerPose) {
-        self.listener = listener;
+    pub fn set_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => {
+                core.set_listener_pose(listener);
+                Ok(())
+            }
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.set_listener_pose(listener),
+        }
     }
 
     /// Loads a WAV asset into the engine sound bank at the configured sample rate.
     pub fn load_wav_sound(&mut self, path: impl AsRef<Path>) -> SoundResult<SoundId> {
-        self.auralization.load_wav_sound(path)
+        let path = path.as_ref();
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.load_wav_sound(path),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.load_wav_sound(path.to_path_buf()),
+        }
     }
 
     /// Inserts an already decoded mono sound asset into the engine sound bank.
     pub fn insert_sound(&mut self, asset: SoundAsset) -> SoundResult<SoundId> {
-        self.auralization.insert_sound(asset)
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.insert_sound(asset),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.insert_sound(asset),
+        }
     }
 
     /// Plays a sound through an acoustic IR generated from the current scene and listener.
     pub fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
-        validate_play_request(request)?;
-        let snapshot = self.impulse_response_for(request)?;
-        let impulse_response_id = self.next_ir_id();
-        self.auralization
-            .register_impulse_response(impulse_response_id, &snapshot.samples)?;
-        self.auralization.play_sound(PlaySoundRequest {
-            sound_id: request.sound_id,
-            impulse_response_id,
-            gain: request.gain,
-        })
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.play_sound(request),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.play_sound(request),
+        }
     }
 
     /// Stops an active voice.
-    pub fn stop_voice(&mut self, voice_id: VoiceId) {
-        self.auralization.stop_voice(voice_id);
+    pub fn stop_voice(&mut self, voice_id: VoiceId) -> SoundResult<()> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => {
+                core.stop_voice(voice_id);
+                Ok(())
+            }
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.stop_voice(voice_id),
+        }
     }
 
     /// Renders and mixes one interleaved output block from all active voices.
     pub fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
-        self.auralization.render_block(output_block)
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.render_block(output_block),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(_) => Err(SoundError::invalid_state(
+                "render_block cannot be used while the sound player is running",
+            )),
+        }
     }
 
     /// Returns whether the engine currently has active or tail-flushing voices.
     pub fn has_active_voices(&self) -> bool {
-        self.auralization.has_active_voices()
+        match self.mode.as_ref() {
+            Some(EngineMode::Direct(core)) => core.has_active_voices(),
+            #[cfg(feature = "playback")]
+            Some(EngineMode::Runtime(_)) => true,
+            None => false,
+        }
     }
 
-    /// Returns the number of active or tail-flushing voices.
+    /// Returns the number of active or tail-flushing voices in direct mode.
     pub fn active_voice_count(&self) -> usize {
-        self.auralization.active_voice_count()
+        match self.mode.as_ref() {
+            Some(EngineMode::Direct(core)) => core.active_voice_count(),
+            #[cfg(feature = "playback")]
+            Some(EngineMode::Runtime(_)) => 0,
+            None => 0,
+        }
     }
 
     /// Returns the configured engine sample rate.
     pub fn sample_rate(&self) -> u32 {
-        self.auralization.sample_rate()
+        match self.mode.as_ref() {
+            Some(EngineMode::Direct(core)) => Some(core.sample_rate()),
+            #[cfg(feature = "playback")]
+            Some(EngineMode::Runtime(runtime)) => Some(runtime.sample_rate()),
+            None => None,
+        }
+        .unwrap_or(0)
     }
 
     /// Returns the number of frames rendered per block.
     pub fn block_size(&self) -> usize {
-        self.auralization.block_size()
+        match self.mode.as_ref() {
+            Some(EngineMode::Direct(core)) => Some(core.block_size()),
+            #[cfg(feature = "playback")]
+            Some(EngineMode::Runtime(runtime)) => Some(runtime.block_size()),
+            None => None,
+        }
+        .unwrap_or(0)
     }
 
     /// Returns the number of interleaved output channels per frame.
     pub fn output_channels(&self) -> usize {
-        self.auralization.output_channels()
-    }
-
-    fn impulse_response_for(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<IrSnapshot> {
-        let cache_query = self.cache_query(request);
-        if let Some(snapshot) = self.cache.get(cache_query) {
-            return Ok(snapshot);
+        match self.mode.as_ref() {
+            Some(EngineMode::Direct(core)) => Some(core.output_channels()),
+            #[cfg(feature = "playback")]
+            Some(EngineMode::Runtime(runtime)) => Some(runtime.output_channels()),
+            None => None,
         }
+        .unwrap_or(0)
+    }
 
-        let snapshot = self.pipeline.build_ir(
-            self.gpu.as_ref(),
-            &mut self.scene,
-            AcousticQuery {
-                query_id: cache_query.query_id,
-                source_position: request.source.position,
-                listener_position: self.listener.position,
-                listener_right: self.listener.right,
-                source_energy: request.source.energy,
+    /// Starts a feature-gated background sound player.
+    #[cfg(feature = "playback")]
+    pub fn start_sound_player(&mut self, config: PlaybackConfig) -> SoundResult<()> {
+        let Some(mode) = self.mode.take() else {
+            return Err(SoundError::invalid_state("sound engine is already transitioning modes"));
+        };
+
+        match mode {
+            EngineMode::Direct(core) => match EngineRuntime::start(core, config) {
+                Ok(runtime) => {
+                    self.mode = Some(EngineMode::Runtime(runtime));
+                    Ok(())
+                }
+                Err(RuntimeStartError::Recoverable(core, error)) => {
+                    self.mode = Some(EngineMode::Direct(core));
+                    Err(error)
+                }
+                Err(RuntimeStartError::Fatal(error)) => Err(error),
             },
-        )?;
-        self.cache.insert(cache_query, snapshot.clone());
-        Ok(snapshot)
+            EngineMode::Runtime(runtime) => {
+                self.mode = Some(EngineMode::Runtime(runtime));
+                Err(SoundError::invalid_state("sound player is already running"))
+            }
+        }
     }
 
-    fn cache_query(&self, request: PlaySpatialSoundRequest) -> IrCacheQuery {
-        cache_query(self.scene.version(), self.listener, request)
+    /// Stops the feature-gated background sound player and returns to direct mode.
+    #[cfg(feature = "playback")]
+    pub fn stop_sound_player(&mut self) -> SoundResult<()> {
+        let Some(mode) = self.mode.take() else {
+            return Err(SoundError::invalid_state("sound engine is already transitioning modes"));
+        };
+
+        match mode {
+            EngineMode::Direct(core) => {
+                self.mode = Some(EngineMode::Direct(core));
+                Ok(())
+            }
+            EngineMode::Runtime(runtime) => {
+                let (core, result) = runtime.stop();
+                if let Some(core) = core {
+                    self.mode = Some(EngineMode::Direct(core));
+                }
+                result
+            }
+        }
     }
 
-    fn next_ir_id(&mut self) -> ImpulseResponseId {
-        let id = self.next_impulse_response_id;
-        self.next_impulse_response_id = self.next_impulse_response_id.saturating_add(1);
-        id
+    /// Returns whether the feature-gated background sound player is running.
+    #[cfg(feature = "playback")]
+    pub fn is_sound_player_running(&self) -> bool {
+        matches!(self.mode, Some(EngineMode::Runtime(_)))
+    }
+
+    fn mode_mut(&mut self) -> SoundResult<&mut EngineMode> {
+        self.mode
+            .as_mut()
+            .ok_or_else(|| SoundError::invalid_state("sound engine is transitioning modes"))
+    }
+}
+
+impl Drop for SoundEngine {
+    fn drop(&mut self) {
+        #[cfg(feature = "playback")]
+        if matches!(self.mode, Some(EngineMode::Runtime(_))) {
+            let _ = self.stop_sound_player();
+        }
     }
 }
 

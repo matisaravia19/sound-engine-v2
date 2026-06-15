@@ -3,7 +3,10 @@
 pub mod acoustics;
 pub mod auralization;
 pub mod core;
+pub mod engine;
 pub mod gpu;
+#[cfg(feature = "playback")]
+pub mod playback;
 pub mod scene;
 
 pub use engine::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundEngine};
