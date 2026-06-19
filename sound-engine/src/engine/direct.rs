@@ -1,6 +1,9 @@
 //! Direct, synchronous engine implementation.
 
-use super::{ListenerPose, PlaySpatialSoundRequest, acoustic_config, cache_config, cache_query, validate_play_request};
+use super::{
+    ListenerPose, PlaySpatialSoundRequest, PointSource, acoustic_config, cache_config, cache_query, validate_listener,
+    validate_play_request, validate_source,
+};
 use crate::acoustics::{AcousticPipeline, AcousticQuery, IrCache, IrSnapshot};
 use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
@@ -75,15 +78,26 @@ impl EngineCore {
     /// Builds or reuses an acoustic IR and starts a convolved voice.
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
-        let snapshot = self.impulse_response_for(request)?;
+        let snapshot = self.impulse_response_for(request.source, self.listener)?;
         let impulse_response_id = self.next_ir_id();
         self.auralization
             .register_impulse_response(impulse_response_id, &snapshot.samples)?;
         self.auralization.play_sound(PlaySoundRequest {
             sound_id: request.sound_id,
             impulse_response_id,
-            gain: request.gain,
+            gain: request.volume,
         })
+    }
+
+    /// Builds or reuses the raw acoustic impulse response for a source/listener pair.
+    pub(super) fn build_impulse_response(
+        &mut self,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<IrSnapshot> {
+        validate_source(source)?;
+        validate_listener(listener)?;
+        self.impulse_response_for(source, listener)
     }
 
     /// Stops an active voice if it exists.
@@ -121,8 +135,8 @@ impl EngineCore {
         self.auralization.output_channels()
     }
 
-    fn impulse_response_for(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<IrSnapshot> {
-        let cache_query = self.cache_query(request);
+    fn impulse_response_for(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<IrSnapshot> {
+        let cache_query = self.cache_query(source, listener);
         if let Some(snapshot) = self.cache.get(cache_query) {
             return Ok(snapshot);
         }
@@ -132,18 +146,18 @@ impl EngineCore {
             &mut self.scene,
             AcousticQuery {
                 query_id: cache_query.query_id,
-                source_position: request.source.position,
-                listener_position: self.listener.position,
-                listener_right: self.listener.right,
-                source_energy: request.source.energy,
+                source_position: source.position,
+                listener_position: listener.position,
+                listener_right: listener.right,
+                source_energy: source.energy,
             },
         )?;
         self.cache.insert(cache_query, snapshot.clone());
         Ok(snapshot)
     }
 
-    fn cache_query(&self, request: PlaySpatialSoundRequest) -> crate::acoustics::IrCacheQuery {
-        cache_query(self.scene.version(), self.listener, request)
+    fn cache_query(&self, source: PointSource, listener: ListenerPose) -> crate::acoustics::IrCacheQuery {
+        cache_query(self.scene.version(), source, listener)
     }
 
     fn next_ir_id(&mut self) -> ImpulseResponseId {

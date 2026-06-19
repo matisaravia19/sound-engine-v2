@@ -1,6 +1,7 @@
 //! Background playback runtime for the public engine facade.
 
-use super::{EngineCore, ListenerPose, PlaySpatialSoundRequest};
+use super::{EngineCore, ListenerPose, PlaySpatialSoundRequest, PointSource};
+use crate::acoustics::IrSnapshot;
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
 use crate::core::error::{SoundError, SoundResult};
 use crate::playback::{PlaybackConfig, SoundPlayer};
@@ -17,6 +18,7 @@ enum EngineCommand {
     LoadWavSound(PathBuf, SyncSender<SoundResult<SoundId>>),
     InsertSound(SoundAsset, SyncSender<SoundResult<SoundId>>),
     PlaySound(PlaySpatialSoundRequest, SyncSender<SoundResult<VoiceId>>),
+    BuildImpulseResponse(PointSource, ListenerPose, SyncSender<SoundResult<IrSnapshot>>),
     StopVoice(VoiceId, SyncSender<SoundResult<()>>),
     Shutdown,
 }
@@ -112,6 +114,15 @@ impl EngineRuntime {
     /// Sends a spatial play command to the runtime and waits for the voice id.
     pub(super) fn play_sound(&self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         self.request(|reply| EngineCommand::PlaySound(request, reply))
+    }
+
+    /// Sends an acoustic IR query to the runtime and waits for the raw snapshot.
+    pub(super) fn build_impulse_response(
+        &self,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<IrSnapshot> {
+        self.request(|reply| EngineCommand::BuildImpulseResponse(source, listener, reply))
     }
 
     /// Sends a voice stop command to the runtime.
@@ -237,6 +248,10 @@ fn handle_command(command: EngineCommand, core: &mut EngineCore) -> bool {
         }
         EngineCommand::PlaySound(request, reply) => {
             let _ = reply.send(core.play_sound(request));
+            false
+        }
+        EngineCommand::BuildImpulseResponse(source, listener, reply) => {
+            let _ = reply.send(core.build_impulse_response(source, listener));
             false
         }
         EngineCommand::StopVoice(voice_id, reply) => {

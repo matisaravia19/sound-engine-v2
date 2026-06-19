@@ -136,10 +136,9 @@ def main() -> None:
     elif args.bin_samples is not None:
         times_ms, channels = bin_ir(times_ms, channels, args.bin_samples, args.bin_mode)
 
-    for channel_name, amplitudes in channels.items():
-        axis.plot(times_ms, amplitudes, linewidth=1.0, label=channel_name)
-    if len(channels) > 1:
-        axis.legend()
+    axis.plot(times_ms, channels["left"], linewidth=1.0, label="left", color="tab:blue")
+    axis.plot(times_ms, channels["right"], linewidth=1.0, label="right", color="tab:orange")
+    axis.legend()
     axis.set_title(f"Impulse response query={query_id}, sample_rate={sample_rate} Hz, energy={energy}")
     axis.set_xlabel("Time (ms)")
     axis.set_ylabel(f"Amplitude ({args.bin_mode} bins)" if args.bin_ms or args.bin_samples else "Amplitude")

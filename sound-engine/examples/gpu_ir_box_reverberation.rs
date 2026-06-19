@@ -1,45 +1,32 @@
 use glam::{Mat4, Vec3, vec3};
-use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
-use sound_engine::core::config::OutputChannels;
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::core::debug::export_ir;
 use sound_engine::core::error::{SoundError, SoundResult};
-use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{Material, MeshAsset, SceneDescription, SceneObject};
+use sound_engine::{ListenerPose, PointSource, SoundEngine};
 
 const IR_EXPORT_PATH: &str = "target/gpu_ir_box_reverberation_ir.csv";
+const SAMPLE_RATE: u32 = 48_000;
+const IR_SAMPLES: u32 = SAMPLE_RATE * 2;
+const BLOCK_SIZE: usize = 1024;
 
 fn main() -> SoundResult<()> {
-    let gpu = VkBackend::new()?;
-    let mut scene = SceneManager::new();
-    scene.load(box_room_scene())?;
-
-    let sample_rate = 48_000;
     let source_position = vec3(-0.65, -0.25, 0.1);
     let listener_position = vec3(0.55, 0.35, -0.05);
-    let listener_half_extent = vec3(0.25, 0.25, 0.25);
-    let mut pipeline = AcousticPipeline::new(
-        &gpu,
-        AcousticConfig {
-            sample_rate,
-            num_samples: sample_rate,
-            output_channels: OutputChannels::Stereo,
-            listener_half_extent,
-            rays_per_query: 1_000_000,
-            max_bounces: 16,
-        },
-    )?;
+    let listener = ListenerPose {
+        position: listener_position,
+        right: vec3(1.0, 0.0, 0.0),
+    };
+    let source = PointSource {
+        position: source_position,
+        energy: 10_000.0,
+    };
 
-    let ir = pipeline.build_ir(
-        &gpu,
-        &mut scene,
-        AcousticQuery {
-            query_id: 3,
-            source_position,
-            listener_position,
-            listener_right: vec3(1.0, 0.0, 0.0),
-            source_energy: 100.0,
-        },
-    )?;
+    let mut engine = SoundEngine::new(engine_config())?;
+    engine.load_scene(box_room_scene())?;
+    let ir = engine.build_impulse_response(source, listener)?;
 
     println!(
         "gpu box reverberation: version={}, query={}, samples={}, energy={}",
@@ -52,7 +39,7 @@ fn main() -> SoundResult<()> {
     println!("  exported ir: {IR_EXPORT_PATH}");
 
     let direct_center_sample =
-        ((listener_position - source_position).length() / 343.0 * sample_rate as f32).round() as usize;
+        ((listener_position - source_position).length() / 343.0 * SAMPLE_RATE as f32).round() as usize;
     let late_start = direct_center_sample + 100;
     let mut nonzero = 0;
     let mut late_nonzero = 0;
@@ -82,7 +69,7 @@ fn main() -> SoundResult<()> {
         println!(
             "  first late sample {}: time={}s",
             sample_idx,
-            sample_idx as f32 / sample_rate as f32
+            sample_idx as f32 / SAMPLE_RATE as f32
         );
     }
     println!(
@@ -100,6 +87,23 @@ fn main() -> SoundResult<()> {
     Ok(())
 }
 
+fn engine_config() -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate: SAMPLE_RATE,
+            ir_num_samples: IR_SAMPLES,
+        },
+        acoustics: AcousticsConfig {
+            listener_half_extent: vec3(0.25, 0.25, 0.25),
+            rays_per_query: 1_000_000,
+            max_bounces: 16,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+    }
+}
+
 fn box_room_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
@@ -110,7 +114,7 @@ fn box_room_scene() -> SceneDescription {
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![0.12],
+            absorption_bands: vec![0.02],
             scattering: 0.0,
             transmission: None,
         }],

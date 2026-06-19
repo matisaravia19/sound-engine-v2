@@ -4,7 +4,7 @@ mod direct;
 #[cfg(feature = "playback")]
 mod runtime;
 
-use crate::acoustics::{AcousticConfig, IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery};
+use crate::acoustics::{AcousticConfig, IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery, IrSnapshot};
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
 use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
 use crate::core::error::{SoundError, SoundResult};
@@ -59,17 +59,17 @@ pub struct PlaySpatialSoundRequest {
     pub sound_id: SoundId,
     /// World-space source used to build or reuse the acoustic IR.
     pub source: PointSource,
-    /// Linear dry gain applied before convolution.
-    pub gain: f32,
+    /// Linear playback volume applied to the dry sound before convolution.
+    pub volume: f32,
 }
 
 impl PlaySpatialSoundRequest {
-    /// Creates a play request with unit source energy and unit gain.
+    /// Creates a play request with unit source energy and unit volume.
     pub fn new(sound_id: SoundId, source_position: Vec3) -> Self {
         Self {
             sound_id,
             source: PointSource::new(source_position),
-            gain: 1.0,
+            volume: 1.0,
         }
     }
 }
@@ -148,6 +148,15 @@ impl SoundEngine {
             EngineMode::Direct(core) => core.play_sound(request),
             #[cfg(feature = "playback")]
             EngineMode::Runtime(runtime) => runtime.play_sound(request),
+        }
+    }
+
+    /// Builds or reuses the raw acoustic impulse response for a source/listener pair.
+    pub fn build_impulse_response(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<IrSnapshot> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.build_impulse_response(source, listener),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.build_impulse_response(source, listener),
         }
     }
 
@@ -297,28 +306,42 @@ impl Drop for SoundEngine {
     }
 }
 
-fn cache_query(scene_version: SceneVersion, listener: ListenerPose, request: PlaySpatialSoundRequest) -> IrCacheQuery {
+fn cache_query(scene_version: SceneVersion, source: PointSource, listener: ListenerPose) -> IrCacheQuery {
     IrCacheQuery {
         scene_version,
         query_id: 0,
-        source_position: request.source.position,
-        source_energy: request.source.energy,
+        source_position: source.position,
+        source_energy: source.energy,
         listener_position: listener.position,
         listener_right: listener.right,
     }
 }
 
-fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
-    if !request.gain.is_finite() {
-        return Err(SoundError::invalid_argument("sound gain must be finite"));
-    }
-    if !request.source.energy.is_finite() {
+fn validate_source(source: PointSource) -> SoundResult<()> {
+    if !source.energy.is_finite() {
         return Err(SoundError::invalid_argument("source energy must be finite"));
     }
-    if !request.source.position.is_finite() {
+    if !source.position.is_finite() {
         return Err(SoundError::invalid_argument("source position must be finite"));
     }
     Ok(())
+}
+
+fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
+    if !listener.position.is_finite() {
+        return Err(SoundError::invalid_argument("listener position must be finite"));
+    }
+    if !listener.right.is_finite() {
+        return Err(SoundError::invalid_argument("listener right vector must be finite"));
+    }
+    Ok(())
+}
+
+fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
+    if !request.volume.is_finite() {
+        return Err(SoundError::invalid_argument("sound volume must be finite"));
+    }
+    validate_source(request.source)
 }
 
 fn acoustic_config(config: EngineConfig) -> AcousticConfig {
@@ -347,19 +370,19 @@ mod tests {
     use crate::core::config::{AcousticsConfig, AuralizationConfig, OutputChannels, SoundConfig};
 
     #[test]
-    fn play_request_defaults_to_unit_energy_and_gain() {
+    fn play_request_defaults_to_unit_energy_and_volume() {
         let request = PlaySpatialSoundRequest::new(7, Vec3::new(1.0, 2.0, 3.0));
 
         assert_eq!(request.sound_id, 7);
         assert_eq!(request.source.position, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(request.source.energy, 1.0);
-        assert_eq!(request.gain, 1.0);
+        assert_eq!(request.volume, 1.0);
     }
 
     #[test]
     fn rejects_non_finite_play_request_values() {
         let mut request = PlaySpatialSoundRequest::new(1, Vec3::ZERO);
-        request.gain = f32::NAN;
+        request.volume = f32::NAN;
         assert!(validate_play_request(request).is_err());
 
         request = PlaySpatialSoundRequest::new(1, Vec3::new(f32::INFINITY, 0.0, 0.0));
@@ -414,10 +437,10 @@ mod tests {
                 position: Vec3::new(4.0, 5.0, 6.0),
                 energy: 0.75,
             },
-            gain: 0.5,
+            volume: 0.5,
         };
 
-        let query = cache_query(9, listener, request);
+        let query = cache_query(9, request.source, listener);
 
         assert_eq!(query.scene_version, 9);
         assert_eq!(query.query_id, 0);

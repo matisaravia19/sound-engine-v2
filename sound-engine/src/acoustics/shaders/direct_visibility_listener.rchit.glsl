@@ -42,7 +42,10 @@ int toFixedPoint(float value) {
 }
 
 void main() {
-    float distance = payload.path_distance + gl_HitTEXT;
+    // The listener is only a capture volume; arrival time is measured to
+    // the listener center so IR timing is stable across the listener extent.
+    float listener_center_distance = length(pc.listener_position - gl_WorldRayOriginEXT);
+    float distance = payload.path_distance + listener_center_distance;
     float arrival_time_seconds = distance / max(pc.speed_of_sound, 0.001);
     uint sample_index = uint(round(arrival_time_seconds * float(pc.sample_rate)));
     if (sample_index >= pc.sample_count) {
