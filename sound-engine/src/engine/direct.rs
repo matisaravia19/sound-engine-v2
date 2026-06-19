@@ -15,12 +15,19 @@ use std::sync::Arc;
 
 /// Private owner of GPU, scene, acoustic cache, assets, voices, and block rendering.
 pub(super) struct EngineCore {
+    /// Shared Vulkan backend used by acoustic tracing and auralization compute work.
     gpu: Arc<VkBackend>,
+    /// Mutable scene state and versioning used when building acoustic queries.
     scene: SceneManager,
+    /// Ray-tracing pipeline that produces impulse responses for source/listener pairs.
     pipeline: AcousticPipeline,
+    /// Reuse cache for impulse responses derived from scene, source, and listener state.
     cache: IrCache,
+    /// Asset bank, active voices, and convolver used to render output blocks.
     auralization: AuralizationEngine,
+    /// Listener pose used by spatial play requests that do not supply one directly.
     listener: ListenerPose,
+    /// Monotonic id assigned to impulse responses registered with the auralizer.
     next_impulse_response_id: ImpulseResponseId,
 }
 
@@ -141,6 +148,8 @@ impl EngineCore {
             return Ok(snapshot);
         }
 
+        // Building an IR can update scene-side acceleration data, so the scene
+        // manager is passed mutably even though the acoustic query is read-only.
         let snapshot = self.pipeline.build_ir(
             self.gpu.as_ref(),
             &mut self.scene,
@@ -156,10 +165,12 @@ impl EngineCore {
         Ok(snapshot)
     }
 
+    /// Builds the cache key for the current scene version and acoustic endpoints.
     fn cache_query(&self, source: PointSource, listener: ListenerPose) -> crate::acoustics::IrCacheQuery {
         cache_query(self.scene.version(), source, listener)
     }
 
+    /// Returns a fresh auralization impulse-response id.
     fn next_ir_id(&mut self) -> ImpulseResponseId {
         let id = self.next_impulse_response_id;
         self.next_impulse_response_id = self.next_impulse_response_id.saturating_add(1);

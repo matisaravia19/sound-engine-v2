@@ -41,7 +41,12 @@ fn main() -> SoundResult<()> {
         rendered.extend_from_slice(&block);
     }
 
-    write_wav(OUTPUT_PATH, engine.sample_rate(), engine.output_channels() as u16, &rendered)?;
+    write_wav(
+        OUTPUT_PATH,
+        engine.sample_rate(),
+        engine.output_channels() as u16,
+        &rendered,
+    )?;
     println!("wrote {OUTPUT_PATH}");
     Ok(())
 }

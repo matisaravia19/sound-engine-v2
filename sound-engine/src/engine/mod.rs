@@ -76,12 +76,16 @@ impl PlaySpatialSoundRequest {
 
 /// Public handle for synchronous rendering or feature-gated background playback.
 pub struct SoundEngine {
+    /// Current owner mode; temporarily `None` while ownership moves between modes.
     mode: Option<EngineMode>,
 }
 
+/// Internal ownership mode for the engine core.
 enum EngineMode {
+    /// Synchronous mode where the public handle owns the core directly.
     Direct(EngineCore),
     #[cfg(feature = "playback")]
+    /// Background playback mode where the runtime worker owns the core.
     Runtime(EngineRuntime),
 }
 
@@ -290,6 +294,7 @@ impl SoundEngine {
         matches!(self.mode, Some(EngineMode::Runtime(_)))
     }
 
+    /// Borrows the current mode unless ownership is being transferred.
     fn mode_mut(&mut self) -> SoundResult<&mut EngineMode> {
         self.mode
             .as_mut()
@@ -306,6 +311,7 @@ impl Drop for SoundEngine {
     }
 }
 
+/// Builds the impulse-response cache key shared by direct and runtime modes.
 fn cache_query(scene_version: SceneVersion, source: PointSource, listener: ListenerPose) -> IrCacheQuery {
     IrCacheQuery {
         scene_version,
@@ -317,6 +323,7 @@ fn cache_query(scene_version: SceneVersion, source: PointSource, listener: Liste
     }
 }
 
+/// Validates finite source parameters before they reach acoustic queries.
 fn validate_source(source: PointSource) -> SoundResult<()> {
     if !source.energy.is_finite() {
         return Err(SoundError::invalid_argument("source energy must be finite"));
@@ -327,6 +334,7 @@ fn validate_source(source: PointSource) -> SoundResult<()> {
     Ok(())
 }
 
+/// Validates finite listener parameters before they reach acoustic queries.
 fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
     if !listener.position.is_finite() {
         return Err(SoundError::invalid_argument("listener position must be finite"));
@@ -337,6 +345,7 @@ fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
     Ok(())
 }
 
+/// Validates a spatial play request before allocating acoustic or voice resources.
 fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
     if !request.volume.is_finite() {
         return Err(SoundError::invalid_argument("sound volume must be finite"));
@@ -344,6 +353,7 @@ fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
     validate_source(request.source)
 }
 
+/// Extracts the acoustic subset from the full engine configuration.
 fn acoustic_config(config: EngineConfig) -> AcousticConfig {
     AcousticConfig {
         sample_rate: config.sound.sample_rate,
@@ -355,6 +365,7 @@ fn acoustic_config(config: EngineConfig) -> AcousticConfig {
     }
 }
 
+/// Converts the public core cache configuration into acoustic cache settings.
 fn cache_config(config: CoreIrCacheConfig) -> AcousticIrCacheConfig {
     AcousticIrCacheConfig {
         position_cell_meters: config.position_cell_meters,

@@ -1,4 +1,4 @@
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::playback::device::{build_output_stream, default_output_sample_rate};
 use crate::playback::queue::SampleQueue;
 use crate::playback::state::PlaybackState;
@@ -57,6 +57,7 @@ impl SoundPlayer {
         let state = Arc::new(PlaybackState::new());
         let queue = state.prepare_queue(config.max_queued_blocks * block_samples)?;
         let stream = build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
+
         stream
             .play()
             .map_err(|source| SoundError::external(source.to_string()))?;
@@ -82,13 +83,14 @@ impl SoundPlayer {
 
     /// Pushes one interleaved rendered block into the playback queue.
     pub fn push_block(&self, block: &[f32]) -> SoundResult<bool> {
-        if block.len() != self.block_samples {
-            return Err(SoundError::invalid_argument(format!(
-                "playback block length {} must equal {}",
-                block.len(),
-                self.block_samples
-            )));
-        }
+        crate::debug_validate!(
+            block.len() == self.block_samples,
+            ErrorCode::InvalidArgument,
+            "playback block length {} must equal {}",
+            block.len(),
+            self.block_samples
+        );
+
         self.queue.push_block(block, self.state.stop_requested())
     }
 

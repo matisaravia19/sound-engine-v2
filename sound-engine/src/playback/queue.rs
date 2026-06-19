@@ -1,15 +1,24 @@
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 
+/// Bounded FIFO of interleaved `f32` playback samples.
+///
+/// Producers hold shared ownership through `Arc<SampleQueue>` and push complete
+/// engine blocks. The audio callback drains batches without blocking; producers
+/// may block on the condition variable until the callback frees capacity.
 pub(super) struct SampleQueue {
+    /// Interleaved engine samples protected against producer/callback access.
     samples: Mutex<VecDeque<f32>>,
+    /// Wakes blocked producers when the callback drains queued samples.
     available: Condvar,
+    /// Maximum number of samples retained ahead of the device callback.
     capacity: usize,
 }
 
 impl SampleQueue {
+    /// Creates an empty queue with space for `capacity` interleaved samples.
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             samples: Mutex::new(VecDeque::with_capacity(capacity)),
@@ -18,14 +27,18 @@ impl SampleQueue {
         }
     }
 
+    /// Pushes one complete rendered block, blocking until enough capacity exists.
+    ///
+    /// Returns `false` if playback is stopped before the block is enqueued. The
+    /// `stop_requested` flag lets blocked producers wake and exit cleanly.
     pub(super) fn push_block(&self, block: &[f32], stop_requested: &AtomicBool) -> SoundResult<bool> {
-        if block.len() > self.capacity {
-            return Err(SoundError::invalid_argument(format!(
-                "sample block length {} exceeds queue capacity {}",
-                block.len(),
-                self.capacity
-            )));
-        }
+        crate::debug_validate!(
+            block.len() <= self.capacity,
+            ErrorCode::InvalidArgument,
+            "sample block length {} exceeds queue capacity {}",
+            block.len(),
+            self.capacity
+        );
 
         let mut samples = self
             .samples
@@ -50,6 +63,10 @@ impl SampleQueue {
         Ok(true)
     }
 
+    /// Drains up to `output.len()` samples for one device callback.
+    ///
+    /// The callback never waits for producers. Missing samples are reported by
+    /// returning a count smaller than `output.len()`.
     pub(super) fn pop_into(&self, output: &mut [f32]) -> SoundResult<usize> {
         let mut samples = self
             .samples
@@ -70,11 +87,13 @@ impl SampleQueue {
         Ok(drained)
     }
 
+    /// Wakes producers waiting for queue capacity.
     pub(super) fn notify_available_space(&self) {
         self.available.notify_all();
     }
 
     #[cfg(test)]
+    /// Returns the current queued sample count for tests.
     fn len(&self) -> SoundResult<usize> {
         let samples = self
             .samples

@@ -12,23 +12,37 @@ use std::thread::{self, JoinHandle};
 
 /// Commands sent from the public handle to the runtime-owned engine core.
 enum EngineCommand {
+    /// Replace the scene and reply with the new scene version.
     LoadScene(SceneDescription, SyncSender<SoundResult<SceneVersion>>),
+    /// Apply scene edits and reply with the resulting scene version.
     ApplySceneUpdates(SceneUpdates, SyncSender<SoundResult<SceneVersion>>),
+    /// Update the listener pose used by later spatial play requests.
     SetListenerPose(ListenerPose, SyncSender<SoundResult<()>>),
+    /// Load a WAV file on the worker thread and reply with its sound id.
     LoadWavSound(PathBuf, SyncSender<SoundResult<SoundId>>),
+    /// Insert an already decoded asset on the worker thread.
     InsertSound(SoundAsset, SyncSender<SoundResult<SoundId>>),
+    /// Start a spatial voice and reply with its voice id.
     PlaySound(PlaySpatialSoundRequest, SyncSender<SoundResult<VoiceId>>),
+    /// Build or reuse an impulse response and reply with the raw snapshot.
     BuildImpulseResponse(PointSource, ListenerPose, SyncSender<SoundResult<IrSnapshot>>),
+    /// Stop an active voice if it exists.
     StopVoice(VoiceId, SyncSender<SoundResult<()>>),
+    /// Stop the worker loop and return the owned engine core.
     Shutdown,
 }
 
 /// Handle for the background thread that owns [`EngineCore`] while playback is running.
 pub(super) struct EngineRuntime {
+    /// Command sender used by the public facade to request worker-thread work.
     commands: Sender<EngineCommand>,
+    /// Join handle for recovering direct engine ownership when playback stops.
     worker: Option<JoinHandle<(EngineCore, SoundResult<()>)>>,
+    /// Sample rate copied from the core before it moved to the worker thread.
     sample_rate: u32,
+    /// Render block size copied from the core before it moved to the worker thread.
     block_size: usize,
+    /// Output channel count copied from the core before it moved to the worker thread.
     output_channels: usize,
 }
 
@@ -48,6 +62,7 @@ impl EngineRuntime {
         let output_channels = core.output_channels();
         let (sender, receiver) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::sync_channel(1);
+
         let worker = thread::spawn(move || {
             let player = match SoundPlayer::new(sample_rate, output_channels, block_size, playback_config) {
                 Ok(player) => {
@@ -61,6 +76,7 @@ impl EngineRuntime {
             };
             runtime_loop(core, player, receiver)
         });
+
         match init_rx
             .recv()
             .map_err(|_| RuntimeStartError::Fatal(SoundError::external("sound player worker stopped during startup")))?
@@ -160,6 +176,7 @@ impl EngineRuntime {
         self.output_channels
     }
 
+    /// Sends a command with a one-shot reply channel and waits for the result.
     fn request<T>(&self, build: impl FnOnce(SyncSender<SoundResult<T>>) -> EngineCommand) -> SoundResult<T> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.commands
@@ -171,6 +188,11 @@ impl EngineRuntime {
     }
 }
 
+/// Runs the worker loop that owns direct engine state during background playback.
+///
+/// Commands are handled between render blocks so public API calls can mutate the
+/// core without sharing it across threads. Rendered blocks are pushed into the
+/// device player until the voices finish or shutdown is requested.
 fn runtime_loop(
     mut core: EngineCore,
     player: SoundPlayer,
@@ -179,6 +201,7 @@ fn runtime_loop(
     let mut output_block = vec![0.0; core.block_size() * core.output_channels()];
 
     loop {
+        // If there are no active voices, block and wait for a command.
         if !core.has_active_voices() {
             match receiver.recv() {
                 Ok(EngineCommand::Shutdown) => {
@@ -198,6 +221,7 @@ fn runtime_loop(
             }
         }
 
+        // If there are active voices, handle any pending commands without blocking.
         while let Ok(command) = receiver.try_recv() {
             if handle_command(command, &mut core) {
                 let result = player.stop();
@@ -211,18 +235,22 @@ fn runtime_loop(
                 let _ = player.stop();
                 return (core, Err(error));
             }
+
             match player.push_block(&output_block) {
                 Ok(true) => {}
                 Ok(false) => return (core, Ok(())),
                 Err(error) => return (core, Err(error)),
             }
         } else if player.is_stop_requested() {
+            // With no active voices, no push_block call remains to observe the
+            // stop flag, so the idle loop must exit explicitly.
             let result = player.stop();
             return (core, result);
         }
     }
 }
 
+/// Applies one runtime command and returns `true` when the worker should stop.
 fn handle_command(command: EngineCommand, core: &mut EngineCore) -> bool {
     match command {
         EngineCommand::LoadScene(scene, reply) => {
