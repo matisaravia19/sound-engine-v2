@@ -16,7 +16,8 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
-    layout(offset = 32) vec3 listener_half_extent;
+    layout(offset = 32) float listener_radius;
+    layout(offset = 36) float listener_volume;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
     layout(offset = 64) vec3 listener_right;

@@ -359,7 +359,7 @@ fn acoustic_config(config: EngineConfig) -> AcousticConfig {
         sample_rate: config.sound.sample_rate,
         num_samples: config.sound.ir_num_samples,
         output_channels: config.sound.output_channels,
-        listener_half_extent: config.acoustics.listener_half_extent,
+        listener_radius: config.acoustics.listener_radius,
         rays_per_query: config.acoustics.rays_per_query,
         max_bounces: config.acoustics.max_bounces,
     }
@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(acoustic.sample_rate, config.sound.sample_rate);
         assert_eq!(acoustic.num_samples, config.sound.ir_num_samples);
         assert_eq!(acoustic.output_channels, config.sound.output_channels);
-        assert_eq!(acoustic.listener_half_extent, config.acoustics.listener_half_extent);
+        assert_eq!(acoustic.listener_radius, config.acoustics.listener_radius);
         assert_eq!(acoustic.rays_per_query, config.acoustics.rays_per_query);
         assert_eq!(acoustic.max_bounces, config.acoustics.max_bounces);
     }
@@ -469,7 +469,7 @@ mod tests {
                 ir_num_samples: 128,
             },
             acoustics: AcousticsConfig {
-                listener_half_extent: Vec3::splat(0.2),
+                listener_radius: 0.2,
                 rays_per_query: 1,
                 max_bounces: 0,
             },

@@ -27,7 +27,8 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 12) float source_energy;
     layout(offset = 16) vec3 listener_position;
     layout(offset = 28) float speed_of_sound;
-    layout(offset = 32) vec3 listener_half_extent;
+    layout(offset = 32) float listener_radius;
+    layout(offset = 36) float listener_volume;
     layout(offset = 44) uint ray_count;
     layout(offset = 48) uint max_bounces;
     layout(offset = 64) vec3 listener_right;
@@ -53,8 +54,7 @@ void main() {
     }
 
     float listener_distance = listener_hit.x;
-    float listener_volume = 8.0 * pc.listener_half_extent.x * pc.listener_half_extent.y * pc.listener_half_extent.z;
-    float ray_intensity = payload.ray_energy * listener_distance / max(listener_volume, 0.000001);
+    float ray_intensity = payload.ray_energy * listener_distance / max(pc.listener_volume, 0.000001);
     vec3 incoming_direction = normalize(-gl_WorldRayDirectionEXT);
     float left_factor = 1.0;
     float right_factor = 1.0;

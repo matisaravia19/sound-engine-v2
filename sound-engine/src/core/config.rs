@@ -1,5 +1,3 @@
-use glam::Vec3;
-
 /// End-to-end runtime configuration for acoustic rendering.
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
@@ -48,8 +46,8 @@ impl OutputChannels {
 /// Runtime configuration for acoustic simulation and ray tracing.
 #[derive(Debug, Clone, Copy)]
 pub struct AcousticsConfig {
-    /// Listener AABB half extent in world meters, centered on each query listener position.
-    pub listener_half_extent: Vec3,
+    /// Listener capture sphere radius in world meters, centered on each query listener position.
+    pub listener_radius: f32,
     /// Ray budget reserved for future stochastic reflection tracing.
     pub rays_per_query: u32,
     /// Maximum path depth reserved for future reflection tracing.

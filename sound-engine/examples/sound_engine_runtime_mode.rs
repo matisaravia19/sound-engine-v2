@@ -88,7 +88,7 @@ fn engine_config() -> EngineConfig {
             ir_num_samples: IR_SAMPLES,
         },
         acoustics: AcousticsConfig {
-            listener_half_extent: Vec3::splat(0.5),
+            listener_radius: 0.5,
             rays_per_query: 262_144,
             max_bounces: 8,
         },

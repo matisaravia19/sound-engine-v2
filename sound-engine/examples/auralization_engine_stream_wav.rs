@@ -1,4 +1,3 @@
-use glam::Vec3;
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest};
 use sound_engine::core::config::{
@@ -410,7 +409,7 @@ fn engine_config(
             ir_num_samples,
         },
         acoustics: AcousticsConfig {
-            listener_half_extent: Vec3::splat(0.2),
+            listener_radius: 0.2,
             rays_per_query: 1,
             max_bounces: 0,
         },

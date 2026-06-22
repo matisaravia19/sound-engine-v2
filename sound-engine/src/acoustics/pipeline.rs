@@ -26,8 +26,8 @@ pub struct AcousticConfig {
     pub num_samples: u32,
     /// Output layout used when constructing stereo IR channel gains.
     pub output_channels: OutputChannels,
-    /// Listener AABB half extent in world meters, centered on each query listener position.
-    pub listener_half_extent: Vec3,
+    /// Listener capture sphere radius in world meters, centered on each query listener position.
+    pub listener_radius: f32,
     /// Ray budget reserved for future stochastic reflection tracing.
     pub rays_per_query: u32,
     /// Maximum path depth reserved for future reflection tracing.
@@ -58,7 +58,8 @@ pub struct AcousticPipeline {
     cfg: AcousticConfig,
     contribution_pipeline: RtPipelineId,
     ir_buffer: BufferHandle,
-    _listener_aabbs: RtAabbBuffers,
+    /// Procedural BLAS bounds kept alive while the analytical listener sphere is traced.
+    _listener_bounds: RtAabbBuffers,
     listener_blas: BlasId,
 }
 
@@ -69,7 +70,9 @@ struct VisibilityPushConstants {
     source_energy: f32,
     listener_position: [f32; 3],
     speed_of_sound: f32,
-    listener_half_extent: [f32; 3],
+    listener_radius: f32,
+    listener_volume: f32,
+    _pad_listener_volume: u32,
     ray_count: u32,
     max_bounces: u32,
     _pad0: [u32; 3],
@@ -95,7 +98,7 @@ unsafe impl bytemuck::Pod for GpuIrSample {}
 impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
     pub fn new(gpu: &VkBackend, cfg: AcousticConfig) -> SoundResult<Self> {
-        validate_listener_half_extent(cfg.listener_half_extent)?;
+        validate_listener_radius(cfg.listener_radius)?;
         validate_ir_dimensions(cfg.sample_rate, cfg.num_samples)?;
 
         let raygen = gpu
@@ -144,9 +147,9 @@ impl AcousticPipeline {
         let ir_buffer = gpu
             .memory()
             .create_storage_buffer(ir_buffer_size(cfg.num_samples) as u64)?;
-        let listener_aabbs = create_listener_aabb(gpu, cfg.listener_half_extent)?;
+        let listener_bounds = create_listener_sphere_bounds(gpu, cfg.listener_radius)?;
         let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
-            aabbs: &listener_aabbs,
+            aabbs: &listener_bounds,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
 
@@ -154,7 +157,7 @@ impl AcousticPipeline {
             cfg,
             contribution_pipeline,
             ir_buffer,
-            _listener_aabbs: listener_aabbs,
+            _listener_bounds: listener_bounds,
             listener_blas,
         })
     }
@@ -176,7 +179,9 @@ impl AcousticPipeline {
             source_energy: query.source_energy,
             listener_position: query.listener_position.to_array(),
             speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
-            listener_half_extent: self.cfg.listener_half_extent.to_array(),
+            listener_radius: self.cfg.listener_radius,
+            listener_volume: listener_sphere_volume(self.cfg.listener_radius),
+            _pad_listener_volume: 0,
             ray_count: self.cfg.rays_per_query.max(1),
             max_bounces: self.cfg.max_bounces,
             _pad0: [0; 3],
@@ -285,16 +290,11 @@ fn shader_path(file: &str) -> PathBuf {
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 const LISTENER_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX;
 const LISTENER_HIT_GROUP_OFFSET: u32 = 1;
+const SPHERE_VOLUME_FACTOR: f32 = 4.0 * std::f32::consts::PI / 3.0;
 
-fn validate_listener_half_extent(listener_half_extent: Vec3) -> SoundResult<()> {
-    let extent = listener_half_extent.to_array();
-    if extent
-        .iter()
-        .any(|component| !component.is_finite() || *component <= 0.0)
-    {
-        return Err(SoundError::invalid_argument(
-            "listener_half_extent components must be finite and > 0",
-        ));
+fn validate_listener_radius(listener_radius: f32) -> SoundResult<()> {
+    if !listener_radius.is_finite() || listener_radius <= 0.0 {
+        return Err(SoundError::invalid_argument("listener_radius must be finite and > 0"));
     }
     Ok(())
 }
@@ -309,12 +309,17 @@ fn validate_ir_dimensions(sample_rate: u32, num_samples: u32) -> SoundResult<()>
     Ok(())
 }
 
-fn create_listener_aabb(gpu: &VkBackend, listener_half_extent: Vec3) -> SoundResult<RtAabbBuffers> {
+fn create_listener_sphere_bounds(gpu: &VkBackend, listener_radius: f32) -> SoundResult<RtAabbBuffers> {
+    let extent = Vec3::splat(listener_radius);
     gpu.rt().upload_aabbs(&[RtAabbSpec {
-        min: -listener_half_extent,
-        max: listener_half_extent,
+        min: -extent,
+        max: extent,
         opaque: true,
     }])
+}
+
+fn listener_sphere_volume(listener_radius: f32) -> f32 {
+    SPHERE_VOLUME_FACTOR * listener_radius * listener_radius * listener_radius
 }
 
 fn ir_buffer_size(sample_count: u32) -> usize {

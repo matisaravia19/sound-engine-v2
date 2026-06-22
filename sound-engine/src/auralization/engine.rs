@@ -294,7 +294,7 @@ mod tests {
                 ir_num_samples: 128,
             },
             acoustics: crate::core::config::AcousticsConfig {
-                listener_half_extent: glam::Vec3::splat(0.2),
+                listener_radius: 0.2,
                 rays_per_query: 1,
                 max_bounces: 0,
             },

@@ -16,14 +16,14 @@ fn main() -> SoundResult<()> {
     let sample_rate = 48_000;
     let source_position = vec3(0.0, 0.0, 0.0);
     let listener_position = vec3(0.0, 0.7, 0.0);
-    let listener_half_extent = vec3(0.35, 0.35, 0.35);
+    let listener_radius = 0.35;
     let mut pipeline = AcousticPipeline::new(
         &gpu,
         AcousticConfig {
             sample_rate,
             num_samples: sample_rate,
             output_channels: OutputChannels::Stereo,
-            listener_half_extent,
+            listener_radius,
             rays_per_query: 1_000_000,
             max_bounces: 10,
         },
