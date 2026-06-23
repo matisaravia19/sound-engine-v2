@@ -1,7 +1,7 @@
 //! Direct, synchronous engine implementation.
 
 use super::{
-    ListenerPose, PlaySpatialSoundRequest, PointSource, acoustic_config, cache_config, cache_query, validate_listener,
+    ListenerPose, PlaySpatialSoundRequest, PointSource, cache_config, cache_query, validate_listener,
     validate_play_request, validate_source,
 };
 use crate::acoustics::{AcousticPipeline, AcousticQuery, IrCache, IrSnapshot};
@@ -35,7 +35,7 @@ impl EngineCore {
     /// Creates a direct engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
-        let pipeline = AcousticPipeline::new(gpu.as_ref(), acoustic_config(config))?;
+        let pipeline = AcousticPipeline::new(gpu.as_ref(), config)?;
         let cache = IrCache::new(cache_config(config.cache));
         let auralization = AuralizationEngine::new(gpu.clone(), config)?;
 

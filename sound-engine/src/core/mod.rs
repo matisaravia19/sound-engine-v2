@@ -52,7 +52,7 @@ pub struct AcousticRenderer {
 //     /// Creates a renderer with its own Vulkan backend and empty scene.
 //     pub fn new(cfg: EngineConfig) -> SoundResult<Self> {
 //         let gpu = Arc::new(VkBackend::new()?);
-//         let pipeline = AcousticPipeline::new(gpu.as_ref(), cfg.acoustics)?;
+//         let pipeline = AcousticPipeline::new(gpu.as_ref(), cfg)?;
 //         let convolver = PartitionedConvolver::new(gpu.clone())?;
 
 //         Ok(Self {

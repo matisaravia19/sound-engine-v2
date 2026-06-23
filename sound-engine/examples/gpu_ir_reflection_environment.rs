@@ -1,6 +1,8 @@
 use glam::{Mat4, Vec3, vec3};
-use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
-use sound_engine::core::config::OutputChannels;
+use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::core::debug::export_ir;
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
@@ -19,14 +21,7 @@ fn main() -> SoundResult<()> {
     let listener_radius = 0.35;
     let mut pipeline = AcousticPipeline::new(
         &gpu,
-        AcousticConfig {
-            sample_rate,
-            num_samples: sample_rate,
-            output_channels: OutputChannels::Stereo,
-            listener_radius,
-            rays_per_query: 1_000_000,
-            max_bounces: 10,
-        },
+        engine_config(sample_rate, sample_rate, listener_radius, 1_000_000, 10),
     )?;
 
     let ir = pipeline.build_ir(
@@ -74,6 +69,29 @@ fn main() -> SoundResult<()> {
     }
 
     Ok(())
+}
+
+fn engine_config(
+    sample_rate: u32,
+    ir_num_samples: u32,
+    listener_radius: f32,
+    rays_per_query: u32,
+    max_bounces: u32,
+) -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate,
+            ir_num_samples,
+        },
+        acoustics: AcousticsConfig {
+            listener_radius,
+            rays_per_query,
+            max_bounces,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size: 1024 },
+    }
 }
 
 fn reflective_environment_scene() -> SceneDescription {

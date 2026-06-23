@@ -1,5 +1,5 @@
 use crate::acoustics::{IrSample, IrSnapshot};
-use crate::core::config::OutputChannels;
+use crate::core::config::{EngineConfig, OutputChannels};
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
@@ -16,23 +16,6 @@ use std::path::PathBuf;
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 const IR_FIXED_POINT_SCALE: f32 = 1_048_576.0;
-
-/// Runtime configuration for acoustic IR generation.
-#[derive(Debug, Clone, Copy)]
-pub struct AcousticConfig {
-    /// Sample rate used when binning path arrivals into IR samples.
-    pub sample_rate: u32,
-    /// Number of samples in each generated impulse response.
-    pub num_samples: u32,
-    /// Output layout used when constructing stereo IR channel gains.
-    pub output_channels: OutputChannels,
-    /// Listener capture sphere radius in world meters, centered on each query listener position.
-    pub listener_radius: f32,
-    /// Ray budget reserved for future stochastic reflection tracing.
-    pub rays_per_query: u32,
-    /// Maximum path depth reserved for future reflection tracing.
-    pub max_bounces: u32,
-}
 
 /// Source/listener pair that should produce one impulse response.
 #[derive(Debug, Clone, Copy)]
@@ -55,7 +38,7 @@ pub struct AcousticQuery {
 /// Calls are synchronous today: GPU ray tracing writes the IR, the final samples
 /// are downloaded, and `build_ir` returns an immutable snapshot.
 pub struct AcousticPipeline {
-    cfg: AcousticConfig,
+    config: EngineConfig,
     contribution_pipeline: RtPipelineId,
     ir_buffer: BufferHandle,
     /// Procedural BLAS bounds kept alive while the analytical listener sphere is traced.
@@ -97,9 +80,9 @@ unsafe impl bytemuck::Pod for GpuIrSample {}
 
 impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
-    pub fn new(gpu: &VkBackend, cfg: AcousticConfig) -> SoundResult<Self> {
-        validate_listener_radius(cfg.listener_radius)?;
-        validate_ir_dimensions(cfg.sample_rate, cfg.num_samples)?;
+    pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
+        validate_listener_radius(config.acoustics.listener_radius)?;
+        validate_ir_dimensions(config.sound.sample_rate, config.sound.ir_num_samples)?;
 
         let raygen = gpu
             .shaders()
@@ -142,19 +125,19 @@ impl AcousticPipeline {
                 RtDescriptorBindingSpec::storage_buffer(3),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
-            max_ray_recursion_depth: cfg.max_bounces.saturating_add(1).max(1),
+            max_ray_recursion_depth: config.acoustics.max_bounces.saturating_add(1).max(1),
         })?;
         let ir_buffer = gpu
             .memory()
-            .create_storage_buffer(ir_buffer_size(cfg.num_samples) as u64)?;
-        let listener_bounds = create_listener_sphere_bounds(gpu, cfg.listener_radius)?;
+            .create_storage_buffer(ir_buffer_size(config.sound.ir_num_samples) as u64)?;
+        let listener_bounds = create_listener_sphere_bounds(gpu, config.acoustics.listener_radius)?;
         let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
             aabbs: &listener_bounds,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
 
         Ok(Self {
-            cfg,
+            config,
             contribution_pipeline,
             ir_buffer,
             _listener_bounds: listener_bounds,
@@ -172,23 +155,23 @@ impl AcousticPipeline {
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
         let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), query.listener_position)?;
 
-        let _ray_budget = self.cfg.rays_per_query;
-        let _max_bounces = self.cfg.max_bounces;
+        let _ray_budget = self.config.acoustics.rays_per_query;
+        let _max_bounces = self.config.acoustics.max_bounces;
         let visibility_constants = VisibilityPushConstants {
             source_position: query.source_position.to_array(),
             source_energy: query.source_energy,
             listener_position: query.listener_position.to_array(),
             speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
-            listener_radius: self.cfg.listener_radius,
-            listener_volume: listener_sphere_volume(self.cfg.listener_radius),
+            listener_radius: self.config.acoustics.listener_radius,
+            listener_volume: listener_sphere_volume(self.config.acoustics.listener_radius),
             _pad_listener_volume: 0,
-            ray_count: self.cfg.rays_per_query.max(1),
-            max_bounces: self.cfg.max_bounces,
+            ray_count: self.config.acoustics.rays_per_query.max(1),
+            max_bounces: self.config.acoustics.max_bounces,
             _pad0: [0; 3],
             listener_right: query.listener_right.to_array(),
-            sample_rate: self.cfg.sample_rate,
-            sample_count: self.cfg.num_samples,
-            output_channels: output_channels_to_shader(self.cfg.output_channels),
+            sample_rate: self.config.sound.sample_rate,
+            sample_count: self.config.sound.ir_num_samples,
+            output_channels: output_channels_to_shader(self.config.sound.output_channels),
         };
 
         gpu.memory().clear_buffer(&self.ir_buffer)?;
@@ -205,7 +188,7 @@ impl AcousticPipeline {
                     ],
                     push_constants: bytemuck::bytes_of(&visibility_constants).to_vec(),
                     push_constant_offset: 0,
-                    dimensions: [self.cfg.rays_per_query.max(1), 1, 1],
+                    dimensions: [self.config.acoustics.rays_per_query.max(1), 1, 1],
                     barrier_after_trace: true,
                 },
             )?;
@@ -236,7 +219,7 @@ impl AcousticPipeline {
         scene_version: crate::scene::SceneVersion,
         query_id: u32,
     ) -> SoundResult<IrSnapshot> {
-        let mut gpu_samples = vec![GpuIrSample { left: 0, right: 0 }; self.cfg.num_samples as usize];
+        let mut gpu_samples = vec![GpuIrSample { left: 0, right: 0 }; self.config.sound.ir_num_samples as usize];
         gpu.memory()
             .download_typed(&self.ir_buffer, gpu_samples.len(), &mut gpu_samples)?;
 
@@ -252,7 +235,7 @@ impl AcousticPipeline {
             .collect();
 
         Ok(IrSnapshot {
-            sample_rate: self.cfg.sample_rate,
+            sample_rate: self.config.sound.sample_rate,
             samples,
             energy,
             scene_version,

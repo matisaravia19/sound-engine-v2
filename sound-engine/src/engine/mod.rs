@@ -4,7 +4,7 @@ mod direct;
 #[cfg(feature = "playback")]
 mod runtime;
 
-use crate::acoustics::{AcousticConfig, IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery, IrSnapshot};
+use crate::acoustics::{IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery, IrSnapshot};
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
 use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
 use crate::core::error::{SoundError, SoundResult};
@@ -353,18 +353,6 @@ fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
     validate_source(request.source)
 }
 
-/// Extracts the acoustic subset from the full engine configuration.
-fn acoustic_config(config: EngineConfig) -> AcousticConfig {
-    AcousticConfig {
-        sample_rate: config.sound.sample_rate,
-        num_samples: config.sound.ir_num_samples,
-        output_channels: config.sound.output_channels,
-        listener_radius: config.acoustics.listener_radius,
-        rays_per_query: config.acoustics.rays_per_query,
-        max_bounces: config.acoustics.max_bounces,
-    }
-}
-
 /// Converts the public core cache configuration into acoustic cache settings.
 fn cache_config(config: CoreIrCacheConfig) -> AcousticIrCacheConfig {
     AcousticIrCacheConfig {
@@ -402,19 +390,6 @@ mod tests {
         request = PlaySpatialSoundRequest::new(1, Vec3::ZERO);
         request.source.energy = f32::NAN;
         assert!(validate_play_request(request).is_err());
-    }
-
-    #[test]
-    fn maps_engine_config_to_acoustic_config() {
-        let config = test_config();
-        let acoustic = acoustic_config(config);
-
-        assert_eq!(acoustic.sample_rate, config.sound.sample_rate);
-        assert_eq!(acoustic.num_samples, config.sound.ir_num_samples);
-        assert_eq!(acoustic.output_channels, config.sound.output_channels);
-        assert_eq!(acoustic.listener_radius, config.acoustics.listener_radius);
-        assert_eq!(acoustic.rays_per_query, config.acoustics.rays_per_query);
-        assert_eq!(acoustic.max_bounces, config.acoustics.max_bounces);
     }
 
     #[test]

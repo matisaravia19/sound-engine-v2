@@ -1,6 +1,8 @@
 use glam::vec3;
-use sound_engine::acoustics::{AcousticConfig, AcousticPipeline, AcousticQuery};
-use sound_engine::core::config::OutputChannels;
+use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
+use sound_engine::core::config::{
+    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+};
 use sound_engine::core::debug::export_ir;
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
@@ -15,14 +17,7 @@ fn main() -> SoundResult<()> {
 
     let mut pipeline = AcousticPipeline::new(
         &gpu,
-        AcousticConfig {
-            sample_rate: 44_100,
-            num_samples: 44_100,
-            output_channels: OutputChannels::Stereo,
-            listener_radius: 0.2,
-            rays_per_query: 1024,
-            max_bounces: 0,
-        },
+        engine_config(44_100, 44_100, 0.2, 1024, 0),
     )?;
 
     let ir = pipeline.build_ir(
@@ -58,6 +53,29 @@ fn main() -> SoundResult<()> {
     }
 
     Ok(())
+}
+
+fn engine_config(
+    sample_rate: u32,
+    ir_num_samples: u32,
+    listener_radius: f32,
+    rays_per_query: u32,
+    max_bounces: u32,
+) -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate,
+            ir_num_samples,
+        },
+        acoustics: AcousticsConfig {
+            listener_radius,
+            rays_per_query,
+            max_bounces,
+        },
+        cache: IrCacheConfig::default(),
+        auralization: AuralizationConfig { block_size: 1024 },
+    }
 }
 
 fn smoke_scene() -> SceneDescription {
