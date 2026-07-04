@@ -125,6 +125,7 @@ fn box_room_scene() -> SceneDescription {
             transform: Mat4::IDENTITY,
             active: true,
         }],
+        diffraction_edges: Vec::new(),
     }
 }
 

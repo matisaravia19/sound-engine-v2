@@ -4,7 +4,7 @@
 struct AcousticPayload {
     float ray_energy;
     float path_distance;
-    uint reflection_order;
+    uint path_depth;
 };
 
 layout(location = 0) rayPayloadInEXT AcousticPayload payload;

@@ -86,21 +86,25 @@ impl AcousticPipeline {
 
         let raygen = gpu
             .shaders()
-            .load_glsl_file(ShaderStage::RayGeneration, shader_path("direct_visibility.rgen.glsl"))?;
+            .load_glsl_file(ShaderStage::RayGeneration, shader_path("acoustics.rgen.glsl"))?;
         let miss = gpu
             .shaders()
-            .load_glsl_file(ShaderStage::RayMiss, shader_path("direct_visibility.rmiss.glsl"))?;
+            .load_glsl_file(ShaderStage::RayMiss, shader_path("acoustics.rmiss.glsl"))?;
         let closest_hit = gpu
             .shaders()
-            .load_glsl_file(ShaderStage::RayClosestHit, shader_path("direct_visibility.rchit.glsl"))?;
-        let listener_closest_hit = gpu.shaders().load_glsl_file(
-            ShaderStage::RayClosestHit,
-            shader_path("direct_visibility_listener.rchit.glsl"),
-        )?;
-        let listener_intersection = gpu.shaders().load_glsl_file(
-            ShaderStage::RayIntersection,
-            shader_path("direct_visibility_listener.rint.glsl"),
-        )?;
+            .load_glsl_file(ShaderStage::RayClosestHit, shader_path("solid.rchit.glsl"))?;
+        let listener_closest_hit = gpu
+            .shaders()
+            .load_glsl_file(ShaderStage::RayClosestHit, shader_path("listener.rchit.glsl"))?;
+        let listener_intersection = gpu
+            .shaders()
+            .load_glsl_file(ShaderStage::RayIntersection, shader_path("listener.rint.glsl"))?;
+        let diffraction_closest_hit = gpu
+            .shaders()
+            .load_glsl_file(ShaderStage::RayClosestHit, shader_path("diffraction.rchit.glsl"))?;
+        let diffraction_intersection = gpu
+            .shaders()
+            .load_glsl_file(ShaderStage::RayIntersection, shader_path("diffraction.rint.glsl"))?;
         let contribution_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
                 RtShaderStageSpec::new(raygen),
@@ -108,6 +112,8 @@ impl AcousticPipeline {
                 RtShaderStageSpec::new(closest_hit),
                 RtShaderStageSpec::new(listener_closest_hit),
                 RtShaderStageSpec::new(listener_intersection),
+                RtShaderStageSpec::new(diffraction_closest_hit),
+                RtShaderStageSpec::new(diffraction_intersection),
             ],
             groups: vec![
                 RtShaderGroupSpec::Raygen { shader: 0 },
@@ -117,12 +123,17 @@ impl AcousticPipeline {
                     closest_hit_shader: 3,
                     intersection_shader: 4,
                 },
+                RtShaderGroupSpec::ProceduralHit {
+                    closest_hit_shader: 5,
+                    intersection_shader: 6,
+                },
             ],
             descriptor_bindings: vec![
                 RtDescriptorBindingSpec::acceleration_structure(0),
                 RtDescriptorBindingSpec::storage_buffer(1),
                 RtDescriptorBindingSpec::storage_buffer(2),
                 RtDescriptorBindingSpec::storage_buffer(3),
+                RtDescriptorBindingSpec::storage_buffer(4),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
             max_ray_recursion_depth: config.acoustics.max_bounces.saturating_add(1).max(1),
@@ -153,7 +164,12 @@ impl AcousticPipeline {
         query: AcousticQuery,
     ) -> SoundResult<IrSnapshot> {
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), query.listener_position)?;
+        let tlas_id = self.build_query_tlas(
+            gpu,
+            gpu_scene.instances(),
+            gpu_scene.diffraction_blas_id(),
+            query.listener_position,
+        )?;
 
         let _ray_budget = self.config.acoustics.rays_per_query;
         let _max_bounces = self.config.acoustics.max_bounces;
@@ -185,6 +201,7 @@ impl AcousticPipeline {
                         RtDescriptorWrite::storage_buffer(1, self.ir_buffer.buffer),
                         RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
+                        RtDescriptorWrite::storage_buffer(4, gpu_scene.diffraction_edge_buffer().buffer),
                     ],
                     push_constants: bytemuck::bytes_of(&visibility_constants).to_vec(),
                     push_constant_offset: 0,
@@ -247,10 +264,20 @@ impl AcousticPipeline {
         &self,
         gpu: &VkBackend,
         scene_instances: &[RtInstanceSpec],
+        diffraction_blas_id: Option<BlasId>,
         listener_position: Vec3,
     ) -> SoundResult<crate::gpu::rt::TlasId> {
-        let mut instances = Vec::with_capacity(scene_instances.len() + 1);
+        let mut instances = Vec::with_capacity(scene_instances.len() + 2);
         instances.extend_from_slice(scene_instances);
+        if let Some(blas_id) = diffraction_blas_id {
+            instances.push(RtInstanceSpec {
+                blas_id,
+                transform: Mat4::IDENTITY,
+                custom_index: DIFFRACTION_INSTANCE_CUSTOM_INDEX,
+                mask: 0xff,
+                sbt_record_offset: DIFFRACTION_HIT_GROUP_OFFSET,
+            });
+        }
         instances.push(RtInstanceSpec {
             blas_id: self.listener_blas,
             transform: Mat4::from_translation(listener_position),
@@ -272,7 +299,9 @@ fn shader_path(file: &str) -> PathBuf {
 
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 const LISTENER_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX;
+const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX - 1;
 const LISTENER_HIT_GROUP_OFFSET: u32 = 1;
+const DIFFRACTION_HIT_GROUP_OFFSET: u32 = 2;
 const SPHERE_VOLUME_FACTOR: f32 = 4.0 * std::f32::consts::PI / 3.0;
 
 fn validate_listener_radius(listener_radius: f32) -> SoundResult<()> {

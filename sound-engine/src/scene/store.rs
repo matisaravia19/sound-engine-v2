@@ -1,6 +1,6 @@
 use super::types::{
-    Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
-    SceneVersion,
+    DiffractionEdge, DiffractionEdgeId, Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription,
+    SceneObject, SceneUpdate, SceneUpdates, SceneVersion,
 };
 use crate::core::error::{SoundError, SoundResult};
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ pub struct SceneStore {
     pub(super) meshes: HashMap<MeshId, MeshAsset>,
     pub(super) materials: HashMap<MaterialId, Material>,
     pub(super) objects: HashMap<ObjectId, SceneObject>,
+    pub(super) diffraction_edges: HashMap<DiffractionEdgeId, DiffractionEdge>,
 }
 
 impl SceneStore {
@@ -42,6 +43,12 @@ impl SceneStore {
             validate_object_refs(&next, &object)?;
             if next.objects.insert(object.id, object).is_some() {
                 return Err(SoundError::invalid_argument("Duplicate object id in scene"));
+            }
+        }
+        for edge in scene.diffraction_edges {
+            validate_diffraction_edge(&edge)?;
+            if next.diffraction_edges.insert(edge.id, edge).is_some() {
+                return Err(SoundError::invalid_argument("Duplicate diffraction edge id in scene"));
             }
         }
 
@@ -84,6 +91,11 @@ impl SceneStore {
     /// Iterates over all objects in unspecified order.
     pub fn objects(&self) -> impl Iterator<Item = &SceneObject> {
         self.objects.values()
+    }
+
+    /// Iterates over all manually authored diffraction edges in unspecified order.
+    pub fn diffraction_edges(&self) -> impl Iterator<Item = &DiffractionEdge> {
+        self.diffraction_edges.values()
     }
 
     fn apply_update(&mut self, update: SceneUpdate) -> SoundResult<()> {
@@ -155,6 +167,29 @@ impl SceneStore {
                 self.objects
                     .remove(&id)
                     .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id)))?;
+            }
+            SceneUpdate::AddDiffractionEdge(edge) => {
+                validate_diffraction_edge(&edge)?;
+                if self.diffraction_edges.insert(edge.id, edge).is_some() {
+                    return Err(SoundError::invalid_argument(
+                        "AddDiffractionEdge received an existing edge id",
+                    ));
+                }
+            }
+            SceneUpdate::ReplaceDiffractionEdge(edge) => {
+                validate_diffraction_edge(&edge)?;
+                if !self.diffraction_edges.contains_key(&edge.id) {
+                    return Err(SoundError::not_found(format!(
+                        "Diffraction edge {} does not exist",
+                        edge.id
+                    )));
+                }
+                self.diffraction_edges.insert(edge.id, edge);
+            }
+            SceneUpdate::RemoveDiffractionEdge(id) => {
+                self.diffraction_edges
+                    .remove(&id)
+                    .ok_or_else(|| SoundError::not_found(format!("Diffraction edge {} does not exist", id)))?;
             }
             SceneUpdate::SetTransform { id, transform } => {
                 self.object_mut(id)?.transform = transform;
@@ -228,6 +263,57 @@ fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult
         return Err(SoundError::not_found(format!(
             "Material {} does not exist",
             object.material_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_diffraction_edge(edge: &DiffractionEdge) -> SoundResult<()> {
+    if !edge.start.is_finite() || !edge.end.is_finite() {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} endpoints must be finite",
+            edge.id
+        )));
+    }
+    let direction = edge.end - edge.start;
+    if direction.length_squared() <= f32::EPSILON {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} must have nonzero length",
+            edge.id
+        )));
+    }
+    if !edge.bisector_dir.is_finite() || edge.bisector_dir.length_squared() <= f32::EPSILON {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} bisector must be finite and nonzero",
+            edge.id
+        )));
+    }
+    let edge_dir = direction.normalize();
+    let bisector = edge.bisector_dir.normalize();
+    if edge_dir.cross(bisector).length_squared() <= 1.0e-6 {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} bisector must not be parallel to the edge",
+            edge.id
+        )));
+    }
+    if !edge.edge_angle_radians.is_finite()
+        || !(std::f32::consts::PI..=std::f32::consts::TAU).contains(&edge.edge_angle_radians)
+    {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} angle must be finite and in [PI, 2*PI]",
+            edge.id
+        )));
+    }
+    if !edge.diffraction_radius.is_finite() || edge.diffraction_radius <= 0.0 {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} radius must be finite and > 0",
+            edge.id
+        )));
+    }
+    if !(0.0..=1.0).contains(&edge.base_strength) {
+        return Err(SoundError::invalid_argument(format!(
+            "Diffraction edge {} base strength must be in [0, 1]",
+            edge.id
         )));
     }
     Ok(())
@@ -327,6 +413,7 @@ mod tests {
                     transmission: None,
                 }],
                 objects: vec![object(10, 1), object(20, 2)],
+                diffraction_edges: Vec::new(),
             })
             .unwrap();
         store
@@ -349,5 +436,111 @@ mod tests {
             transform: Mat4::IDENTITY,
             active: true,
         }
+    }
+
+    fn edge(id: DiffractionEdgeId) -> DiffractionEdge {
+        DiffractionEdge {
+            id,
+            start: vec3(0.0, 0.0, 0.0),
+            end: vec3(0.0, 1.0, 0.0),
+            bisector_dir: vec3(1.0, 0.0, 0.0),
+            edge_angle_radians: 1.5 * std::f32::consts::PI,
+            diffraction_radius: 0.5,
+            base_strength: 0.25,
+        }
+    }
+
+    #[test]
+    fn load_accepts_valid_diffraction_edges() {
+        let mut store = SceneStore::new();
+
+        store
+            .load(SceneDescription {
+                meshes: vec![mesh(1)],
+                materials: vec![Material {
+                    id: 1,
+                    absorption_bands: vec![0.2],
+                    scattering: 0.1,
+                    transmission: None,
+                }],
+                objects: vec![object(10, 1)],
+                diffraction_edges: vec![edge(1)],
+            })
+            .unwrap();
+
+        assert_eq!(store.diffraction_edges().count(), 1);
+    }
+
+    #[test]
+    fn load_rejects_invalid_diffraction_edges() {
+        let mut invalid = edge(1);
+        invalid.end = invalid.start;
+
+        let mut store = SceneStore::new();
+        let error = store
+            .load(SceneDescription {
+                meshes: vec![mesh(1)],
+                materials: vec![Material {
+                    id: 1,
+                    absorption_bands: vec![0.2],
+                    scattering: 0.1,
+                    transmission: None,
+                }],
+                objects: vec![object(10, 1)],
+                diffraction_edges: vec![invalid],
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn load_rejects_diffraction_angles_outside_exterior_range() {
+        for angle in [std::f32::consts::PI - 0.01, std::f32::consts::TAU + 0.01] {
+            let mut invalid = edge(1);
+            invalid.edge_angle_radians = angle;
+
+            let mut store = SceneStore::new();
+            let error = store
+                .load(SceneDescription {
+                    meshes: vec![mesh(1)],
+                    materials: vec![Material {
+                        id: 1,
+                        absorption_bands: vec![0.2],
+                        scattering: 0.1,
+                        transmission: None,
+                    }],
+                    objects: vec![object(10, 1)],
+                    diffraction_edges: vec![invalid],
+                })
+                .unwrap_err();
+
+            assert_eq!(error.code(), ErrorCode::InvalidArgument);
+        }
+    }
+
+    #[test]
+    fn apply_updates_can_add_replace_and_remove_diffraction_edges() {
+        let mut store = populated_store();
+
+        store
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::AddDiffractionEdge(edge(1))],
+            })
+            .unwrap();
+        assert_eq!(store.diffraction_edges.get(&1).unwrap().base_strength, 0.25);
+
+        let mut replacement = edge(1);
+        replacement.base_strength = 0.5;
+        store
+            .apply_updates(SceneUpdates {
+                updates: vec![
+                    SceneUpdate::ReplaceDiffractionEdge(replacement),
+                    SceneUpdate::RemoveDiffractionEdge(1),
+                ],
+            })
+            .unwrap();
+
+        assert!(!store.diffraction_edges.contains_key(&1));
     }
 }

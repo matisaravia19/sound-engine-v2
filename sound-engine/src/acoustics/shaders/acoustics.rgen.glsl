@@ -6,7 +6,7 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 struct AcousticPayload {
     float ray_energy;
     float path_distance;
-    uint reflection_order;
+    uint path_depth;
 };
 
 layout(location = 0) rayPayloadEXT AcousticPayload payload;
@@ -43,7 +43,7 @@ void main() {
     // Split the source energy evenly across all sampled directions.
     payload.ray_energy = pc.source_energy / float(ray_count);
     payload.path_distance = 0.0;
-    payload.reflection_order = 0;
+    payload.path_depth = 0;
     traceRayEXT(
         tlas,
         gl_RayFlagsOpaqueEXT,

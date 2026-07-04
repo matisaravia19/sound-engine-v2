@@ -9,7 +9,7 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 struct AcousticPayload {
     float ray_energy;
     float path_distance;
-    uint reflection_order;
+    uint path_depth;
 };
 
 struct SceneObject {
@@ -75,7 +75,7 @@ void main() {
     float hit_distance = gl_HitTEXT;
     payload.path_distance += hit_distance;
 
-    if (payload.reflection_order >= pc.max_bounces) {
+    if (payload.path_depth >= pc.max_bounces) {
         return;
     }
 
@@ -118,7 +118,7 @@ void main() {
 
     vec3 reflected_direction = normalize(reflect(gl_WorldRayDirectionEXT, normal));
     vec3 hit_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * hit_distance;
-    payload.reflection_order += 1;
+    payload.path_depth += 1;
 
     // Offset the secondary ray to avoid immediately re-hitting the same triangle.
     traceRayEXT(

@@ -9,6 +9,9 @@ pub type MaterialId = u32;
 /// Stable identifier for an object instance in the scene.
 pub type ObjectId = u32;
 
+/// Stable identifier for a manually authored diffraction edge.
+pub type DiffractionEdgeId = u32;
+
 /// Monotonic scene revision used to decide when GPU resources are stale.
 pub type SceneVersion = u64;
 
@@ -53,6 +56,25 @@ pub struct SceneObject {
     pub active: bool,
 }
 
+/// Manually authored edge that can diffract acoustic rays.
+#[derive(Debug, Clone)]
+pub struct DiffractionEdge {
+    /// Application-provided diffraction edge identifier.
+    pub id: DiffractionEdgeId,
+    /// First endpoint of the finite edge segment in world meters.
+    pub start: Vec3,
+    /// Second endpoint of the finite edge segment in world meters.
+    pub end: Vec3,
+    /// In-plane direction that points into the angle bisected by the diffraction plane.
+    pub bisector_dir: Vec3,
+    /// Wedge angle in radians around the edge direction.
+    pub edge_angle_radians: f32,
+    /// Maximum detection distance from the edge segment in world meters.
+    pub diffraction_radius: f32,
+    /// Designer-authored energy share available to the diffracted child ray.
+    pub base_strength: f32,
+}
+
 /// Complete scene replacement payload.
 #[derive(Debug, Clone)]
 pub struct SceneDescription {
@@ -62,6 +84,8 @@ pub struct SceneDescription {
     pub materials: Vec<Material>,
     /// Object instances placed in the scene.
     pub objects: Vec<SceneObject>,
+    /// Manually authored diffraction edges placed in world space.
+    pub diffraction_edges: Vec<DiffractionEdge>,
 }
 
 /// Incremental scene changes applied to the canonical CPU store.
@@ -92,6 +116,12 @@ pub enum SceneUpdate {
     ReplaceObject(SceneObject),
     /// Remove an object instance.
     RemoveObject(ObjectId),
+    /// Insert a new manually authored diffraction edge.
+    AddDiffractionEdge(DiffractionEdge),
+    /// Replace an existing manually authored diffraction edge.
+    ReplaceDiffractionEdge(DiffractionEdge),
+    /// Remove a manually authored diffraction edge.
+    RemoveDiffractionEdge(DiffractionEdgeId),
     /// Replace an object's world transform.
     SetTransform {
         /// Object to mutate.

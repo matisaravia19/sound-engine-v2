@@ -81,5 +81,6 @@ fn two_triangle_scene() -> SceneDescription {
                 active: true,
             },
         ],
+        diffraction_edges: Vec::new(),
     }
 }

@@ -13,6 +13,6 @@ pub use gpu::GpuSceneResources;
 pub use manager::SceneManager;
 pub use store::SceneStore;
 pub use types::{
-    Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription, SceneObject, SceneUpdate, SceneUpdates,
-    SceneVersion,
+    DiffractionEdge, DiffractionEdgeId, Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription,
+    SceneObject, SceneUpdate, SceneUpdates, SceneVersion,
 };

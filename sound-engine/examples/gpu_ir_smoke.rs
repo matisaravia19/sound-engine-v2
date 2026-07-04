@@ -15,10 +15,7 @@ fn main() -> SoundResult<()> {
     let mut scene = SceneManager::new();
     scene.load(smoke_scene())?;
 
-    let mut pipeline = AcousticPipeline::new(
-        &gpu,
-        engine_config(44_100, 44_100, 0.2, 1024, 0),
-    )?;
+    let mut pipeline = AcousticPipeline::new(&gpu, engine_config(44_100, 44_100, 0.2, 1024, 0))?;
 
     let ir = pipeline.build_ir(
         &gpu,
@@ -99,5 +96,6 @@ fn smoke_scene() -> SceneDescription {
             transform: glam::Mat4::IDENTITY,
             active: true,
         }],
+        diffraction_edges: Vec::new(),
     }
 }
