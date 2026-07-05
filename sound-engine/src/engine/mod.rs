@@ -4,9 +4,9 @@ mod direct;
 #[cfg(feature = "playback")]
 mod runtime;
 
-use crate::acoustics::{IrCacheConfig as AcousticIrCacheConfig, IrCacheQuery, IrSnapshot};
+use crate::acoustics::IrSnapshot;
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
-use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
+use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use direct::EngineCore;
@@ -311,62 +311,17 @@ impl Drop for SoundEngine {
     }
 }
 
-/// Builds the impulse-response cache key shared by direct and runtime modes.
-fn cache_query(scene_version: SceneVersion, source: PointSource, listener: ListenerPose) -> IrCacheQuery {
-    IrCacheQuery {
-        scene_version,
-        query_id: 0,
-        source_position: source.position,
-        source_energy: source.energy,
-        listener_position: listener.position,
-        listener_right: listener.right,
-    }
-}
-
-/// Validates finite source parameters before they reach acoustic queries.
-fn validate_source(source: PointSource) -> SoundResult<()> {
-    if !source.energy.is_finite() {
-        return Err(SoundError::invalid_argument("source energy must be finite"));
-    }
-    if !source.position.is_finite() {
-        return Err(SoundError::invalid_argument("source position must be finite"));
-    }
-    Ok(())
-}
-
-/// Validates finite listener parameters before they reach acoustic queries.
-fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
-    if !listener.position.is_finite() {
-        return Err(SoundError::invalid_argument("listener position must be finite"));
-    }
-    if !listener.right.is_finite() {
-        return Err(SoundError::invalid_argument("listener right vector must be finite"));
-    }
-    Ok(())
-}
-
 /// Validates a spatial play request before allocating acoustic or voice resources.
 fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
     if !request.volume.is_finite() {
         return Err(SoundError::invalid_argument("sound volume must be finite"));
     }
-    validate_source(request.source)
-}
-
-/// Converts the public core cache configuration into acoustic cache settings.
-fn cache_config(config: CoreIrCacheConfig) -> AcousticIrCacheConfig {
-    AcousticIrCacheConfig {
-        position_cell_meters: config.position_cell_meters,
-        reuse_distance_meters: config.reuse_distance_meters,
-        listener_right_dot_threshold: config.listener_right_dot_threshold,
-        max_entries: config.max_entries,
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::{AcousticsConfig, AuralizationConfig, OutputChannels, SoundConfig};
 
     #[test]
     fn play_request_defaults_to_unit_energy_and_volume() {
@@ -379,77 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_finite_play_request_values() {
+    fn rejects_non_finite_playback_volume() {
         let mut request = PlaySpatialSoundRequest::new(1, Vec3::ZERO);
         request.volume = f32::NAN;
         assert!(validate_play_request(request).is_err());
-
-        request = PlaySpatialSoundRequest::new(1, Vec3::new(f32::INFINITY, 0.0, 0.0));
-        assert!(validate_play_request(request).is_err());
-
-        request = PlaySpatialSoundRequest::new(1, Vec3::ZERO);
-        request.source.energy = f32::NAN;
-        assert!(validate_play_request(request).is_err());
-    }
-
-    #[test]
-    fn maps_core_cache_config_to_acoustic_cache_config() {
-        let config = CoreIrCacheConfig {
-            position_cell_meters: 0.5,
-            reuse_distance_meters: 0.25,
-            listener_right_dot_threshold: 0.9,
-            max_entries: 4,
-        };
-        let acoustic = cache_config(config);
-
-        assert_eq!(acoustic.position_cell_meters, config.position_cell_meters);
-        assert_eq!(acoustic.reuse_distance_meters, config.reuse_distance_meters);
-        assert_eq!(
-            acoustic.listener_right_dot_threshold,
-            config.listener_right_dot_threshold
-        );
-        assert_eq!(acoustic.max_entries, config.max_entries);
-    }
-
-    #[test]
-    fn builds_cache_query_from_listener_and_source() {
-        let listener = ListenerPose {
-            position: Vec3::new(1.0, 2.0, 3.0),
-            right: Vec3::Y,
-        };
-        let request = PlaySpatialSoundRequest {
-            sound_id: 1,
-            source: PointSource {
-                position: Vec3::new(4.0, 5.0, 6.0),
-                energy: 0.75,
-            },
-            volume: 0.5,
-        };
-
-        let query = cache_query(9, request.source, listener);
-
-        assert_eq!(query.scene_version, 9);
-        assert_eq!(query.query_id, 0);
-        assert_eq!(query.source_position, request.source.position);
-        assert_eq!(query.source_energy, request.source.energy);
-        assert_eq!(query.listener_position, listener.position);
-        assert_eq!(query.listener_right, listener.right);
-    }
-
-    fn test_config() -> EngineConfig {
-        EngineConfig {
-            sound: SoundConfig {
-                output_channels: OutputChannels::Stereo,
-                sample_rate: 48_000,
-                ir_num_samples: 128,
-            },
-            acoustics: AcousticsConfig {
-                listener_radius: 0.2,
-                rays_per_query: 1,
-                max_bounces: 0,
-            },
-            cache: CoreIrCacheConfig::default(),
-            auralization: AuralizationConfig { block_size: 64 },
-        }
     }
 }

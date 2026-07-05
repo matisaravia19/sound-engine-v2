@@ -1,15 +1,12 @@
 //! Direct, synchronous engine implementation.
 
-use super::{
-    ListenerPose, PlaySpatialSoundRequest, PointSource, cache_config, cache_query, validate_listener,
-    validate_play_request, validate_source,
-};
-use crate::acoustics::{AcousticPipeline, AcousticQuery, IrCache, IrSnapshot};
+use super::{ListenerPose, PlaySpatialSoundRequest, PointSource, validate_play_request};
+use crate::acoustics::{AcousticsEngine, IrSnapshot};
 use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
-use crate::scene::{SceneDescription, SceneManager, SceneUpdates, SceneVersion};
+use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,12 +14,8 @@ use std::sync::Arc;
 pub(super) struct EngineCore {
     /// Shared Vulkan backend used by acoustic tracing and auralization compute work.
     gpu: Arc<VkBackend>,
-    /// Mutable scene state and versioning used when building acoustic queries.
-    scene: SceneManager,
-    /// Ray-tracing pipeline that produces impulse responses for source/listener pairs.
-    pipeline: AcousticPipeline,
-    /// Reuse cache for impulse responses derived from scene, source, and listener state.
-    cache: IrCache,
+    /// Scene-backed acoustic IR builder and cache.
+    acoustics: AcousticsEngine,
     /// Asset bank, active voices, and convolver used to render output blocks.
     auralization: AuralizationEngine,
     /// Listener pose used by spatial play requests that do not supply one directly.
@@ -35,15 +28,12 @@ impl EngineCore {
     /// Creates a direct engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
-        let pipeline = AcousticPipeline::new(gpu.as_ref(), config)?;
-        let cache = IrCache::new(cache_config(config.cache));
+        let acoustics = AcousticsEngine::new(gpu.as_ref(), config)?;
         let auralization = AuralizationEngine::new(gpu.clone(), config)?;
 
         Ok(Self {
             gpu,
-            scene: SceneManager::new(),
-            pipeline,
-            cache,
+            acoustics,
             auralization,
             listener: ListenerPose::default(),
             next_impulse_response_id: 1,
@@ -52,19 +42,12 @@ impl EngineCore {
 
     /// Replaces the scene and clears IR cache entries tied to prior geometry.
     pub(super) fn load_scene(&mut self, scene: SceneDescription) -> SoundResult<SceneVersion> {
-        let version = self.scene.load(scene)?;
-        self.cache.clear();
-        Ok(version)
+        self.acoustics.load_scene(scene)
     }
 
     /// Applies scene edits and clears cached IRs when scene contents changed.
     pub(super) fn apply_scene_updates(&mut self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
-        let changed = !updates.updates.is_empty();
-        let version = self.scene.apply_updates(updates)?;
-        if changed {
-            self.cache.clear();
-        }
-        Ok(version)
+        self.acoustics.apply_scene_updates(updates)
     }
 
     /// Sets the listener pose used by future IR queries.
@@ -102,8 +85,6 @@ impl EngineCore {
         source: PointSource,
         listener: ListenerPose,
     ) -> SoundResult<IrSnapshot> {
-        validate_source(source)?;
-        validate_listener(listener)?;
         self.impulse_response_for(source, listener)
     }
 
@@ -143,31 +124,8 @@ impl EngineCore {
     }
 
     fn impulse_response_for(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<IrSnapshot> {
-        let cache_query = self.cache_query(source, listener);
-        if let Some(snapshot) = self.cache.get(cache_query) {
-            return Ok(snapshot);
-        }
-
-        // Building an IR can update scene-side acceleration data, so the scene
-        // manager is passed mutably even though the acoustic query is read-only.
-        let snapshot = self.pipeline.build_ir(
-            self.gpu.as_ref(),
-            &mut self.scene,
-            AcousticQuery {
-                query_id: cache_query.query_id,
-                source_position: source.position,
-                listener_position: listener.position,
-                listener_right: listener.right,
-                source_energy: source.energy,
-            },
-        )?;
-        self.cache.insert(cache_query, snapshot.clone());
-        Ok(snapshot)
-    }
-
-    /// Builds the cache key for the current scene version and acoustic endpoints.
-    fn cache_query(&self, source: PointSource, listener: ListenerPose) -> crate::acoustics::IrCacheQuery {
-        cache_query(self.scene.version(), source, listener)
+        self.acoustics
+            .build_impulse_response(self.gpu.as_ref(), source, listener)
     }
 
     /// Returns a fresh auralization impulse-response id.
