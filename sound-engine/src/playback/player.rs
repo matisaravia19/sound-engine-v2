@@ -12,15 +12,15 @@ use std::time::Duration;
 pub struct PlaybackConfig {
     /// Number of rendered blocks preferred before low-latency playback begins.
     pub prefill_blocks: usize,
-    /// Maximum number of rendered blocks retained ahead of the device callback.
-    pub max_queued_blocks: usize,
+    /// Maximum rendered audio retained ahead of the device callback, in seconds.
+    pub max_queue_seconds: f32,
 }
 
 impl Default for PlaybackConfig {
     fn default() -> Self {
         Self {
             prefill_blocks: 8,
-            max_queued_blocks: 32,
+            max_queue_seconds: 0.5,
         }
     }
 }
@@ -55,7 +55,8 @@ impl SoundPlayer {
 
         let block_samples = block_size * output_channels;
         let state = Arc::new(PlaybackState::new());
-        let queue = state.prepare_queue(config.max_queued_blocks * block_samples)?;
+        let max_queued_blocks = max_queued_blocks(config, sample_rate, block_size);
+        let queue = state.prepare_queue(max_queued_blocks * block_samples)?;
         let stream = build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
 
         stream
@@ -125,13 +126,49 @@ impl Drop for SoundPlayer {
 }
 
 fn validate_config(config: PlaybackConfig) -> SoundResult<()> {
-    if config.max_queued_blocks == 0 {
-        return Err(SoundError::invalid_argument("max_queued_blocks must be > 0"));
-    }
-    if config.prefill_blocks > config.max_queued_blocks {
-        return Err(SoundError::invalid_argument(
-            "prefill_blocks must be less than or equal to max_queued_blocks",
-        ));
+    if !config.max_queue_seconds.is_finite() || config.max_queue_seconds <= 0.0 {
+        return Err(SoundError::invalid_argument("max_queue_seconds must be finite and > 0"));
     }
     Ok(())
+}
+
+fn max_queued_blocks(config: PlaybackConfig, sample_rate: u32, block_size: usize) -> usize {
+    let queued_frames = config.max_queue_seconds * sample_rate as f32;
+    let queued_blocks = (queued_frames / block_size as f32).ceil() as usize;
+    queued_blocks.max(config.prefill_blocks).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_queue_blocks_from_seconds() {
+        let config = PlaybackConfig {
+            prefill_blocks: 4,
+            max_queue_seconds: 0.5,
+        };
+
+        assert_eq!(max_queued_blocks(config, 48_000, 1024), 24);
+    }
+
+    #[test]
+    fn queue_blocks_respect_prefill_floor() {
+        let config = PlaybackConfig {
+            prefill_blocks: 8,
+            max_queue_seconds: 0.01,
+        };
+
+        assert_eq!(max_queued_blocks(config, 48_000, 1024), 8);
+    }
+
+    #[test]
+    fn rejects_invalid_queue_seconds() {
+        let mut config = PlaybackConfig::default();
+        config.max_queue_seconds = f32::NAN;
+        assert!(validate_config(config).is_err());
+
+        config.max_queue_seconds = 0.0;
+        assert!(validate_config(config).is_err());
+    }
 }

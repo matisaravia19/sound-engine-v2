@@ -6,9 +6,9 @@ use sound_engine::core::config::{
 use sound_engine::core::error::SoundResult;
 use sound_engine::playback::{PlaybackConfig, SoundPlayer};
 use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneObject};
-use sound_engine::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundEngine};
+use sound_engine::{ListenerPose, PointSource, SoundEngine, SoundSourceId};
 
-const GUITAR_SAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/guitar_sample_16k.wav");
+const GUITAR_SAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../circus.wav");
 const BLOCK_SIZE: usize = 1024;
 const IR_SECONDS: u32 = 2;
 const ROOM_HALF_X: f32 = 8.0;
@@ -54,6 +54,7 @@ struct PlaygroundState {
     listener_index: usize,
     listener_rotation_index: usize,
     source_index: usize,
+    sound_source_id: Option<SoundSourceId>,
     ui: UiState,
 }
 
@@ -71,6 +72,7 @@ impl PlaygroundState {
             listener_index: 0,
             listener_rotation_index: 0,
             source_index: 0,
+            sound_source_id: None,
             ui: UiState {
                 status: "Ready".to_owned(),
                 last_voice: None,
@@ -99,6 +101,13 @@ impl PlaygroundState {
         source_position(self.source_index)
     }
 
+    fn point_source(&self) -> PointSource {
+        PointSource {
+            position: to_glam(self.source_position()),
+            energy: 1_000.0,
+        }
+    }
+
     fn rebuild_scene(&mut self) {
         self.scene = build_scene(self.scene_config);
     }
@@ -110,6 +119,8 @@ fn main() -> SoundResult<()> {
     let mut engine = SoundEngine::new(engine_config(sample_rate))?;
     engine.load_scene(scene_description(&state.scene))?;
     engine.set_listener_pose(state.listener_pose())?;
+    let sound_source_id = engine.create_sound_source(state.point_source())?;
+    state.sound_source_id = Some(sound_source_id);
     let sound_id = engine.load_wav_sound(GUITAR_SAMPLE_PATH)?;
     engine.start_sound_player(PlaybackConfig::default())?;
 
@@ -182,14 +193,10 @@ fn engine_config(sample_rate: u32) -> EngineConfig {
 
 fn play_source_sound(engine: &mut SoundEngine, sound_id: u64, state: &PlaygroundState) -> SoundResult<u64> {
     engine.set_listener_pose(state.listener_pose())?;
-    engine.play_sound(PlaySpatialSoundRequest {
-        sound_id,
-        source: PointSource {
-            position: to_glam(state.source_position()),
-            energy: 1_000.0,
-        },
-        volume: 0.9,
-    })
+    let source_id = state.sound_source_id.ok_or_else(|| {
+        sound_engine::core::error::SoundError::invalid_state("sandbox sound source is not initialized")
+    })?;
+    engine.play_sound_from_source(sound_id, source_id, 0.9)
 }
 
 fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut PlaygroundState) {
@@ -215,7 +222,7 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
 
     if rl.is_key_pressed(KeyboardKey::KEY_FIVE) {
         state.source_index = next_index(state.source_index, source_position_count());
-        state.ui.status = format!("Changed source to {}", source_position_name(state.source_index));
+        sync_source(engine, state);
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_SIX) {
@@ -230,6 +237,25 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
         } else {
             "Hiding bisector planes".to_owned()
         };
+    }
+}
+
+fn sync_source(engine: &mut SoundEngine, state: &mut PlaygroundState) {
+    let Some(source_id) = state.sound_source_id else {
+        state.ui.status = "Source update error: sandbox sound source is not initialized".to_owned();
+        return;
+    };
+
+    match engine.update_sound_source(source_id, state.point_source()) {
+        Ok(()) => {
+            state.ui.status = format!(
+                "Changed source to {}; active voices will refresh IR if needed",
+                source_position_name(state.source_index)
+            );
+        }
+        Err(error) => {
+            state.ui.status = format!("Source update error: {error}");
+        }
     }
 }
 

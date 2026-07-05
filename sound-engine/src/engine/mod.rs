@@ -18,6 +18,9 @@ use crate::playback::PlaybackConfig;
 #[cfg(feature = "playback")]
 use runtime::{EngineRuntime, RuntimeStartError};
 
+/// Identifier for a tracked movable sound source.
+pub type SoundSourceId = u64;
+
 /// Listener pose used for spatial acoustic queries.
 #[derive(Debug, Clone, Copy)]
 pub struct ListenerPose {
@@ -118,10 +121,7 @@ impl SoundEngine {
     /// Sets the listener pose used by subsequent spatial play requests.
     pub fn set_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
         match self.mode_mut()? {
-            EngineMode::Direct(core) => {
-                core.set_listener_pose(listener);
-                Ok(())
-            }
+            EngineMode::Direct(core) => core.set_listener_pose(listener),
             #[cfg(feature = "playback")]
             EngineMode::Runtime(runtime) => runtime.set_listener_pose(listener),
         }
@@ -146,12 +146,53 @@ impl SoundEngine {
         }
     }
 
+    /// Creates a tracked movable source for future spatial playback.
+    pub fn create_sound_source(&mut self, source: PointSource) -> SoundResult<SoundSourceId> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.create_sound_source(source),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.create_sound_source(source),
+        }
+    }
+
+    /// Updates the transform and energy of an existing tracked source.
+    pub fn update_sound_source(&mut self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.update_sound_source(id, source),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.update_sound_source(id, source),
+        }
+    }
+
+    /// Removes a tracked source that is not referenced by an active voice.
+    pub fn remove_sound_source(&mut self, id: SoundSourceId) -> SoundResult<()> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.remove_sound_source(id),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.remove_sound_source(id),
+        }
+    }
+
     /// Plays a sound through an acoustic IR generated from the current scene and listener.
     pub fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         match self.mode_mut()? {
             EngineMode::Direct(core) => core.play_sound(request),
             #[cfg(feature = "playback")]
             EngineMode::Runtime(runtime) => runtime.play_sound(request),
+        }
+    }
+
+    /// Plays a sound through an acoustic IR generated from a tracked source.
+    pub fn play_sound_from_source(
+        &mut self,
+        sound_id: SoundId,
+        source_id: SoundSourceId,
+        volume: f32,
+    ) -> SoundResult<VoiceId> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => core.play_sound_from_source(sound_id, source_id, volume),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.play_sound_from_source(sound_id, source_id, volume),
         }
     }
 

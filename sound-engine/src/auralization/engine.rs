@@ -127,6 +127,29 @@ impl AuralizationEngine {
         self.impulse_responses.remove(&id);
     }
 
+    /// Replaces the impulse response used by an active voice.
+    ///
+    /// The voice keeps its current dry cursor and overlap tail; only future
+    /// convolution blocks use the new uploaded IR spectrum.
+    pub fn update_voice_impulse_response(
+        &mut self,
+        voice_id: VoiceId,
+        impulse_response_id: ImpulseResponseId,
+    ) -> SoundResult<()> {
+        let impulse_response = self
+            .impulse_responses
+            .get(&impulse_response_id)
+            .ok_or_else(|| SoundError::not_found(format!("Unknown impulse response id {}", impulse_response_id)))?
+            .clone();
+        let voice = self
+            .active_voices
+            .get_mut(&voice_id)
+            .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {}", voice_id)))?;
+
+        voice.convolution.impulse_response = impulse_response;
+        Ok(())
+    }
+
     /// Starts playing a sound through a registered impulse response.
     pub fn play_sound(&mut self, request: PlaySoundRequest) -> SoundResult<VoiceId> {
         if !request.gain.is_finite() {
@@ -163,6 +186,11 @@ impl AuralizationEngine {
     /// Stops an active voice and releases its convolution state.
     pub fn stop_voice(&mut self, voice_id: VoiceId) {
         self.active_voices.remove(&voice_id);
+    }
+
+    /// Returns whether the given voice is still active or flushing its tail.
+    pub fn has_voice(&self, voice_id: VoiceId) -> bool {
+        self.active_voices.contains_key(&voice_id)
     }
 
     /// Renders and mixes one output block from all active voices.

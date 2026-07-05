@@ -95,7 +95,7 @@ fn cache_query(scene_version: SceneVersion, source: PointSource, listener: Liste
 }
 
 /// Validates finite source parameters before they reach acoustic queries.
-fn validate_source(source: PointSource) -> SoundResult<()> {
+pub(crate) fn validate_source(source: PointSource) -> SoundResult<()> {
     if !source.energy.is_finite() {
         return Err(SoundError::invalid_argument("source energy must be finite"));
     }
@@ -106,7 +106,7 @@ fn validate_source(source: PointSource) -> SoundResult<()> {
 }
 
 /// Validates finite listener parameters before they reach acoustic queries.
-fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
+pub(crate) fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
     if !listener.position.is_finite() {
         return Err(SoundError::invalid_argument("listener position must be finite"));
     }
