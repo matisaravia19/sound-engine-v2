@@ -1,0 +1,495 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>2D Diffraction Edge Debugger - Edge-Origin Algorithm</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: system-ui, sans-serif;
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            height: 100vh;
+            background: #111;
+            color: #eee;
+        }
+
+        #panel {
+            padding: 16px;
+            background: #181818;
+            border-right: 1px solid #333;
+            overflow: auto;
+        }
+
+        label {
+            display: block;
+            margin: 14px 0 4px;
+            font-size: 14px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+        }
+
+        .value {
+            float: right;
+            color: #aaa;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            background: #fafafa;
+            display: block;
+        }
+
+        .status {
+            margin-top: 16px;
+            padding: 12px;
+            background: #222;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        code {
+            color: #ddd;
+        }
+
+        .legend-row {
+            display: grid;
+            grid-template-columns: 18px 1fr;
+            column-gap: 8px;
+            align-items: center;
+            margin: 6px 0;
+        }
+
+        .swatch {
+            height: 4px;
+            border-radius: 999px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="panel">
+        <h2>Diffraction edge 2D view</h2>
+
+        <label>
+            Edge angle θ
+            <span class="value" id="thetaVal"></span>
+        </label>
+        <input id="theta" type="range" min="180" max="360" step="1" value="270">
+
+        <label>
+            Incoming angle α
+            <span class="value" id="alphaVal"></span>
+        </label>
+        <input id="alpha" type="range" min="-180" max="360" step="1" value="160">
+
+        <label>
+            Plane-hit distance to edge d
+            <span class="value" id="distanceVal"></span>
+        </label>
+        <input id="distance" type="range" min="0" max="5" step="0.01" value="0.6">
+
+        <label>
+            Plane size / bend radius R
+            <span class="value" id="radiusVal"></span>
+        </label>
+        <input id="radius" type="range" min="0.1" max="5" step="0.01" value="1">
+
+        <label>
+            Diffraction factor η
+            <span class="value" id="diffractionFactorVal"></span>
+        </label>
+        <input id="diffractionFactor" type="range" min="0" max="1" step="0.01" value="0.35">
+
+        <label>
+            Ray length
+            <span class="value" id="lengthVal"></span>
+        </label>
+        <input id="rayLength" type="range" min="1" max="8" step="0.1" value="3">
+
+        <div class="status" id="status"></div>
+
+        <div class="status">
+            <b>Legend</b>
+            <div class="legend-row"><span class="swatch" style="background:#2563eb"></span><span>incoming ray to virtual
+                    plane hit H</span></div>
+            <div class="legend-row"><span class="swatch" style="background:#7c3aed"></span><span>straight continuation
+                    from H</span></div>
+            <div class="legend-row"><span class="swatch" style="background:#16a34a"></span><span>diffracted ray from
+                    edge point O</span></div>
+            <div class="legend-row"><span class="swatch" style="background:#d97706"></span><span>precomputed shadow
+                    directions</span></div>
+            <div class="legend-row"><span class="swatch" style="background:#111"></span><span>finite diffraction plane
+                    segment 0..R</span></div>
+        </div>
+
+        <div class="status">
+            Convention:<br>
+            <code>b = (0, 1)</code>, bisector up<br>
+            <code>n = (1, 0)</code>, positive plane normal right<br>
+            solid wedge is centered around <code>-b</code><br><br>
+            New algorithm:<br>
+            H only detects diffraction and distance to edge.<br>
+            The diffracted ray starts at edge point O.<br>
+            η controls energy split; distance controls only bending.
+            Bend is linear from 1 at d = 0 to 0 at d = R.
+            Since R is the finite plane size, hits with d > R are rejected.
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        const sliders = {
+            theta: document.getElementById("theta"),
+            alpha: document.getElementById("alpha"),
+            distance: document.getElementById("distance"),
+            radius: document.getElementById("radius"),
+            diffractionFactor: document.getElementById("diffractionFactor"),
+            rayLength: document.getElementById("rayLength"),
+        };
+
+        const labels = {
+            theta: document.getElementById("thetaVal"),
+            alpha: document.getElementById("alphaVal"),
+            distance: document.getElementById("distanceVal"),
+            radius: document.getElementById("radiusVal"),
+            diffractionFactor: document.getElementById("diffractionFactorVal"),
+            rayLength: document.getElementById("lengthVal"),
+        };
+
+        const status = document.getElementById("status");
+
+        const PI = Math.PI;
+        const EPS = 1e-4;
+
+        function degToRad(deg) {
+            return deg * PI / 180;
+        }
+
+        function dot(a, b) {
+            return a.x * b.x + a.y * b.y;
+        }
+
+        function len(v) {
+            return Math.hypot(v.x, v.y);
+        }
+
+        function normalize(v) {
+            const l = len(v);
+            if (l <= EPS) return { x: 0, y: 0 };
+            return { x: v.x / l, y: v.y / l };
+        }
+
+        function add(a, b) {
+            return { x: a.x + b.x, y: a.y + b.y };
+        }
+
+        function sub(a, b) {
+            return { x: a.x - b.x, y: a.y - b.y };
+        }
+
+        function mul(s, v) {
+            return { x: s * v.x, y: s * v.y };
+        }
+
+        function clamp(x, a, b) {
+            return Math.max(a, Math.min(b, x));
+        }
+
+        function worldToScreen(p, scale, origin) {
+            return {
+                x: origin.x + p.x * scale,
+                y: origin.y - p.y * scale
+            };
+        }
+
+        function drawLine(a, b, color, width = 2, dashed = false, alpha = 1) {
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.setLineDash(dashed ? [8, 6] : []);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawArrow(a, b, color, width = 3, dashed = false, alpha = 1) {
+            drawLine(a, b, color, width, dashed, alpha);
+
+            const angle = Math.atan2(b.y - a.y, b.x - a.x);
+            const size = 12;
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(b.x, b.y);
+            ctx.lineTo(
+                b.x - size * Math.cos(angle - PI / 6),
+                b.y - size * Math.sin(angle - PI / 6)
+            );
+            ctx.lineTo(
+                b.x - size * Math.cos(angle + PI / 6),
+                b.y - size * Math.sin(angle + PI / 6)
+            );
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawText(text, p, color = "#111") {
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.font = "14px system-ui, sans-serif";
+            ctx.fillText(text, p.x, p.y);
+            ctx.restore();
+        }
+
+        function drawPoint(p, color = "#111", r = 5) {
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, r, 0, 2 * PI);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = Math.round(rect.width * dpr);
+            canvas.height = Math.round(rect.height * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function draw() {
+            resizeCanvas();
+
+            const rect = canvas.getBoundingClientRect();
+            const w = rect.width;
+            const h = rect.height;
+
+            ctx.clearRect(0, 0, w, h);
+
+            const thetaDeg = Number(sliders.theta.value);
+            const alphaDeg = Number(sliders.alpha.value);
+            const distanceToEdge = Number(sliders.distance.value);
+            const diffractionRadius = Number(sliders.radius.value);
+            const diffractionFactor = Number(sliders.diffractionFactor.value);
+            const rayLength = Number(sliders.rayLength.value);
+
+            labels.theta.textContent = `${thetaDeg.toFixed(0)}°`;
+            labels.alpha.textContent = `${alphaDeg.toFixed(0)}°`;
+            labels.distance.textContent = distanceToEdge.toFixed(2);
+            labels.radius.textContent = diffractionRadius.toFixed(2);
+            labels.diffractionFactor.textContent = diffractionFactor.toFixed(2);
+            labels.rayLength.textContent = rayLength.toFixed(1);
+
+            const scale = Math.min(w, h) / 10;
+            const origin = { x: w * 0.5, y: h * 0.55 };
+
+            // 2D basis:
+            // b points into the open/exterior angle.
+            // n is the positive diffraction-plane normal.
+            const O = { x: 0, y: 0 };
+            const b = { x: 0, y: 1 };
+            const n = { x: 1, y: 0 };
+            const minusB = { x: 0, y: -1 };
+
+            const theta = degToRad(thetaDeg);
+            const alpha = degToRad(alphaDeg);
+
+            const delta = 0.5 * (theta - PI);
+            const solidHalfAngle = 0.5 * (2 * PI - theta);
+
+            const c = Math.cos(delta);
+            const s = Math.sin(delta);
+
+            // Precomputed shadow directions in the 2D cross-section.
+            const shadowPositive = normalize({
+                x: c * n.x - s * b.x,
+                y: c * n.y - s * b.y
+            });
+
+            const shadowNegative = normalize({
+                x: -c * n.x - s * b.x,
+                y: -c * n.y - s * b.y
+            });
+
+            const incomingDir = normalize({
+                x: Math.cos(alpha),
+                y: Math.sin(alpha)
+            });
+
+            const side = dot(incomingDir, n);
+
+            const solidness = dot(incomingDir, minusB);
+            const solidLimit = Math.cos(solidHalfAngle);
+            const insideSolidWedge = solidness >= solidLimit - EPS;
+
+            const parallelToDiffractionPlane = Math.abs(side) <= EPS;
+            const outsideFinitePlane = distanceToEdge > diffractionRadius + EPS;
+            const canDiffract = !outsideFinitePlane && !insideSolidWedge && !parallelToDiffractionPlane;
+
+            const chosenShadowDir = side >= 0 ? shadowPositive : shadowNegative;
+
+            // Distance controls direction bending only.
+            // Linear falloff because R is the finite plane size: no valid hits happen for d > R.
+            const linearDistanceFactor = clamp(1.0 - distanceToEdge / diffractionRadius, 0, 1);
+            const wedgeFactor = clamp(theta / PI, 0, 1);
+            const bendRaw = clamp(linearDistanceFactor * wedgeFactor, 0, 1);
+            const bend = canDiffract ? bendRaw : 0;
+
+            // Energy split is independent of distance to the edge.
+            const diffractedEnergy = canDiffract ? diffractionFactor : 0;
+            const straightEnergy = canDiffract ? (1 - diffractionFactor) : 1;
+
+            const mixedDir = normalize(add(
+                mul(1 - bend, incomingDir),
+                mul(bend, chosenShadowDir)
+            ));
+
+            // H is the virtual diffraction-plane hit point.
+            // O is the actual edge point and the origin of the diffracted ray.
+            const H = mul(distanceToEdge, b);
+            const RPoint = mul(diffractionRadius, b);
+            const A = sub(H, mul(rayLength, incomingDir));
+
+            const straightEnd = add(H, mul(rayLength, incomingDir));
+            const diffractedEnd = add(O, mul(rayLength, mixedDir));
+
+            const K = 5;
+
+            const screen = p => worldToScreen(p, scale, origin);
+
+            // Solid wedge fill.
+            const solidA = mul(K, shadowPositive);
+            const solidB = mul(K, minusB);
+            const solidC = mul(K, shadowNegative);
+
+            ctx.save();
+            ctx.fillStyle = "rgba(180, 180, 180, 0.35)";
+            ctx.beginPath();
+            ctx.moveTo(screen(O).x, screen(O).y);
+            ctx.lineTo(screen(solidA).x, screen(solidA).y);
+            ctx.lineTo(screen(solidB).x, screen(solidB).y);
+            ctx.lineTo(screen(solidC).x, screen(solidC).y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // Axes / helper basis.
+            drawLine(screen({ x: -K, y: 0 }), screen({ x: K, y: 0 }), "#ddd", 1);
+            drawLine(screen({ x: 0, y: -K }), screen({ x: 0, y: K }), "#ddd", 1);
+
+            // Diffraction plane / bisector.
+            drawLine(screen(mul(-K, b)), screen(mul(K, b)), "#222", 2, true, 0.35);
+            drawLine(screen(O), screen(RPoint), "#111", 5);
+            drawArrow(screen(O), screen(mul(1.4, b)), "#222", 3);
+            drawPoint(screen(RPoint), "#111", 4);
+            drawText("b / finite diffraction plane", screen({ x: 0.15, y: 1.55 }), "#222");
+            drawText("R: plane limit", screen(add(RPoint, { x: 0.15, y: 0.05 })), "#111");
+
+            // Plane normals.
+            drawArrow(screen(O), screen(mul(1.2, n)), "#777", 2, true);
+            drawArrow(screen(O), screen(mul(-1.2, n)), "#777", 2, true);
+            drawText("+n", screen({ x: 1.25, y: 0.15 }), "#777");
+            drawText("-n", screen({ x: -1.55, y: 0.15 }), "#777");
+
+            // Shadow directions.
+            drawArrow(screen(O), screen(mul(2.2, shadowPositive)), "#d97706", 3);
+            drawArrow(screen(O), screen(mul(2.2, shadowNegative)), "#d97706", 3);
+            drawText("s+", screen(add(mul(2.35, shadowPositive), { x: 0.1, y: 0.1 })), "#a15c00");
+            drawText("s-", screen(add(mul(2.35, shadowNegative), { x: -0.4, y: 0.1 })), "#a15c00");
+
+            // Incoming ray to virtual plane hit.
+            drawArrow(screen(A), screen(H), "#2563eb", 4);
+            drawText("incoming ray", screen(add(A, { x: -0.3, y: 0.25 })), "#2563eb");
+
+            // Virtual hit point H.
+            drawPoint(screen(H), outsideFinitePlane ? "#b91c1c" : "#2563eb", 5);
+            drawText(outsideFinitePlane ? "H: outside finite plane" : "H: virtual plane hit",
+                screen(add(H, { x: 0.12, y: 0.18 })), outsideFinitePlane ? "#b91c1c" : "#2563eb");
+
+            // Projection / closest point on edge.
+            if (distanceToEdge > EPS) {
+                drawLine(screen(H), screen(O), "#6b7280", 2, true);
+                drawText("distance to edge", screen(add(mul(0.5, H), { x: 0.12, y: 0 })), "#6b7280");
+            }
+
+            // Edge point.
+            drawPoint(screen(O), "#000", 7);
+            drawText("O: edge point / diffracted source", screen({ x: 0.15, y: -0.15 }), "#111");
+
+            // Straight continuation from the virtual plane hit.
+            const straightWidth = 2 + 5 * straightEnergy;
+            const straightAlpha = 0.25 + 0.75 * straightEnergy;
+            drawArrow(screen(H), screen(straightEnd), "#7c3aed", straightWidth, false, straightAlpha);
+            drawText(`straight continuation (${straightEnergy.toFixed(2)} energy)`,
+                screen(add(straightEnd, { x: 0.1, y: 0.25 })), "#7c3aed");
+
+            // Chosen shadow helper from the edge point.
+            if (canDiffract) {
+                drawArrow(screen(O), screen(add(O, mul(1.7, chosenShadowDir))), "#f59e0b", 2, true);
+                drawText("chosen shadow dir", screen(add(O, mul(1.85, chosenShadowDir))), "#a15c00");
+            }
+
+            // Diffracted ray or rejection. The ray now originates at O, not H.
+            if (canDiffract && diffractedEnergy > EPS) {
+                const diffractedWidth = 2 + 5 * diffractedEnergy;
+                const diffractedAlpha = 0.25 + 0.75 * diffractedEnergy;
+                drawArrow(screen(O), screen(diffractedEnd), "#16a34a", diffractedWidth, false, diffractedAlpha);
+                drawText(`diffracted from edge (${diffractedEnergy.toFixed(2)} energy)`,
+                    screen(add(diffractedEnd, { x: 0.1, y: 0.2 })), "#16a34a");
+            } else if (canDiffract) {
+                drawArrow(screen(O), screen(diffractedEnd), "#999", 2, true, 0.7);
+                drawText("η = 0, no diffracted energy", screen(add(O, { x: 0.25, y: -0.35 })), "#b91c1c");
+            } else {
+                const rejectionText = outsideFinitePlane
+                    ? "no diffraction: d > R, outside finite plane"
+                    : "no diffraction";
+                drawText(rejectionText, screen(add(H, { x: 0.25, y: -0.25 })), "#b91c1c");
+            }
+
+            // Solid region label.
+            drawText("solid / wall wedge", screen({ x: -1.2, y: -2.0 }), "#555");
+            drawText("open exterior region", screen({ x: 0.3, y: 2.6 }), "#555");
+
+            status.innerHTML = `
+                <b>Computed values</b><br>
+                δ = ${((delta * 180 / PI)).toFixed(2)}°<br>
+                solid half-angle γ = ${((solidHalfAngle * 180 / PI)).toFixed(2)}°<br>
+                side = dot(incoming, n) = ${side.toFixed(3)}<br>
+                inside solid wedge = <b>${insideSolidWedge}</b><br>
+                outside finite plane (d > R) = <b>${outsideFinitePlane}</b><br>
+                can diffract = <b style="color:${canDiffract ? "#22c55e" : "#ef4444"}">${canDiffract}</b><br>
+                linearDistanceFactor = ${linearDistanceFactor.toFixed(3)} <span style="color:#aaa">= clamp(1 - d / R, 0, 1), direction only</span><br>
+                bend = ${bend.toFixed(3)}<br>
+                η = diffraction factor = ${diffractionFactor.toFixed(2)} <span style="color:#aaa">(energy only)</span><br>
+                straight energy = ${straightEnergy.toFixed(2)}<br>
+                diffracted energy = ${diffractedEnergy.toFixed(2)}
+            `;
+        }
+
+        for (const input of Object.values(sliders)) {
+            input.addEventListener("input", draw);
+        }
+
+        window.addEventListener("resize", draw);
+        draw();
+    </script>
+</body>
+
+</html>

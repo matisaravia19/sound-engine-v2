@@ -15,8 +15,8 @@ const IR_SAMPLES: u32 = SAMPLE_RATE;
 
 fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
-    let source_position = vec3(-2.0, 0.0, -0.5);
-    let listener_position = vec3(2.0, 0.0, 0.3);
+    let source_position = vec3(-1.0, 0.0, -0.5);
+    let listener_position = vec3(-1.0, 0.0, 0.5);
 
     let baseline = trace_scene(&gpu, diffraction_scene(false), 1, source_position, listener_position)?;
     let diffracted = trace_scene(&gpu, diffraction_scene(true), 2, source_position, listener_position)?;
@@ -125,7 +125,7 @@ fn diffraction_scene(include_edge: bool) -> SceneDescription {
                 id: 1,
                 start: vec3(-0.05, -2.0, 0.0),
                 end: vec3(-0.05, 2.0, 0.0),
-                bisector_dir: vec3(1.0, 0.0, 0.15),
+                bisector_dir: vec3(1.0, 0.0, 0.0),
                 edge_angle_radians: 1.5 * std::f32::consts::PI,
                 diffraction_radius: 0.45,
                 base_strength: 0.65,

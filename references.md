@@ -1,0 +1,2 @@
+- Geometrical room acoustics: https://pubs.aip.org/asa/jasa/article/138/2/708/917382/Overview-of-geometrical-room-acoustic-modeling?__cf_chl_f_tk=DHkzbakMVvshzipTIZLixrHl_5dg6GnurtAJq0VJ634-1783177475-1.0.1.1-aWSSzBa3iYMU6a4DqFKV0_SfsZy8kCSEcIU1bz3oNRE
+- Raytracing and diffraction: https://dael.euracoustics.org/landing_pages/aaua/64958.html
