@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
+// x is chord length through the listener sphere; y is entry distance from the
+// object-space ray origin for closest-hit sphere-point reconstruction.
 hitAttributeEXT vec2 listener_hit;
 
 layout(push_constant) uniform PushConstants {
@@ -39,6 +41,7 @@ void main() {
 
     float hit_t = max(t_near, gl_RayTminEXT);
     float exit_t = min(t_far, gl_RayTmaxEXT);
-    listener_hit = vec2(max(exit_t - hit_t, 0.0), 0.0);
+    // Closest-hit needs both the capture chord length and the entry point.
+    listener_hit = vec2(max(exit_t - hit_t, 0.0), hit_t);
     reportIntersectionEXT(hit_t, 0);
 }

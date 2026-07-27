@@ -1,8 +1,11 @@
-use crate::acoustics::{IrSample, IrSnapshot};
+use crate::acoustics::{AcousticHit, AcousticHitSnapshot, GpuAcousticHitSnapshot, GpuIrSnapshot, IrSample, IrSnapshot};
 use crate::core::config::{EngineConfig, OutputChannels};
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
-use crate::gpu::memory::BufferHandle;
+use crate::gpu::compute::{
+    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
+    PushConstantSpec,
+};
 use crate::gpu::rt::{
     AabbBlasBuildSpec, BlasId, RtAabbBuffers, RtAabbSpec, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
     RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
@@ -13,9 +16,11 @@ use ash::vk;
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
-const IR_FIXED_POINT_SCALE: f32 = 1_048_576.0;
+const HIT_BUFFER_HEADER_SIZE: usize = size_of::<GpuHitBufferHeader>();
+const COMPUTE_GROUP_SIZE: u32 = 256;
 
 /// Source/listener pair that should produce one impulse response.
 #[derive(Debug, Clone, Copy)]
@@ -32,15 +37,17 @@ pub struct AcousticQuery {
     pub source_energy: f32,
 }
 
-/// Acoustic pipeline that traces acoustic paths into stereo IR snapshots.
+/// Acoustic pipeline that traces acoustic paths into listener hits and bins them into IR snapshots.
 ///
-/// The pipeline owns long-lived RT resources and an IR accumulation buffer.
-/// Calls are synchronous today: GPU ray tracing writes the IR, the final samples
-/// are downloaded, and `build_ir` returns an immutable snapshot.
+/// The pipeline owns long-lived RT resources and a hit accumulation buffer.
+/// Calls are synchronous today: GPU ray tracing writes listener hits, GPU
+/// compute bins those hits into an IR, and CPU readback is only used by
+/// compatibility/debug snapshot APIs.
 pub struct AcousticPipeline {
     config: EngineConfig,
     contribution_pipeline: RtPipelineId,
-    ir_buffer: BufferHandle,
+    hit_capacity: u32,
+    hits_to_ir_pipeline: PipelineId,
     /// Procedural BLAS bounds kept alive while the analytical listener sphere is traced.
     _listener_bounds: RtAabbBuffers,
     listener_blas: BlasId,
@@ -63,6 +70,7 @@ struct VisibilityPushConstants {
     sample_rate: u32,
     sample_count: u32,
     output_channels: u32,
+    hit_capacity: u32,
 }
 
 unsafe impl bytemuck::Zeroable for VisibilityPushConstants {}
@@ -70,13 +78,42 @@ unsafe impl bytemuck::Pod for VisibilityPushConstants {}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct GpuIrSample {
-    left: i32,
-    right: i32,
+struct GpuHitBufferHeader {
+    count: u32,
+    overflow_count: u32,
+    _pad0: [u32; 2],
 }
 
-unsafe impl bytemuck::Zeroable for GpuIrSample {}
-unsafe impl bytemuck::Pod for GpuIrSample {}
+unsafe impl bytemuck::Zeroable for GpuHitBufferHeader {}
+unsafe impl bytemuck::Pod for GpuHitBufferHeader {}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct GpuAcousticHit {
+    /// Octahedral direction packed with GLSL `packSnorm2x16`.
+    packed_incoming_direction: u32,
+    /// Octahedral listener-sphere hit direction packed with GLSL `packSnorm2x16`.
+    packed_listener_hit_direction: u32,
+    arrival_time_seconds: f32,
+    energy: f32,
+}
+
+unsafe impl bytemuck::Zeroable for GpuAcousticHit {}
+unsafe impl bytemuck::Pod for GpuAcousticHit {}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct HitsToIrPushConstants {
+    listener_right: [f32; 3],
+    sample_rate: u32,
+    sample_count: u32,
+    output_channels: u32,
+    hit_capacity: u32,
+    _pad0: u32,
+}
+
+unsafe impl bytemuck::Zeroable for HitsToIrPushConstants {}
+unsafe impl bytemuck::Pod for HitsToIrPushConstants {}
 
 impl AcousticPipeline {
     /// Creates the RT contribution pipeline, GPU contribution buffer, and IR builder.
@@ -138,9 +175,8 @@ impl AcousticPipeline {
             push_constant_ranges: vec![RtPushConstantSpec::new(0, size_of::<VisibilityPushConstants>() as u32)],
             max_ray_recursion_depth: config.acoustics.max_bounces.saturating_add(1).max(1),
         })?;
-        let ir_buffer = gpu
-            .memory()
-            .create_storage_buffer(ir_buffer_size(config.sound.ir_num_samples) as u64)?;
+        let hit_capacity = hit_buffer_capacity(config.acoustics.rays_per_query, config.acoustics.max_bounces);
+        let hits_to_ir_pipeline = create_hits_to_ir_pipeline(gpu)?;
         let listener_bounds = create_listener_sphere_bounds(gpu, config.acoustics.listener_radius)?;
         let listener_blas = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
             aabbs: &listener_bounds,
@@ -150,7 +186,8 @@ impl AcousticPipeline {
         Ok(Self {
             config,
             contribution_pipeline,
-            ir_buffer,
+            hit_capacity,
+            hits_to_ir_pipeline,
             _listener_bounds: listener_bounds,
             listener_blas,
         })
@@ -163,6 +200,39 @@ impl AcousticPipeline {
         scene: &mut SceneManager,
         query: AcousticQuery,
     ) -> SoundResult<IrSnapshot> {
+        let gpu_ir = self.build_ir_gpu(gpu, scene, query)?;
+        self.download_gpu_ir(gpu, &gpu_ir)
+    }
+
+    /// Builds one GPU-resident time-domain IR for a scene/source/listener query.
+    pub fn build_ir_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<GpuIrSnapshot> {
+        let hits = self.trace_hits_gpu(gpu, scene, query)?;
+        self.build_ir_from_gpu_hits(gpu, &hits, query.listener_right, query.query_id)
+    }
+
+    /// Traces one source/listener location query into direction-independent listener hits.
+    pub fn trace_hits(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<AcousticHitSnapshot> {
+        let hits = self.trace_hits_gpu(gpu, scene, query)?;
+        self.download_hits(gpu, &hits)
+    }
+
+    /// Traces one source/listener location query into a GPU-resident hit buffer.
+    pub fn trace_hits_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<GpuAcousticHitSnapshot> {
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
         let tlas_id = self.build_query_tlas(
             gpu,
@@ -188,9 +258,14 @@ impl AcousticPipeline {
             sample_rate: self.config.sound.sample_rate,
             sample_count: self.config.sound.ir_num_samples,
             output_channels: output_channels_to_shader(self.config.sound.output_channels),
+            hit_capacity: self.hit_capacity,
         };
+        let hit_buffer = Arc::new(
+            gpu.memory()
+                .create_storage_buffer(hit_buffer_size(self.hit_capacity) as u64)?,
+        );
 
-        gpu.memory().clear_buffer(&self.ir_buffer)?;
+        gpu.memory().clear_buffer(&hit_buffer)?;
         gpu.compute().submit_compute_and_wait(|command_buffer| {
             gpu.rt().record_trace(
                 command_buffer,
@@ -198,7 +273,7 @@ impl AcousticPipeline {
                     pipeline_id: self.contribution_pipeline,
                     descriptor_writes: vec![
                         RtDescriptorWrite::acceleration_structure(0, tlas_id),
-                        RtDescriptorWrite::storage_buffer(1, self.ir_buffer.buffer),
+                        RtDescriptorWrite::storage_buffer(1, hit_buffer.buffer),
                         RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(4, gpu_scene.diffraction_edge_buffer().buffer),
@@ -206,14 +281,27 @@ impl AcousticPipeline {
                     push_constants: bytemuck::bytes_of(&visibility_constants).to_vec(),
                     push_constant_offset: 0,
                     dimensions: [self.config.acoustics.rays_per_query.max(1), 1, 1],
-                    barrier_after_trace: true,
+                    barrier_after_trace: false,
                 },
             )?;
+            gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(hit_buffer.buffer),
+            );
 
             Ok(())
         })?;
 
-        self.download_ir(gpu, gpu_scene.version(), query.query_id)
+        Ok(GpuAcousticHitSnapshot {
+            buffer: Some(hit_buffer),
+            hit_capacity: self.hit_capacity,
+            byte_size: hit_buffer_size(self.hit_capacity),
+            scene_version: gpu_scene.version(),
+            query_id: query.query_id,
+            source_position: query.source_position,
+            source_energy: query.source_energy,
+            listener_position: query.listener_position,
+        })
     }
 
     /// Builds stereo IR snapshots for a batch of source/listener queries.
@@ -230,33 +318,132 @@ impl AcousticPipeline {
         Ok(snapshots)
     }
 
-    fn download_ir(
+    /// Builds one IR from previously traced listener hits and the current listener orientation.
+    pub fn build_ir_from_hits(&self, hits: &AcousticHitSnapshot, listener_right: Vec3, query_id: u32) -> IrSnapshot {
+        build_ir_from_hits(
+            hits,
+            listener_right,
+            query_id,
+            self.config.sound.sample_rate,
+            self.config.sound.ir_num_samples,
+            self.config.sound.output_channels,
+        )
+    }
+
+    /// Builds a GPU-resident IR from cached GPU hit data and the requested listener orientation.
+    pub fn build_ir_from_gpu_hits(
         &self,
         gpu: &VkBackend,
-        scene_version: crate::scene::SceneVersion,
+        hits: &GpuAcousticHitSnapshot,
+        listener_right: Vec3,
         query_id: u32,
-    ) -> SoundResult<IrSnapshot> {
-        let mut gpu_samples = vec![GpuIrSample { left: 0, right: 0 }; self.config.sound.ir_num_samples as usize];
-        gpu.memory()
-            .download_typed(&self.ir_buffer, gpu_samples.len(), &mut gpu_samples)?;
+    ) -> SoundResult<GpuIrSnapshot> {
+        let hit_buffer = hits
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_argument("GPU hit snapshot has no buffer"))?;
+        let ir_buffer = Arc::new(
+            gpu.memory()
+                .create_storage_buffer(ir_buffer_size(self.config.sound.ir_num_samples) as u64)?,
+        );
+        gpu.memory().clear_buffer(&ir_buffer)?;
 
-        let mut energy = 0.0f32;
-        let samples = gpu_samples
-            .into_iter()
-            .map(|sample| {
-                let left = sample.left as f32 / IR_FIXED_POINT_SCALE;
-                let right = sample.right as f32 / IR_FIXED_POINT_SCALE;
-                energy += left * left + right * right;
-                IrSample::new(left, right)
+        let hits_to_ir_constants = HitsToIrPushConstants {
+            listener_right: listener_right.to_array(),
+            sample_rate: self.config.sound.sample_rate,
+            sample_count: self.config.sound.ir_num_samples,
+            output_channels: output_channels_to_shader(self.config.sound.output_channels),
+            hit_capacity: hits.hit_capacity,
+            _pad0: 0,
+        };
+
+        gpu.compute().submit_compute_and_wait(|command_buffer| {
+            gpu.compute().record_dispatch(
+                command_buffer,
+                &DispatchSpec {
+                    pipeline_id: self.hits_to_ir_pipeline,
+                    descriptor_writes: vec![
+                        DescriptorWrite::storage_buffer(0, hit_buffer.buffer),
+                        DescriptorWrite::storage_buffer(1, ir_buffer.buffer),
+                    ],
+                    push_constants: bytemuck::bytes_of(&hits_to_ir_constants).to_vec(),
+                    push_constant_offset: 0,
+                    groups: [hits.hit_capacity.max(1).div_ceil(COMPUTE_GROUP_SIZE), 1, 1],
+                },
+            )?;
+            gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::compute_shader_write_to_transfer_read(ir_buffer.buffer),
+            );
+            Ok(())
+        })?;
+
+        Ok(GpuIrSnapshot {
+            buffer: Some(ir_buffer),
+            byte_size: ir_buffer_size(self.config.sound.ir_num_samples),
+            sample_rate: self.config.sound.sample_rate,
+            sample_count: self.config.sound.ir_num_samples,
+            energy: None,
+            scene_version: hits.scene_version,
+            query_id,
+        })
+    }
+
+    fn download_hits(&self, gpu: &VkBackend, snapshot: &GpuAcousticHitSnapshot) -> SoundResult<AcousticHitSnapshot> {
+        let hit_buffer = snapshot
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_argument("GPU hit snapshot has no buffer"))?;
+        let mut bytes = vec![0u8; snapshot.byte_size];
+        gpu.memory().download_bytes(hit_buffer, bytes.len(), &mut bytes)?;
+
+        let header = bytemuck::pod_read_unaligned::<GpuHitBufferHeader>(&bytes[..HIT_BUFFER_HEADER_SIZE]);
+        let stored_count = header.count.min(snapshot.hit_capacity) as usize;
+        let hit_bytes = &bytes[HIT_BUFFER_HEADER_SIZE
+            ..HIT_BUFFER_HEADER_SIZE + snapshot.hit_capacity as usize * size_of::<GpuAcousticHit>()];
+        let hits = hit_bytes
+            .chunks_exact(size_of::<GpuAcousticHit>())
+            .take(stored_count)
+            .map(|bytes| bytemuck::pod_read_unaligned::<GpuAcousticHit>(bytes))
+            .map(|hit| AcousticHit {
+                incoming_direction: decode_octahedral_snorm16(hit.packed_incoming_direction),
+                listener_hit_direction: decode_octahedral_snorm16(hit.packed_listener_hit_direction),
+                arrival_time_seconds: hit.arrival_time_seconds,
+                energy: hit.energy,
             })
             .collect();
 
+        Ok(AcousticHitSnapshot {
+            hits,
+            scene_version: snapshot.scene_version,
+            query_id: snapshot.query_id,
+            source_position: snapshot.source_position,
+            source_energy: snapshot.source_energy,
+            listener_position: snapshot.listener_position,
+            overflow_count: header.overflow_count,
+        })
+    }
+
+    /// Downloads a GPU-resident time-domain IR into a CPU snapshot.
+    pub fn download_gpu_ir(&self, gpu: &VkBackend, snapshot: &GpuIrSnapshot) -> SoundResult<IrSnapshot> {
+        let ir_buffer = snapshot
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
+        let mut samples = vec![IrSample::zero(); snapshot.sample_count as usize];
+        gpu.memory()
+            .download_typed::<IrSample>(ir_buffer, samples.len(), &mut samples)?;
+        let energy = samples
+            .iter()
+            .map(|sample| sample.left * sample.left + sample.right * sample.right)
+            .sum();
+
         Ok(IrSnapshot {
-            sample_rate: self.config.sound.sample_rate,
+            sample_rate: snapshot.sample_rate,
             samples,
             energy,
-            scene_version,
-            query_id,
+            scene_version: snapshot.scene_version,
+            query_id: snapshot.query_id,
         })
     }
 
@@ -334,8 +521,60 @@ fn listener_sphere_volume(listener_radius: f32) -> f32 {
     SPHERE_VOLUME_FACTOR * listener_radius * listener_radius * listener_radius
 }
 
+fn hit_buffer_capacity(rays_per_query: u32, max_bounces: u32) -> u32 {
+    let multiplier = max_bounces.saturating_add(1).saturating_mul(2).max(1);
+    rays_per_query
+        .max(1)
+        .saturating_mul(multiplier)
+        .max(rays_per_query.max(1))
+}
+
+fn hit_buffer_size(hit_capacity: u32) -> usize {
+    HIT_BUFFER_HEADER_SIZE + hit_capacity as usize * size_of::<GpuAcousticHit>()
+}
+
 fn ir_buffer_size(sample_count: u32) -> usize {
-    sample_count as usize * size_of::<GpuIrSample>()
+    sample_count as usize * size_of::<IrSample>()
+}
+
+fn create_hits_to_ir_pipeline(gpu: &VkBackend) -> SoundResult<PipelineId> {
+    let shader = gpu
+        .shaders()
+        .load_glsl_file(ShaderStage::Compute, shader_path("hits_to_ir.comp.glsl"))?;
+    gpu.compute().create_pipeline(ComputePipelineSpec {
+        shader_id: shader,
+        descriptor_bindings: vec![
+            DescriptorBindingSpec::storage_buffer(0),
+            DescriptorBindingSpec::storage_buffer(1),
+        ],
+        push_constant_ranges: vec![PushConstantSpec::new(0, size_of::<HitsToIrPushConstants>() as u32)],
+    })
+}
+
+fn decode_octahedral_snorm16(packed: u32) -> Vec3 {
+    // Matches GLSL packSnorm2x16(octEncode(direction)): low 16 bits are X,
+    // high 16 bits are Y, and the octahedral fold reconstructs Z.
+    let x = decode_snorm16((packed & 0xffff) as u16);
+    let y = decode_snorm16((packed >> 16) as u16);
+    let mut direction = Vec3::new(x, y, 1.0 - x.abs() - y.abs());
+
+    if direction.z < 0.0 {
+        let folded_x = (1.0 - direction.y.abs()) * sign_not_zero(direction.x);
+        let folded_y = (1.0 - direction.x.abs()) * sign_not_zero(direction.y);
+        direction.x = folded_x;
+        direction.y = folded_y;
+    }
+
+    direction.normalize_or_zero()
+}
+
+fn decode_snorm16(value: u16) -> f32 {
+    let signed = value as i16;
+    ((signed as f32) / 32767.0).max(-1.0)
+}
+
+fn sign_not_zero(value: f32) -> f32 {
+    if value >= 0.0 { 1.0 } else { -1.0 }
 }
 
 fn output_channels_to_shader(output_channels: OutputChannels) -> u32 {
@@ -343,5 +582,146 @@ fn output_channels_to_shader(output_channels: OutputChannels) -> u32 {
         OutputChannels::Mono => 0,
         OutputChannels::Stereo => 1,
         OutputChannels::Binaural => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_hit_record_stays_compact() {
+        assert_eq!(size_of::<GpuAcousticHit>(), 16);
+    }
+
+    #[test]
+    fn decodes_octahedral_axis_directions() {
+        assert!(decode_octahedral_snorm16(0).abs_diff_eq(Vec3::Z, 0.0001));
+        assert!(decode_octahedral_snorm16(0x0000_7fff).abs_diff_eq(Vec3::X, 0.0001));
+        assert!(decode_octahedral_snorm16(0x7fff_0000).abs_diff_eq(Vec3::Y, 0.0001));
+    }
+
+    #[test]
+    fn bins_mono_hits_into_left_channel() {
+        let hits = hit_snapshot(vec![AcousticHit {
+            incoming_direction: Vec3::X,
+            listener_hit_direction: Vec3::Y,
+            arrival_time_seconds: 0.001,
+            energy: 0.5,
+        }]);
+
+        let ir = build_ir_from_hits(&hits, Vec3::X, 3, 1_000, 4, OutputChannels::Mono);
+
+        assert_eq!(ir.query_id, 3);
+        assert_eq!(ir.samples[1].left, 0.5);
+        assert_eq!(ir.samples[1].right, 0.0);
+        assert_eq!(ir.energy, 0.25);
+    }
+
+    #[test]
+    fn bins_stereo_hits_with_equal_power_pan() {
+        let hits = hit_snapshot(vec![
+            AcousticHit {
+                incoming_direction: Vec3::X,
+                listener_hit_direction: Vec3::Y,
+                arrival_time_seconds: 0.0,
+                energy: 1.0,
+            },
+            AcousticHit {
+                incoming_direction: -Vec3::X,
+                listener_hit_direction: -Vec3::Y,
+                arrival_time_seconds: 0.0,
+                energy: 1.0,
+            },
+        ]);
+
+        let ir = build_ir_from_hits(&hits, Vec3::X, 0, 1_000, 1, OutputChannels::Stereo);
+
+        assert_eq!(ir.samples[0].left, 1.0);
+        assert_eq!(ir.samples[0].right, 1.0);
+        assert_eq!(ir.energy, 2.0);
+    }
+
+    #[test]
+    fn ignores_out_of_range_hits() {
+        let hits = hit_snapshot(vec![AcousticHit {
+            incoming_direction: Vec3::X,
+            listener_hit_direction: Vec3::Y,
+            arrival_time_seconds: 10.0,
+            energy: 1.0,
+        }]);
+
+        let ir = build_ir_from_hits(&hits, Vec3::X, 0, 1_000, 4, OutputChannels::Stereo);
+
+        assert!(
+            ir.samples
+                .iter()
+                .all(|sample| sample.left == 0.0 && sample.right == 0.0)
+        );
+        assert_eq!(ir.energy, 0.0);
+    }
+
+    fn hit_snapshot(hits: Vec<AcousticHit>) -> AcousticHitSnapshot {
+        AcousticHitSnapshot {
+            hits,
+            scene_version: 7,
+            query_id: 0,
+            source_position: Vec3::ZERO,
+            source_energy: 1.0,
+            listener_position: Vec3::Y,
+            overflow_count: 0,
+        }
+    }
+}
+
+fn build_ir_from_hits(
+    hits: &AcousticHitSnapshot,
+    listener_right: Vec3,
+    query_id: u32,
+    sample_rate: u32,
+    sample_count: u32,
+    output_channels: OutputChannels,
+) -> IrSnapshot {
+    let mut samples = vec![IrSample::zero(); sample_count as usize];
+    let normalized_right = listener_right.normalize_or_zero();
+
+    for hit in &hits.hits {
+        if !hit.arrival_time_seconds.is_finite() || hit.arrival_time_seconds < 0.0 || !hit.energy.is_finite() {
+            continue;
+        }
+        let sample_index = (hit.arrival_time_seconds * sample_rate as f32).round() as usize;
+        let Some(sample) = samples.get_mut(sample_index) else {
+            continue;
+        };
+
+        match output_channels {
+            OutputChannels::Mono => {
+                sample.left += hit.energy;
+            }
+            OutputChannels::Stereo | OutputChannels::Binaural => {
+                let pan = hit
+                    .incoming_direction
+                    .normalize_or_zero()
+                    .dot(normalized_right)
+                    .clamp(-1.0, 1.0);
+                let left_factor = (0.5 * (1.0 - pan)).sqrt();
+                let right_factor = (0.5 * (1.0 + pan)).sqrt();
+                sample.left += hit.energy * left_factor;
+                sample.right += hit.energy * right_factor;
+            }
+        }
+    }
+
+    let energy = samples
+        .iter()
+        .map(|sample| sample.left * sample.left + sample.right * sample.right)
+        .sum();
+
+    IrSnapshot {
+        sample_rate,
+        samples,
+        energy,
+        scene_version: hits.scene_version,
+        query_id,
     }
 }

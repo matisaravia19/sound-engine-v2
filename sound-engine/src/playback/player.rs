@@ -20,7 +20,7 @@ impl Default for PlaybackConfig {
     fn default() -> Self {
         Self {
             prefill_blocks: 8,
-            max_queue_seconds: 0.5,
+            max_queue_seconds: 0.1,
         }
     }
 }

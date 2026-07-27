@@ -194,6 +194,7 @@ impl VkBackend {
             vk::KHR_RAY_TRACING_PIPELINE_NAME.as_ptr(),
             vk::KHR_DEFERRED_HOST_OPERATIONS_NAME.as_ptr(),
             vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
+            vk::EXT_SHADER_ATOMIC_FLOAT_NAME.as_ptr(),
         ];
 
         // Features are chained through pNext; Vulkan only enables what is set here.
@@ -203,13 +204,16 @@ impl VkBackend {
             vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
         let mut ray_tracing_pipeline_features =
             vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
+        let mut shader_atomic_float_features =
+            vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default().shader_buffer_float32_atomic_add(true);
 
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&extension_names)
             .push_next(&mut buffer_device_address_features)
             .push_next(&mut acceleration_structure_features)
-            .push_next(&mut ray_tracing_pipeline_features);
+            .push_next(&mut ray_tracing_pipeline_features)
+            .push_next(&mut shader_atomic_float_features);
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
 
         let compute_queue = unsafe { device.get_device_queue(compute_family, 0) };
@@ -272,11 +276,13 @@ impl VkBackend {
         let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
         let mut acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
         let mut ray_tracing_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
+        let mut shader_atomic_float_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default();
         // Query the boolean feature chain separately from property limits.
         let mut features = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut buffer_device_address_features)
             .push_next(&mut acceleration_structure_features)
-            .push_next(&mut ray_tracing_pipeline_features);
+            .push_next(&mut ray_tracing_pipeline_features)
+            .push_next(&mut shader_atomic_float_features);
 
         unsafe {
             instance.get_physical_device_features2(physical_device, &mut features);
@@ -285,9 +291,10 @@ impl VkBackend {
         if buffer_device_address_features.buffer_device_address != vk::TRUE
             || acceleration_structure_features.acceleration_structure != vk::TRUE
             || ray_tracing_pipeline_features.ray_tracing_pipeline != vk::TRUE
+            || shader_atomic_float_features.shader_buffer_float32_atomic_add != vk::TRUE
         {
             return Err(SoundError::unsupported_feature(
-                "Required Vulkan ray tracing features are not supported",
+                "Required Vulkan ray tracing or shader float atomic features are not supported",
             ));
         }
 
@@ -315,6 +322,7 @@ impl VkBackend {
             vk::KHR_RAY_TRACING_PIPELINE_NAME,
             vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
             vk::KHR_BUFFER_DEVICE_ADDRESS_NAME,
+            vk::EXT_SHADER_ATOMIC_FLOAT_NAME,
         ];
 
         for required_extension in required {

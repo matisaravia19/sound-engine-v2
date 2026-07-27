@@ -1,7 +1,7 @@
 //! Direct, synchronous engine implementation.
 
 use super::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request};
-use crate::acoustics::{AcousticsEngine, IrSnapshot};
+use crate::acoustics::{AcousticsEngine, GpuIrSnapshot, IrSnapshot};
 use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
@@ -162,8 +162,8 @@ impl EngineCore {
             return Err(SoundError::invalid_argument("sound volume must be finite"));
         }
         let source = self.source(source_id)?;
-        let snapshot = self.impulse_response_for(source, self.listener)?;
-        let impulse_response_id = self.register_impulse_response(&snapshot)?;
+        let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
+        let impulse_response_id = self.register_gpu_impulse_response(&snapshot)?;
         let voice_id = match self.auralization.play_sound(PlaySoundRequest {
             sound_id,
             impulse_response_id,
@@ -239,11 +239,16 @@ impl EngineCore {
             .build_impulse_response(self.gpu.as_ref(), source, listener)
     }
 
-    /// Uploads an IR snapshot for use by the auralizer and returns its id.
-    fn register_impulse_response(&mut self, snapshot: &IrSnapshot) -> SoundResult<ImpulseResponseId> {
+    fn gpu_impulse_response_for(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<GpuIrSnapshot> {
+        self.acoustics
+            .build_impulse_response_gpu(self.gpu.as_ref(), source, listener)
+    }
+
+    /// Registers a GPU-resident IR snapshot for use by the auralizer and returns its id.
+    fn register_gpu_impulse_response(&mut self, snapshot: &GpuIrSnapshot) -> SoundResult<ImpulseResponseId> {
         let impulse_response_id = self.next_ir_id();
         self.auralization
-            .register_impulse_response(impulse_response_id, &snapshot.samples)?;
+            .register_impulse_response_from_gpu_ir(impulse_response_id, snapshot)?;
         Ok(impulse_response_id)
     }
 
@@ -298,8 +303,8 @@ impl EngineCore {
                 .map(|voice| voice.source_id)
                 .ok_or_else(|| SoundError::not_found(format!("Unknown spatial voice id {}", voice_id)))?;
             let source = self.source(source_id)?;
-            let snapshot = self.impulse_response_for(source, self.listener)?;
-            let next_ir_id = self.register_impulse_response(&snapshot)?;
+            let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
+            let next_ir_id = self.register_gpu_impulse_response(&snapshot)?;
             if let Err(error) = self.auralization.update_voice_impulse_response(voice_id, next_ir_id) {
                 self.auralization.forget_impulse_response(next_ir_id);
                 return Err(error);

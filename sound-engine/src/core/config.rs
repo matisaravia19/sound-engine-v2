@@ -65,6 +65,8 @@ pub struct IrCacheConfig {
     pub listener_right_dot_threshold: f32,
     /// Maximum cached IR snapshots retained per engine instance.
     pub max_entries: usize,
+    /// Maximum GPU memory used by acoustic hit and IR cache buffers.
+    pub max_gpu_cache_bytes: usize,
 }
 
 impl Default for IrCacheConfig {
@@ -74,6 +76,7 @@ impl Default for IrCacheConfig {
             reuse_distance_meters: 0.2,
             listener_right_dot_threshold: 0.98,
             max_entries: 32,
+            max_gpu_cache_bytes: 512 * 1024 * 1024,
         }
     }
 }

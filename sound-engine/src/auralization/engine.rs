@@ -1,4 +1,4 @@
-use crate::acoustics::IrSample;
+use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
 use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
 use crate::auralization::voice::{Voice, VoiceState};
@@ -115,6 +115,17 @@ impl AuralizationEngine {
     /// Registers an impulse response for later playback.
     pub fn register_impulse_response(&mut self, id: ImpulseResponseId, samples: &[IrSample]) -> SoundResult<()> {
         let impulse_response = self.convolver.create_impulse_response(samples)?;
+        self.impulse_responses.insert(id, impulse_response);
+        Ok(())
+    }
+
+    /// Registers a GPU-resident time-domain impulse response for later playback.
+    pub fn register_impulse_response_from_gpu_ir(
+        &mut self,
+        id: ImpulseResponseId,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<()> {
+        let impulse_response = self.convolver.create_impulse_response_from_gpu_ir(snapshot)?;
         self.impulse_responses.insert(id, impulse_response);
         Ok(())
     }

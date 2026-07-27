@@ -1,4 +1,4 @@
-use crate::acoustics::IrSample;
+use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::auralization::voice::Voice;
 use crate::core::config::EngineConfig;
 use crate::core::config::OutputChannels;
@@ -96,6 +96,42 @@ impl PartitionedConvolver {
         self.gpu.compute().submit_compute_and_wait(|command_buffer| {
             plan.append(command_buffer)
                 .map_err(|e| SoundError::external(format!("IR forward launch failed: {e:?}")))?;
+
+            Ok(())
+        })?;
+
+        Ok(Arc::new(ImpulseResponse { buffer }))
+    }
+
+    /// Copies a GPU time-domain IR into convolver storage and transforms it into frequency-domain form.
+    pub fn create_impulse_response_from_gpu_ir(&self, snapshot: &GpuIrSnapshot) -> SoundResult<Arc<ImpulseResponse>> {
+        validate_gpu_ir_snapshot(snapshot, self.fft_size)?;
+        let source_buffer = snapshot
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
+
+        let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref(), self.fft_size as u64, false)?;
+        let copy_bytes = snapshot
+            .sample_count
+            .checked_mul(std::mem::size_of::<IrSample>() as u32)
+            .ok_or_else(|| SoundError::invalid_argument("GPU IR copy byte size overflow"))?
+            as u64;
+
+        self.gpu.memory().clear_buffer(&buffer)?;
+        self.gpu.memory().copy_buffer(
+            source_buffer,
+            &buffer,
+            copy_bytes,
+            Some(BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
+                buffer.buffer,
+            )),
+        )?;
+
+        // The copied time-domain IR is transformed once and then shared by voices.
+        self.gpu.compute().submit_compute_and_wait(|command_buffer| {
+            plan.append(command_buffer)
+                .map_err(|e| SoundError::external(format!("GPU IR forward launch failed: {e:?}")))?;
 
             Ok(())
         })?;
@@ -387,5 +423,68 @@ impl PartitionedConvolver {
         };
 
         gpu.compute().create_pipeline(pipeline_spec)
+    }
+}
+
+fn validate_gpu_ir_snapshot(snapshot: &GpuIrSnapshot, fft_size: usize) -> SoundResult<()> {
+    crate::debug_validate!(
+        snapshot.sample_count > 0,
+        ErrorCode::InvalidArgument,
+        "GPU impulse response must not be empty"
+    );
+    crate::debug_validate!(
+        snapshot.sample_count as usize <= fft_size,
+        ErrorCode::InvalidArgument,
+        "GPU impulse response length {} exceeds FFT size {}",
+        snapshot.sample_count,
+        fft_size
+    );
+    if snapshot.buffer.is_none() {
+        return Err(SoundError::invalid_argument("GPU IR snapshot has no buffer"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_ir_validation_rejects_missing_buffer() {
+        let snapshot = gpu_ir_snapshot(1);
+
+        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn gpu_ir_validation_rejects_empty_ir() {
+        let snapshot = gpu_ir_snapshot(0);
+
+        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn gpu_ir_validation_rejects_ir_larger_than_fft() {
+        let snapshot = gpu_ir_snapshot(16);
+
+        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    fn gpu_ir_snapshot(sample_count: u32) -> GpuIrSnapshot {
+        GpuIrSnapshot {
+            buffer: None,
+            byte_size: sample_count as usize * std::mem::size_of::<IrSample>(),
+            sample_rate: 48_000,
+            sample_count,
+            energy: None,
+            scene_version: 1,
+            query_id: 0,
+        }
     }
 }

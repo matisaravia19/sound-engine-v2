@@ -396,7 +396,11 @@ impl GpuAllocator {
         Ok(())
     }
 
-    fn copy_buffer(
+    /// Copies bytes between GPU buffers and optionally records a barrier after the transfer.
+    ///
+    /// The copy is submitted synchronously on the compute queue. Callers provide
+    /// a barrier when later GPU or host work must observe the copied bytes.
+    pub(crate) fn copy_buffer(
         &self,
         src: &BufferHandle,
         dst: &BufferHandle,

@@ -1,4 +1,6 @@
-use crate::acoustics::{AcousticPipeline, AcousticQuery, IrCache, IrCacheConfig, IrCacheQuery, IrSnapshot};
+use crate::acoustics::{
+    AcousticPipeline, AcousticQuery, GpuIrSnapshot, IrCache, IrCacheConfig, IrCacheQuery, IrSnapshot,
+};
 use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
 use crate::core::error::{SoundError, SoundResult};
 use crate::engine::{ListenerPose, PointSource};
@@ -56,28 +58,50 @@ impl AcousticsEngine {
         source: PointSource,
         listener: ListenerPose,
     ) -> SoundResult<IrSnapshot> {
+        let snapshot = self.build_impulse_response_gpu(gpu, source, listener)?;
+        self.pipeline.download_gpu_ir(gpu, &snapshot)
+    }
+
+    /// Builds or reuses a GPU-resident acoustic impulse response for a source/listener pair.
+    pub fn build_impulse_response_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<GpuIrSnapshot> {
         validate_source(source)?;
         validate_listener(listener)?;
 
         let cache_query = cache_query(self.scene.version(), source, listener);
-        if let Some(snapshot) = self.cache.get(cache_query) {
+        if let Some(snapshot) = self.cache.get_ir(cache_query) {
             return Ok(snapshot);
         }
 
-        // Building an IR can update scene-side acceleration data, so the scene
-        // manager is passed mutably even though the acoustic query is read-only.
-        let snapshot = self.pipeline.build_ir(
-            gpu,
-            &mut self.scene,
-            AcousticQuery {
-                query_id: cache_query.query_id,
-                source_position: source.position,
-                listener_position: listener.position,
-                listener_right: listener.right,
-                source_energy: source.energy,
-            },
-        )?;
-        self.cache.insert(cache_query, snapshot.clone());
+        let hits = match self.cache.get_hits(cache_query) {
+            Some(hits) => hits,
+            None => {
+                // Tracing hits can update scene-side acceleration data, so the scene
+                // manager is passed mutably even though the acoustic query is read-only.
+                let hits = self.pipeline.trace_hits_gpu(
+                    gpu,
+                    &mut self.scene,
+                    AcousticQuery {
+                        query_id: cache_query.query_id,
+                        source_position: source.position,
+                        listener_position: listener.position,
+                        listener_right: listener.right,
+                        source_energy: source.energy,
+                    },
+                )?;
+                self.cache.insert_hits(cache_query, hits.clone());
+                hits
+            }
+        };
+
+        let snapshot = self
+            .pipeline
+            .build_ir_from_gpu_hits(gpu, &hits, listener.right, cache_query.query_id)?;
+        self.cache.insert_ir(cache_query, snapshot.clone());
         Ok(snapshot)
     }
 }
@@ -123,6 +147,7 @@ fn cache_config(config: CoreIrCacheConfig) -> IrCacheConfig {
         reuse_distance_meters: config.reuse_distance_meters,
         listener_right_dot_threshold: config.listener_right_dot_threshold,
         max_entries: config.max_entries,
+        max_gpu_cache_bytes: config.max_gpu_cache_bytes,
     }
 }
 
@@ -164,6 +189,7 @@ mod tests {
             reuse_distance_meters: 0.25,
             listener_right_dot_threshold: 0.9,
             max_entries: 4,
+            max_gpu_cache_bytes: 1234,
         };
         let acoustic = cache_config(config);
 
@@ -174,6 +200,7 @@ mod tests {
             config.listener_right_dot_threshold
         );
         assert_eq!(acoustic.max_entries, config.max_entries);
+        assert_eq!(acoustic.max_gpu_cache_bytes, config.max_gpu_cache_bytes);
     }
 
     #[test]

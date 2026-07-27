@@ -17,6 +17,7 @@ const WALL_HEIGHT: f32 = 3.0;
 const WALL_THICKNESS: f32 = 0.25;
 const DOOR_HALF_WIDTH: f32 = 1.0;
 const ROOF_THICKNESS: f32 = 0.2;
+const LISTENER_SPIN_RADIANS_PER_SECOND: f32 = std::f32::consts::PI * 0.125;
 
 struct PlaygroundScene {
     acoustic_mesh: AcousticMesh,
@@ -53,6 +54,8 @@ struct PlaygroundState {
     scene: PlaygroundScene,
     listener_index: usize,
     listener_rotation_index: usize,
+    listener_spin_enabled: bool,
+    listener_spin_angle: f32,
     source_index: usize,
     sound_source_id: Option<SoundSourceId>,
     ui: UiState,
@@ -71,6 +74,8 @@ impl PlaygroundState {
             scene: build_scene(scene_config),
             listener_index: 0,
             listener_rotation_index: 0,
+            listener_spin_enabled: false,
+            listener_spin_angle: 0.0,
             source_index: 0,
             sound_source_id: None,
             ui: UiState {
@@ -86,7 +91,22 @@ impl PlaygroundState {
     }
 
     fn listener_forward(&self) -> Vec3 {
-        listener_forward(self.listener_rotation_index)
+        if self.listener_spin_enabled {
+            listener_spin_forward(self.listener_spin_angle)
+        } else {
+            listener_forward(self.listener_rotation_index)
+        }
+    }
+
+    fn listener_rotation_label(&self) -> String {
+        if self.listener_spin_enabled {
+            format!(
+                "spinning {:.0} deg",
+                self.listener_spin_angle.rem_euclid(std::f32::consts::TAU).to_degrees()
+            )
+        } else {
+            listener_rotation_name(self.listener_rotation_index).to_owned()
+        }
     }
 
     fn listener_pose(&self) -> ListenerPose {
@@ -110,6 +130,23 @@ impl PlaygroundState {
 
     fn rebuild_scene(&mut self) {
         self.scene = build_scene(self.scene_config);
+    }
+
+    fn toggle_listener_spin(&mut self) {
+        self.listener_spin_enabled = !self.listener_spin_enabled;
+        if self.listener_spin_enabled {
+            self.listener_spin_angle = angle_from_forward(listener_forward(self.listener_rotation_index));
+        }
+    }
+
+    fn update_listener_spin(&mut self, frame_time_seconds: f32) -> bool {
+        if !self.listener_spin_enabled {
+            return false;
+        }
+
+        self.listener_spin_angle = (self.listener_spin_angle + LISTENER_SPIN_RADIANS_PER_SECOND * frame_time_seconds)
+            .rem_euclid(std::f32::consts::TAU);
+        true
     }
 }
 
@@ -144,6 +181,9 @@ fn main() -> SoundResult<()> {
     while !rl.window_should_close() {
         rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
         handle_config_keys(&rl, &mut engine, &mut state);
+        if state.update_listener_spin(rl.get_frame_time()) {
+            sync_listener(&mut engine, &mut state, "listener spin");
+        }
 
         if start_sound_requested(&rl) {
             state.ui.status = "Building IR and starting sound...".to_owned();
@@ -216,6 +256,7 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_FOUR) {
+        state.listener_spin_enabled = false;
         state.listener_rotation_index = next_index(state.listener_rotation_index, listener_rotation_count());
         sync_listener(engine, state, "listener rotation");
     }
@@ -228,6 +269,11 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
     if rl.is_key_pressed(KeyboardKey::KEY_SIX) {
         state.scene_config.outer_walls_enabled = !state.scene_config.outer_walls_enabled;
         reload_scene(engine, state, "outer walls");
+    }
+
+    if rl.is_key_pressed(KeyboardKey::KEY_SEVEN) {
+        state.toggle_listener_spin();
+        sync_listener(engine, state, "listener spin");
     }
 
     if bisector_plane_toggle_requested(rl) {
@@ -277,7 +323,7 @@ fn sync_listener(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &
             state.ui.status = format!(
                 "Changed {label}: {} / {}",
                 listener_position_name(state.listener_index),
-                listener_rotation_name(state.listener_rotation_index)
+                state.listener_rotation_label()
             );
         }
         Err(error) => {
@@ -329,6 +375,14 @@ fn listener_forward(index: usize) -> Vec3 {
         2 => Vec3::X,
         _ => -Vec3::Z,
     }
+}
+
+fn listener_spin_forward(angle_radians: f32) -> Vec3 {
+    Vec3::new(angle_radians.cos(), 0.0, angle_radians.sin())
+}
+
+fn angle_from_forward(forward: Vec3) -> f32 {
+    forward.z.atan2(forward.x)
 }
 
 fn listener_rotation_name(index: usize) -> &'static str {
@@ -620,7 +674,7 @@ fn draw_plane_line(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, start: Vec3, 
 
 fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundState) {
     let fps = d.get_fps();
-    d.draw_rectangle(12, 12, 800, 260, Color::new(12, 16, 20, 220));
+    d.draw_rectangle(12, 12, 800, 284, Color::new(12, 16, 20, 220));
 
     let button_color = Color::new(42, 128, 74, 255);
     d.draw_rectangle(24, 24, 160, 40, button_color);
@@ -668,7 +722,7 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
             on_off(state.scene_config.roof_enabled),
             if state.scene_config.door_open { "open" } else { "closed" },
             listener_position_name(state.listener_index),
-            listener_rotation_name(state.listener_rotation_index)
+            state.listener_rotation_label()
         ),
         24,
         162,
@@ -677,10 +731,9 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     );
     d.draw_text(
         &format!(
-            "5 source: {} | 6 outer walls: {} | bisector planes: {}",
+            "5 source: {} | 6 outer walls: {}",
             source_position_name(state.source_index),
-            on_off(state.scene_config.outer_walls_enabled),
-            on_off(state.ui.show_bisector_planes)
+            on_off(state.scene_config.outer_walls_enabled)
         ),
         24,
         186,
@@ -688,13 +741,24 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
         Color::LIGHTGRAY,
     );
     d.draw_text(
-        "Suggested next toggles: absorption preset, wall thickness, obstacle in doorway",
+        &format!(
+            "7 listener spin: {} | bisector planes: {}",
+            on_off(state.listener_spin_enabled),
+            on_off(state.ui.show_bisector_planes)
+        ),
         24,
         210,
         18,
+        Color::LIGHTGRAY,
+    );
+    d.draw_text(
+        "Suggested next toggles: absorption preset, wall thickness, obstacle in doorway",
+        24,
+        234,
+        18,
         Color::GRAY,
     );
-    d.draw_text(&state.ui.status, 24, 234, 18, Color::RAYWHITE);
+    d.draw_text(&state.ui.status, 24, 258, 18, Color::RAYWHITE);
 }
 
 fn on_off(value: bool) -> &'static str {
