@@ -109,7 +109,11 @@ struct TraceMeasurement {
     setup: Duration,
     cold_gpu: Duration,
     warm_gpu_median: Duration,
+    warm_gpu_p95: Duration,
+    warm_gpu_p99: Duration,
+    warm_gpu_max: Duration,
     readback_median: Duration,
+    readback_p99: Duration,
 }
 
 struct TimeDomainMetrics {
@@ -150,7 +154,8 @@ fn run_benchmarks(
 ) -> SoundResult<()> {
     writeln!(
         output,
-        "method,commit,case,rays,seed,max_bounces,gpu_setup_ms,setup_ms,cold_gpu_ms,warm_gpu_ms,readback_ms,\
+        "method,commit,case,rays,seed,max_bounces,gpu_setup_ms,setup_ms,cold_gpu_ms,warm_gpu_ms,warm_gpu_p95_ms,\
+warm_gpu_p99_ms,warm_gpu_max_ms,readback_ms,readback_p99_ms,\
 frequency_hz,measured_magnitude,exact_continuous_magnitude,exact_sampled_magnitude,\
 magnitude_error_db,phase_error_degrees,complex_relative_error,sampled_magnitude_error_db,\
 sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,exact_path_count,\
@@ -179,7 +184,7 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,nonze
 
             writeln!(
                 output,
-                "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
+                "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
 {:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{},{:.9},{:.9},{:.9},{:.9},{}",
                 case.name,
                 options.rays,
@@ -189,7 +194,11 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,nonze
                 milliseconds(measurement.setup),
                 milliseconds(measurement.cold_gpu),
                 milliseconds(measurement.warm_gpu_median),
+                milliseconds(measurement.warm_gpu_p95),
+                milliseconds(measurement.warm_gpu_p99),
+                milliseconds(measurement.warm_gpu_max),
                 milliseconds(measurement.readback_median),
+                milliseconds(measurement.readback_p99),
                 frequency,
                 measured.magnitude(),
                 exact_continuous.magnitude(),
@@ -246,12 +255,18 @@ fn trace_case(gpu: &VkBackend, options: &Options, case: &BenchmarkCase) -> Sound
         readback_times.push(readback_start.elapsed());
     }
 
+    warm_times.sort_unstable();
+    readback_times.sort_unstable();
     Ok(TraceMeasurement {
         ir,
         setup,
         cold_gpu,
-        warm_gpu_median: median_duration(&mut warm_times),
-        readback_median: median_duration(&mut readback_times),
+        warm_gpu_median: percentile_duration(&warm_times, 0.50),
+        warm_gpu_p95: percentile_duration(&warm_times, 0.95),
+        warm_gpu_p99: percentile_duration(&warm_times, 0.99),
+        warm_gpu_max: *warm_times.last().unwrap(),
+        readback_median: percentile_duration(&readback_times, 0.50),
+        readback_p99: percentile_duration(&readback_times, 0.99),
     })
 }
 
@@ -884,9 +899,9 @@ fn parse_value<T: std::str::FromStr>(args: &[String], index: usize, name: &str) 
         .map_err(|_| SoundError::invalid_argument(format!("invalid value for {name}")))
 }
 
-fn median_duration(values: &mut [Duration]) -> Duration {
-    values.sort_unstable();
-    values[values.len() / 2]
+fn percentile_duration(sorted: &[Duration], fraction: f64) -> Duration {
+    let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
+    sorted[index]
 }
 
 fn milliseconds(duration: Duration) -> f64 {
