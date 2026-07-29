@@ -232,6 +232,11 @@ impl AcousticPipeline {
             );
             Ok(())
         })?;
+        // The submission above is synchronous, so no descriptor or command
+        // buffer can still reference this per-query TLAS. Releasing it here
+        // prevents moving sources/listeners from retaining one acceleration
+        // structure and backing allocation per acoustic update.
+        gpu.rt().destroy_tlas(tlas_id)?;
 
         Ok(GpuIrSnapshot {
             buffer: Some(ir_buffer),

@@ -189,9 +189,34 @@ impl RtContext {
             .tlas
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT TLAS lock is poisoned"))?;
-        let id = TlasId(tlas.len() as u32);
+        // Query TLAS handles may be destroyed after a synchronous trace. Find
+        // a vacant small ID instead of deriving one from map length, which can
+        // collide when removals leave gaps.
+        let mut raw_id = 0_u32;
+        while tlas.contains_key(&TlasId(raw_id)) {
+            raw_id = raw_id
+                .checked_add(1)
+                .ok_or_else(|| SoundError::resource_allocation_failed("RT TLAS id space exhausted"))?;
+        }
+        let id = TlasId(raw_id);
         tlas.insert(id, handle);
         Ok(id)
+    }
+
+    /// Destroys a TLAS that is no longer referenced by submitted GPU work.
+    ///
+    /// The caller must first complete every command buffer that uses `id`.
+    /// Removing the handle releases both the Vulkan acceleration structure and
+    /// its backing allocation. A later synchronous query may reuse the small ID.
+    pub fn destroy_tlas(&self, id: TlasId) -> SoundResult<()> {
+        let handle = self
+            .tlas
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("RT TLAS lock is poisoned"))?
+            .remove(&id)
+            .ok_or_else(|| SoundError::not_found(format!("Invalid TLAS id {}", id.0)))?;
+        drop(handle);
+        Ok(())
     }
 
     fn build_acceleration_structure(
