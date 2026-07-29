@@ -172,12 +172,20 @@ float randomFloat(inout uint state) {
 // The Fibonacci lattice covers the sphere with nearly equal-area directions.
 // A seed-dependent global azimuth rotation keeps the distribution stable for a
 // fixed seed while allowing callers to choose a different deterministic set.
-vec3 fibonacciSphereDirection(uint ray_index, uint ray_count, float azimuth_rotation) {
+vec3 fibonacciSphereDirection(uint ray_index, uint ray_count, uint azimuth_rotation) {
     float index = float(ray_index);
     float count = float(max(ray_count, 1u));
     float z = 1.0 - 2.0 * ((index + 0.5) / count);
     float radius = sqrt(max(0.0, 1.0 - z * z));
-    float phi = index * 2.39996322972865332 + azimuth_rotation;
+    // Computing index * golden_angle directly in float loses nearly all
+    // azimuth precision once the launch reaches a few million rays: the
+    // unreduced product is millions of radians, so adjacent indices quantize
+    // to the same handful of angles. Multiplication by 0x61c88647 performs the
+    // same golden-ratio rotation modulo 2^32 using exact integer wraparound.
+    // Taking the high 24 bits is exactly representable by float and retains a
+    // stable, uniformly rotated lattice throughout the supported launch range.
+    uint phase = ray_index * 0x61c88647u + azimuth_rotation;
+    float phi = TWO_PI * float(phase >> 8) * (1.0 / 16777216.0);
     return vec3(cos(phi) * radius, sin(phi) * radius, z);
 }
 
@@ -798,7 +806,7 @@ void main() {
     // Each invocation receives an independent deterministic continuation stream.
     // The Fibonacci rotation depends only on the seed, preserving even coverage.
     uint random_state = hashState(ray_index ^ pc.sampling_seed ^ 0xa511e9b3u);
-    float azimuth_rotation = TWO_PI * float(hashState(pc.sampling_seed) >> 8) * (1.0 / 16777216.0);
+    uint azimuth_rotation = hashState(pc.sampling_seed);
     vec3 initial_direction = fibonacciSphereDirection(ray_index, pc.listener_ray_count, azimuth_rotation);
     vec3 origin = pc.listener_position;
     vec3 direction = initial_direction;
