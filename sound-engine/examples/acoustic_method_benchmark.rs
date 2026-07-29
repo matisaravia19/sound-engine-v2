@@ -317,6 +317,14 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
     let diffraction_source = vec3(-2.0, 0.0, 3.0);
     let diffraction_listener = vec3(-2.0, 0.0, -3.0);
     let exterior_wedge_angle = 1.5 * PI;
+    let diffraction_exact = btm_diffraction_paths(
+        diffraction_source,
+        diffraction_listener,
+        exterior_wedge_angle,
+        -DIFFRACTION_EDGE_HALF_LENGTH,
+        DIFFRACTION_EDGE_HALF_LENGTH,
+        DIFFRACTION_QUADRATURE_SEGMENTS,
+    );
 
     vec![
         BenchmarkCase {
@@ -452,14 +460,31 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
             // exact first-order solution for an infinite rigid wedge. Truncating
             // the integral to the authored edge gives the standard finite-edge
             // first-order reference used by interactive geometric acoustics.
-            exact_paths: btm_diffraction_paths(
-                diffraction_source,
-                diffraction_listener,
-                exterior_wedge_angle,
-                -DIFFRACTION_EDGE_HALF_LENGTH,
-                DIFFRACTION_EDGE_HALF_LENGTH,
-                DIFFRACTION_QUADRATURE_SEGMENTS,
+            exact_paths: diffraction_exact.clone(),
+        },
+        BenchmarkCase {
+            name: "diffraction_proxy_radius_020",
+            source: diffraction_source,
+            listener: diffraction_listener,
+            max_bounces: 1,
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.20,
             ),
+            exact_paths: diffraction_exact.clone(),
+        },
+        BenchmarkCase {
+            name: "diffraction_proxy_radius_090",
+            source: diffraction_source,
+            listener: diffraction_listener,
+            max_bounces: 1,
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.90,
+            ),
+            exact_paths: diffraction_exact,
         },
     ]
 }
