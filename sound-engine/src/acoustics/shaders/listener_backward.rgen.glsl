@@ -446,9 +446,20 @@ void connectSurfaceToSource(
     // Apply spreading once to the complete listener-to-vertex-to-source path.
     // path_throughput excludes the initial spherical Monte Carlo normalization.
     float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
+    // A normalized reflection lobe is a density in source-connection solid
+    // angle, while this estimator integrates uniformly sampled listener solid
+    // angle. For a planar first reflection, perturbing the listener direction
+    // changes the source-connection mismatch by total_length/source_distance
+    // in each of its two angular dimensions. This determinant converts between
+    // those measures and makes the narrow-lobe limit reproduce the exact image
+    // source. It is intentionally evaluated here as an experiment: curved
+    // geometry and later vertices require the full accumulated path Jacobian.
+    float angular_scale = total_path_length / max(source_distance, RAY_EPSILON);
+    float source_connection_jacobian = angular_scale * angular_scale;
     float amplitude = pc.source_amplitude
         * path_throughput
         * local_response
+        * source_connection_jacobian
         * spreading
         * monte_carlo_normalization;
     depositPressure(total_path_length, amplitude, listener_arrival_direction);
