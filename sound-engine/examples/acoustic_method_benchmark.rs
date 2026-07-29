@@ -107,6 +107,14 @@ struct TraceMeasurement {
     readback_median: Duration,
 }
 
+struct TimeDomainMetrics {
+    relative_l1: f64,
+    relative_l2: f64,
+    measured_pressure_sum: f64,
+    exact_pressure_sum: f64,
+    nonzero_samples: usize,
+}
+
 fn main() -> SoundResult<()> {
     let options = parse_options()?;
     let gpu_start = Instant::now();
@@ -140,7 +148,8 @@ fn run_benchmarks(
         "method,commit,case,rays,seed,max_bounces,gpu_setup_ms,setup_ms,cold_gpu_ms,warm_gpu_ms,readback_ms,\
 frequency_hz,measured_magnitude,exact_continuous_magnitude,exact_sampled_magnitude,\
 magnitude_error_db,phase_error_degrees,complex_relative_error,sampled_magnitude_error_db,\
-sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,exact_path_count"
+sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,exact_path_count,\
+time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,nonzero_samples"
     )?;
 
     for case in cases {
@@ -149,6 +158,7 @@ sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,ex
         }
         let measurement = trace_case(gpu, options, &case)?;
         let exact_samples = exact_fractional_ir(&case.exact_paths);
+        let time_metrics = time_domain_metrics(&measurement.ir.samples, &exact_samples);
         for &frequency in FREQUENCIES_HZ {
             let measured = transfer_from_samples(&measurement.ir.samples, frequency);
             let exact_continuous = exact_transfer(&case.exact_paths, frequency);
@@ -165,7 +175,7 @@ sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,ex
             writeln!(
                 output,
                 "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
-{:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{}",
+{:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{},{:.9},{:.9},{:.9},{:.9},{}",
                 case.name,
                 options.rays,
                 options.seed,
@@ -187,6 +197,11 @@ sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,ex
                 sampled_complex_relative_error,
                 measurement.ir.energy,
                 case.exact_paths.len(),
+                time_metrics.relative_l1,
+                time_metrics.relative_l2,
+                time_metrics.measured_pressure_sum,
+                time_metrics.exact_pressure_sum,
+                time_metrics.nonzero_samples,
             )?;
         }
     }
@@ -406,6 +421,34 @@ fn transfer_from_f64_samples(samples: &[f64], frequency_hz: f64) -> Complex {
         result += Complex::from_polar(sample, angular_step * index as f64);
     }
     result
+}
+
+fn time_domain_metrics(measured: &[IrSample], exact: &[f64]) -> TimeDomainMetrics {
+    let mut l1_error = 0.0;
+    let mut l2_error = 0.0;
+    let mut exact_l1 = 0.0;
+    let mut exact_l2 = 0.0;
+    let mut measured_pressure_sum = 0.0;
+    let mut exact_pressure_sum = 0.0;
+    let mut nonzero_samples = 0;
+    for (measured, exact) in measured.iter().zip(exact) {
+        let measured = measured.left as f64;
+        let difference = measured - exact;
+        l1_error += difference.abs();
+        l2_error += difference * difference;
+        exact_l1 += exact.abs();
+        exact_l2 += exact * exact;
+        measured_pressure_sum += measured;
+        exact_pressure_sum += exact;
+        nonzero_samples += usize::from(measured != 0.0);
+    }
+    TimeDomainMetrics {
+        relative_l1: l1_error / exact_l1.max(1.0e-15),
+        relative_l2: l2_error.sqrt() / exact_l2.sqrt().max(1.0e-15),
+        measured_pressure_sum,
+        exact_pressure_sum,
+        nonzero_samples,
+    }
 }
 
 fn parallel_image_paths(
