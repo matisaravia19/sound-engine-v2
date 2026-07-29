@@ -1,4 +1,4 @@
-use crate::acoustics::{GpuAcousticHitSnapshot, GpuIrSnapshot};
+use crate::acoustics::GpuIrSnapshot;
 use crate::scene::SceneVersion;
 use glam::Vec3;
 use std::collections::{HashMap, VecDeque};
@@ -14,7 +14,7 @@ pub struct IrCacheConfig {
     pub listener_right_dot_threshold: f32,
     /// Maximum cached IR snapshots retained per engine instance.
     pub max_entries: usize,
-    /// Maximum GPU memory retained by cached hit and IR buffers.
+    /// Maximum GPU memory retained by cached IR buffers.
     pub max_gpu_cache_bytes: usize,
 }
 
@@ -39,32 +39,23 @@ pub struct IrCacheQuery {
     pub query_id: u32,
     /// Source position in world meters.
     pub source_position: Vec3,
-    /// Acoustic source energy baked into the cached IR.
-    pub source_energy: f32,
+    /// Reference source pressure amplitude baked into the cached IR.
+    pub source_amplitude: f32,
     /// Listener position in world meters.
     pub listener_position: Vec3,
     /// Listener right-ear direction in world space.
     pub listener_right: Vec3,
 }
 
-/// Small LRU cache for acoustic hits and direction-specific IR snapshots.
+/// Small GPU IR LRU cache keyed by scene and oriented source/listener state.
 ///
-/// Hit entries are invalidated by scene version and quantized source/listener
-/// position. IR entries add listener orientation tolerance on top, so turning
-/// the listener can rebuild an IR from cached hits without relaunching tracing.
+/// Entries retain reference-counted GPU buffers; eviction releases only the
+/// cache's ownership and requires neither readback nor a hit-level snapshot.
 pub struct IrCache {
     cfg: IrCacheConfig,
-    hit_entries: HashMap<LocationCacheKey, HitCacheEntry>,
-    hit_lru: VecDeque<LocationCacheKey>,
-    ir_entries: HashMap<LocationCacheKey, Vec<IrCacheEntry>>,
-    ir_lru: VecDeque<IrCacheKey>,
+    entries: HashMap<LocationCacheKey, Vec<IrCacheEntry>>,
+    lru: VecDeque<IrCacheKey>,
     gpu_bytes: usize,
-}
-
-#[derive(Clone)]
-struct HitCacheEntry {
-    query: IrCacheQuery,
-    snapshot: GpuAcousticHitSnapshot,
 }
 
 #[derive(Clone)]
@@ -92,51 +83,13 @@ impl IrCache {
     pub fn new(cfg: IrCacheConfig) -> Self {
         Self {
             cfg,
-            hit_entries: HashMap::new(),
-            hit_lru: VecDeque::new(),
-            ir_entries: HashMap::new(),
-            ir_lru: VecDeque::new(),
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
             gpu_bytes: 0,
         }
     }
 
-    /// Returns reusable hit data when scene, source, and listener position remain within tolerance.
-    pub fn get_hits(&mut self, query: IrCacheQuery) -> Option<GpuAcousticHitSnapshot> {
-        if !self.is_enabled() {
-            return None;
-        }
-
-        let key = self.location_key(query);
-        let snapshot = {
-            let entry = self.hit_entries.get(&key)?;
-            if !self.can_reuse_hits(entry, query) {
-                return None;
-            }
-            entry.snapshot.clone()
-        };
-
-        self.touch_hits(key);
-        Some(snapshot)
-    }
-
-    /// Inserts or replaces hit data for the given source/listener location state.
-    pub fn insert_hits(&mut self, query: IrCacheQuery, snapshot: GpuAcousticHitSnapshot) {
-        if !self.is_enabled() {
-            return;
-        }
-
-        let key = self.location_key(query);
-        if let Some(previous) = self.hit_entries.insert(key, HitCacheEntry { query, snapshot }) {
-            self.gpu_bytes = self.gpu_bytes.saturating_sub(previous.snapshot.byte_size);
-        }
-        if let Some(entry) = self.hit_entries.get(&key) {
-            self.gpu_bytes = self.gpu_bytes.saturating_add(entry.snapshot.byte_size);
-        }
-        self.touch_hits(key);
-        self.evict_to_limit();
-    }
-
-    /// Returns a reusable IR snapshot when location and listener orientation remain within tolerance.
+    /// Returns a reusable GPU IR when the full acoustic query remains within tolerance.
     pub fn get_ir(&mut self, query: IrCacheQuery) -> Option<GpuIrSnapshot> {
         if !self.is_enabled() {
             return None;
@@ -144,23 +97,23 @@ impl IrCache {
 
         let location = self.location_key(query);
         let (index, snapshot) = {
-            let entries = self.ir_entries.get(&location)?;
+            let entries = self.entries.get(&location)?;
             let (index, entry) = entries
                 .iter()
                 .enumerate()
-                .find(|(_, entry)| self.can_reuse_ir(entry, query))?;
+                .find(|(_, entry)| self.can_reuse(entry, query))?;
             (index, entry.snapshot.clone())
         };
 
-        self.touch_ir(self.ir_key_for_query(query));
-        if let Some(entries) = self.ir_entries.get_mut(&location) {
+        self.touch(self.key_for_query(query));
+        if let Some(entries) = self.entries.get_mut(&location) {
             let entry = entries.remove(index);
             entries.push(entry);
         }
         Some(snapshot)
     }
 
-    /// Inserts or replaces an IR snapshot for the given source/listener direction state.
+    /// Inserts a GPU IR for the given source/listener state.
     pub fn insert_ir(&mut self, query: IrCacheQuery, snapshot: GpuIrSnapshot) {
         if !self.is_enabled() {
             return;
@@ -168,34 +121,27 @@ impl IrCache {
 
         let location = self.location_key(query);
         self.gpu_bytes = self.gpu_bytes.saturating_add(snapshot.byte_size);
-        self.ir_entries
+        self.entries
             .entry(location)
             .or_default()
             .push(IrCacheEntry { query, snapshot });
-        self.touch_ir(self.ir_key_for_query(query));
+        self.touch(self.key_for_query(query));
         self.evict_to_limit();
     }
 
     /// Drops all cached snapshots.
     pub fn clear(&mut self) {
-        self.hit_entries.clear();
-        self.hit_lru.clear();
-        self.ir_entries.clear();
-        self.ir_lru.clear();
+        self.entries.clear();
+        self.lru.clear();
         self.gpu_bytes = 0;
     }
 
     /// Returns the number of retained IR snapshots.
     pub fn len(&self) -> usize {
-        self.ir_entries.values().map(Vec::len).sum()
+        self.entries.values().map(Vec::len).sum()
     }
 
-    /// Returns the number of retained hit snapshots.
-    pub fn hit_len(&self) -> usize {
-        self.hit_entries.len()
-    }
-
-    /// Returns GPU cache bytes currently retained by this cache.
+    /// Returns GPU bytes currently retained by the cache.
     pub fn gpu_bytes(&self) -> usize {
         self.gpu_bytes
     }
@@ -209,27 +155,17 @@ impl IrCache {
             && self.cfg.max_gpu_cache_bytes > 0
     }
 
-    fn can_reuse_hits(&self, entry: &HitCacheEntry, query: IrCacheQuery) -> bool {
+    fn can_reuse(&self, entry: &IrCacheEntry, query: IrCacheQuery) -> bool {
         entry.query.scene_version == query.scene_version
             && entry.query.source_position.distance(query.source_position) <= self.cfg.reuse_distance_meters
-            && (entry.query.source_energy - query.source_energy).abs() <= f32::EPSILON
+            && (entry.query.source_amplitude - query.source_amplitude).abs() <= f32::EPSILON
             && entry.query.listener_position.distance(query.listener_position) <= self.cfg.reuse_distance_meters
-    }
-
-    fn can_reuse_ir(&self, entry: &IrCacheEntry, query: IrCacheQuery) -> bool {
-        self.can_reuse_location(entry.query, query)
-            && self.can_reuse_listener_right(entry.query.listener_right, query.listener_right)
-    }
-
-    fn can_reuse_listener_right(&self, cached: Vec3, requested: Vec3) -> bool {
-        cached.normalize_or_zero().dot(requested.normalize_or_zero()) >= self.cfg.listener_right_dot_threshold
-    }
-
-    fn can_reuse_location(&self, cached: IrCacheQuery, requested: IrCacheQuery) -> bool {
-        cached.scene_version == requested.scene_version
-            && cached.source_position.distance(requested.source_position) <= self.cfg.reuse_distance_meters
-            && (cached.source_energy - requested.source_energy).abs() <= f32::EPSILON
-            && cached.listener_position.distance(requested.listener_position) <= self.cfg.reuse_distance_meters
+            && entry
+                .query
+                .listener_right
+                .normalize_or_zero()
+                .dot(query.listener_right.normalize_or_zero())
+                >= self.cfg.listener_right_dot_threshold
     }
 
     fn location_key(&self, query: IrCacheQuery) -> LocationCacheKey {
@@ -241,79 +177,39 @@ impl IrCache {
         }
     }
 
-    fn ir_key_for_query(&self, query: IrCacheQuery) -> IrCacheKey {
+    fn key_for_query(&self, query: IrCacheQuery) -> IrCacheKey {
         IrCacheKey {
             location: self.location_key(query),
             listener_right_cell: quantize_direction(query.listener_right, self.cfg.listener_right_dot_threshold),
         }
     }
 
-    fn touch_hits(&mut self, key: LocationCacheKey) {
-        self.hit_lru.retain(|existing| *existing != key);
-        self.hit_lru.push_back(key);
-    }
-
-    fn touch_ir(&mut self, key: IrCacheKey) {
-        self.ir_lru.retain(|existing| *existing != key);
-        self.ir_lru.push_back(key);
+    fn touch(&mut self, key: IrCacheKey) {
+        self.lru.retain(|existing| *existing != key);
+        self.lru.push_back(key);
     }
 
     fn evict_to_limit(&mut self) {
-        while self.hit_entries.len() > self.cfg.max_entries
-            || self.len() > self.cfg.max_entries
-            || self.gpu_bytes > self.cfg.max_gpu_cache_bytes
-        {
-            if self.len() > self.cfg.max_entries || self.should_evict_ir_first() {
-                if !self.evict_oldest_ir() && !self.evict_oldest_hits() {
-                    break;
-                }
-            } else if !self.evict_oldest_hits() && !self.evict_oldest_ir() {
+        while self.len() > self.cfg.max_entries || self.gpu_bytes > self.cfg.max_gpu_cache_bytes {
+            let Some(oldest) = self.lru.pop_front() else {
                 break;
+            };
+            let threshold = self.cfg.listener_right_dot_threshold;
+            if let Some(entries) = self.entries.get_mut(&oldest.location) {
+                if let Some(index) = entries.iter().position(|entry| {
+                    IrCacheKey {
+                        location: oldest.location,
+                        listener_right_cell: quantize_direction(entry.query.listener_right, threshold),
+                    } == oldest
+                }) {
+                    let entry = entries.remove(index);
+                    self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
+                }
+                if entries.is_empty() {
+                    self.entries.remove(&oldest.location);
+                }
             }
         }
-    }
-
-    fn should_evict_ir_first(&self) -> bool {
-        self.hit_entries.len() <= self.cfg.max_entries && !self.ir_lru.is_empty()
-    }
-
-    fn evict_oldest_hits(&mut self) -> bool {
-        let Some(oldest) = self.hit_lru.pop_front() else {
-            return false;
-        };
-        if let Some(entry) = self.hit_entries.remove(&oldest) {
-            self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
-        }
-        if let Some(entries) = self.ir_entries.remove(&oldest) {
-            for entry in entries {
-                self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
-            }
-        }
-        self.ir_lru.retain(|key| key.location != oldest);
-        true
-    }
-
-    fn evict_oldest_ir(&mut self) -> bool {
-        let Some(oldest) = self.ir_lru.pop_front() else {
-            return false;
-        };
-        let listener_right_dot_threshold = self.cfg.listener_right_dot_threshold;
-        if let Some(entries) = self.ir_entries.get_mut(&oldest.location) {
-            if let Some(index) = entries.iter().position(|entry| {
-                IrCacheKey {
-                    location: oldest.location,
-                    listener_right_cell: quantize_direction(entry.query.listener_right, listener_right_dot_threshold),
-                } == oldest
-            }) {
-                let entry = entries.remove(index);
-                self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
-            }
-            if entries.is_empty() {
-                self.ir_entries.remove(&oldest.location);
-            }
-            return true;
-        }
-        true
     }
 }
 
@@ -321,8 +217,7 @@ fn quantize_direction(direction: Vec3, dot_threshold: f32) -> [i32; 3] {
     if !dot_threshold.is_finite() {
         return [0; 3];
     }
-    let cell_size = (1.0 - dot_threshold).max(0.001);
-    quantize_position(direction.normalize_or_zero(), cell_size)
+    quantize_position(direction.normalize_or_zero(), (1.0 - dot_threshold).max(0.001))
 }
 
 fn quantize_position(position: Vec3, cell_size: f32) -> [i32; 3] {
@@ -338,24 +233,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hit_cache_ignores_listener_direction() {
+    fn cache_respects_listener_direction() {
         let mut cache = IrCache::new(IrCacheConfig::default());
-        let query = query(Vec3::X);
-        let snapshot = hit_snapshot(query);
-        cache.insert_hits(query, snapshot.clone());
-
-        let mut rotated = query;
-        rotated.listener_right = Vec3::Z;
-
-        assert!(cache.get_hits(rotated).is_some());
-    }
-
-    #[test]
-    fn ir_cache_respects_listener_direction() {
-        let mut cache = IrCache::new(IrCacheConfig {
-            listener_right_dot_threshold: 0.98,
-            ..IrCacheConfig::default()
-        });
         let query = query(Vec3::X);
         cache.insert_ir(query, ir_snapshot(query));
 
@@ -366,34 +245,36 @@ mod tests {
     }
 
     #[test]
-    fn hit_cache_rejects_moved_locations() {
+    fn cache_rejects_moved_locations_and_changed_amplitude() {
         let mut cache = IrCache::new(IrCacheConfig::default());
         let query = query(Vec3::X);
-        cache.insert_hits(query, hit_snapshot(query));
+        cache.insert_ir(query, ir_snapshot(query));
 
         let mut moved = query;
         moved.listener_position = Vec3::new(10.0, 0.0, 0.0);
+        assert!(cache.get_ir(moved).is_none());
 
-        assert!(cache.get_hits(moved).is_none());
+        let mut changed = query;
+        changed.source_amplitude = 2.0;
+        assert!(cache.get_ir(changed).is_none());
     }
 
     #[test]
     fn gpu_byte_budget_evicts_old_entries() {
         let mut cache = IrCache::new(IrCacheConfig {
-            max_gpu_cache_bytes: 96,
+            max_gpu_cache_bytes: 48,
             ..IrCacheConfig::default()
         });
         let first = query(Vec3::X);
         let mut second = query(Vec3::X);
         second.listener_position = Vec3::new(1.0, 0.0, 0.0);
 
-        cache.insert_hits(first, hit_snapshot(first));
         cache.insert_ir(first, ir_snapshot(first));
-        cache.insert_hits(second, hit_snapshot(second));
+        cache.insert_ir(second, ir_snapshot(second));
 
-        assert!(cache.gpu_bytes() <= 96);
-        assert!(cache.get_hits(first).is_none());
-        assert!(cache.get_hits(second).is_some());
+        assert!(cache.gpu_bytes() <= 48);
+        assert!(cache.get_ir(first).is_none());
+        assert!(cache.get_ir(second).is_some());
     }
 
     fn query(listener_right: Vec3) -> IrCacheQuery {
@@ -401,22 +282,9 @@ mod tests {
             scene_version: 1,
             query_id: 0,
             source_position: Vec3::ZERO,
-            source_energy: 1.0,
+            source_amplitude: 1.0,
             listener_position: Vec3::Y,
             listener_right,
-        }
-    }
-
-    fn hit_snapshot(query: IrCacheQuery) -> GpuAcousticHitSnapshot {
-        GpuAcousticHitSnapshot {
-            buffer: None,
-            hit_capacity: 1,
-            byte_size: 64,
-            scene_version: query.scene_version,
-            query_id: query.query_id,
-            source_position: query.source_position,
-            source_energy: query.source_energy,
-            listener_position: query.listener_position,
         }
     }
 

@@ -26,6 +26,6 @@ pub struct ListenerPose {
 pub struct PointSource {
     /// Source position in world meters.
     pub position: Vec3,
-    /// Acoustic source energy before acoustic attenuation.
-    pub energy: f32,
+    /// Reference pressure amplitude before acoustic attenuation.
+    pub amplitude: f32,
 }

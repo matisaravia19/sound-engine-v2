@@ -18,11 +18,7 @@ fn main() -> SoundResult<()> {
     let sample_rate = 48_000;
     let source_position = vec3(0.0, 0.0, 0.0);
     let listener_position = vec3(0.0, 0.7, 0.0);
-    let listener_radius = 0.35;
-    let mut pipeline = AcousticPipeline::new(
-        &gpu,
-        engine_config(sample_rate, sample_rate, listener_radius, 1_000_000, 10),
-    )?;
+    let mut pipeline = AcousticPipeline::new(&gpu, engine_config(sample_rate, sample_rate, 1_000_000, 10))?;
 
     let ir = pipeline.build_ir(
         &gpu,
@@ -32,7 +28,7 @@ fn main() -> SoundResult<()> {
             source_position,
             listener_position,
             listener_right: vec3(1.0, 0.0, 0.0),
-            source_energy: 500.0,
+            source_amplitude: 500.0,
         },
     )?;
 
@@ -71,13 +67,7 @@ fn main() -> SoundResult<()> {
     Ok(())
 }
 
-fn engine_config(
-    sample_rate: u32,
-    ir_num_samples: u32,
-    listener_radius: f32,
-    rays_per_query: u32,
-    max_bounces: u32,
-) -> EngineConfig {
+fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
     EngineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Stereo,
@@ -85,9 +75,11 @@ fn engine_config(
             ir_num_samples,
         },
         acoustics: AcousticsConfig {
-            listener_radius,
-            rays_per_query,
+            listener_ray_count,
             max_bounces,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: 1024 },
@@ -106,6 +98,7 @@ fn reflective_environment_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.25],
             scattering: 0.0,
+            roughness: 0.05,
             transmission: None,
         }],
         objects: vec![SceneObject {

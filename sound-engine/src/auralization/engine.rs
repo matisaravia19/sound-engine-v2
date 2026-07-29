@@ -333,9 +333,11 @@ mod tests {
                 ir_num_samples: 128,
             },
             acoustics: crate::core::config::AcousticsConfig {
-                listener_radius: 0.2,
-                rays_per_query: 1,
+                listener_ray_count: 1,
                 max_bounces: 0,
+                maximum_path_length: 343.0,
+                minimum_throughput: 1.0e-6,
+                sampling_seed: 0,
             },
             cache: crate::core::config::IrCacheConfig::default(),
             auralization: crate::core::config::AuralizationConfig { block_size: 64 },

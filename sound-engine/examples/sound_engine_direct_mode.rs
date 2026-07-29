@@ -28,7 +28,7 @@ fn main() -> SoundResult<()> {
         sound_id,
         source: PointSource {
             position: vec3(-3.0, 0.5, 2.0),
-            energy: 1_000.0,
+            amplitude: 1_000.0,
         },
         volume: 0.8,
     })?;
@@ -59,9 +59,11 @@ fn engine_config() -> EngineConfig {
             ir_num_samples: IR_SAMPLES,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.5,
-            rays_per_query: 262_144,
+            listener_ray_count: 262_144,
             max_bounces: 8,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
@@ -80,6 +82,7 @@ fn box_room_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.08],
             scattering: 0.15,
+            roughness: 0.15,
             transmission: None,
         }],
         objects: vec![SceneObject {

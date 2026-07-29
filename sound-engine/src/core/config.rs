@@ -46,12 +46,16 @@ impl OutputChannels {
 /// Runtime configuration for acoustic simulation and ray tracing.
 #[derive(Debug, Clone, Copy)]
 pub struct AcousticsConfig {
-    /// Listener capture sphere radius in world meters, centered on each query listener position.
-    pub listener_radius: f32,
-    /// Ray budget reserved for future stochastic reflection tracing.
-    pub rays_per_query: u32,
-    /// Maximum path depth reserved for future reflection tracing.
+    /// Number of Monte Carlo paths launched from the listener for each query.
+    pub listener_ray_count: u32,
+    /// Maximum number of surface or diffraction interactions per path.
     pub max_bounces: u32,
+    /// Maximum completed or continued path length in world meters.
+    pub maximum_path_length: f32,
+    /// Absolute path-throughput threshold below which tracing stops.
+    pub minimum_throughput: f32,
+    /// Stable seed used to scramble listener directions and continuation samples.
+    pub sampling_seed: u32,
 }
 
 /// Runtime policy for acoustic impulse-response reuse.
@@ -65,7 +69,7 @@ pub struct IrCacheConfig {
     pub listener_right_dot_threshold: f32,
     /// Maximum cached IR snapshots retained per engine instance.
     pub max_entries: usize,
-    /// Maximum GPU memory used by acoustic hit and IR cache buffers.
+    /// Maximum GPU memory used by cached acoustic IR buffers.
     pub max_gpu_cache_bytes: usize,
 }
 

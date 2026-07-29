@@ -63,6 +63,7 @@ fn two_triangle_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.2],
             scattering: 0.1,
+            roughness: 0.1,
             transmission: None,
         }],
         objects: vec![

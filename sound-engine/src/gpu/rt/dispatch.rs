@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     core::error::{ErrorCode, SoundError, SoundResult},
-    gpu::compute::{BufferBarrierSpec, MemoryBarrierSpec},
+    gpu::compute::MemoryBarrierSpec,
 };
 
 /// One ray tracing dispatch recorded into a command buffer.

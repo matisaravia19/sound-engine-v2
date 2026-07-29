@@ -37,7 +37,9 @@ pub struct Material {
     pub absorption_bands: Vec<f32>,
     /// Scattering coefficient in `[0, 1]`.
     pub scattering: f32,
-    /// Optional transmission coefficients for future through-surface paths.
+    /// Width control for finite glossy reflection and transmission lobes in `[0, 1]`.
+    pub roughness: f32,
+    /// Optional transmission energy coefficients for through-surface paths.
     pub transmission: Option<Vec<f32>>,
 }
 

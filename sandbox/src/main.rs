@@ -124,7 +124,7 @@ impl PlaygroundState {
     fn point_source(&self) -> PointSource {
         PointSource {
             position: to_glam(self.source_position()),
-            energy: 1_000.0,
+            amplitude: 10.0,
         }
     }
 
@@ -222,9 +222,11 @@ fn engine_config(sample_rate: u32) -> EngineConfig {
             ir_num_samples: sample_rate * IR_SECONDS,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.35,
-            rays_per_query: 65_536,
+            listener_ray_count: 65_536,
             max_bounces: 3,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
@@ -561,6 +563,7 @@ fn scene_description(scene: &PlaygroundScene) -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.18],
             scattering: 0.12,
+            roughness: 0.15,
             transmission: None,
         }],
         objects: vec![SceneObject {

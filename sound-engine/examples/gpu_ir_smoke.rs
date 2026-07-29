@@ -15,7 +15,7 @@ fn main() -> SoundResult<()> {
     let mut scene = SceneManager::new();
     scene.load(smoke_scene())?;
 
-    let mut pipeline = AcousticPipeline::new(&gpu, engine_config(44_100, 44_100, 0.2, 1024, 0))?;
+    let mut pipeline = AcousticPipeline::new(&gpu, engine_config(44_100, 44_100, 1024, 0))?;
 
     let ir = pipeline.build_ir(
         &gpu,
@@ -25,7 +25,7 @@ fn main() -> SoundResult<()> {
             source_position: vec3(0.0, 0.0, 0.0),
             listener_position: vec3(1.0, 0.0, 0.0),
             listener_right: vec3(1.0, 0.0, 0.0),
-            source_energy: 1.0,
+            source_amplitude: 1.0,
         },
     )?;
 
@@ -52,13 +52,7 @@ fn main() -> SoundResult<()> {
     Ok(())
 }
 
-fn engine_config(
-    sample_rate: u32,
-    ir_num_samples: u32,
-    listener_radius: f32,
-    rays_per_query: u32,
-    max_bounces: u32,
-) -> EngineConfig {
+fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
     EngineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Stereo,
@@ -66,9 +60,11 @@ fn engine_config(
             ir_num_samples,
         },
         acoustics: AcousticsConfig {
-            listener_radius,
-            rays_per_query,
+            listener_ray_count,
             max_bounces,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: 1024 },
@@ -87,6 +83,7 @@ fn smoke_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.2],
             scattering: 0.1,
+            roughness: 0.1,
             transmission: None,
         }],
         objects: vec![SceneObject {

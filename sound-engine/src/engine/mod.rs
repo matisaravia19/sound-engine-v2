@@ -44,14 +44,17 @@ impl Default for ListenerPose {
 pub struct PointSource {
     /// Source position in world meters.
     pub position: Vec3,
-    /// Acoustic source energy used when generating an impulse response.
-    pub energy: f32,
+    /// Reference pressure amplitude used when generating an impulse response.
+    pub amplitude: f32,
 }
 
 impl PointSource {
-    /// Creates a point source with unit acoustic energy.
+    /// Creates a point source with unit reference pressure amplitude.
     pub fn new(position: Vec3) -> Self {
-        Self { position, energy: 1.0 }
+        Self {
+            position,
+            amplitude: 1.0,
+        }
     }
 }
 
@@ -67,7 +70,7 @@ pub struct PlaySpatialSoundRequest {
 }
 
 impl PlaySpatialSoundRequest {
-    /// Creates a play request with unit source energy and unit volume.
+    /// Creates a play request with unit source amplitude and unit volume.
     pub fn new(sound_id: SoundId, source_position: Vec3) -> Self {
         Self {
             sound_id,
@@ -155,7 +158,7 @@ impl SoundEngine {
         }
     }
 
-    /// Updates the transform and energy of an existing tracked source.
+    /// Updates the transform and amplitude of an existing tracked source.
     pub fn update_sound_source(&mut self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
         match self.mode_mut()? {
             EngineMode::Direct(core) => core.update_sound_source(id, source),
@@ -365,12 +368,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn play_request_defaults_to_unit_energy_and_volume() {
+    fn play_request_defaults_to_unit_amplitude_and_volume() {
         let request = PlaySpatialSoundRequest::new(7, Vec3::new(1.0, 2.0, 3.0));
 
         assert_eq!(request.sound_id, 7);
         assert_eq!(request.source.position, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(request.source.energy, 1.0);
+        assert_eq!(request.source.amplitude, 1.0);
         assert_eq!(request.volume, 1.0);
     }
 

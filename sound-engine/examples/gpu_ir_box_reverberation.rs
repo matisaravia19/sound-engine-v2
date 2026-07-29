@@ -21,7 +21,7 @@ fn main() -> SoundResult<()> {
     };
     let source = PointSource {
         position: source_position,
-        energy: 10_000.0,
+        amplitude: 10_000.0,
     };
 
     let mut engine = SoundEngine::new(engine_config())?;
@@ -95,9 +95,11 @@ fn engine_config() -> EngineConfig {
             ir_num_samples: IR_SAMPLES,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.25,
-            rays_per_query: 1_000_000,
+            listener_ray_count: 1_000_000,
             max_bounces: 16,
+            maximum_path_length: 686.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
@@ -116,6 +118,7 @@ fn box_room_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.02],
             scattering: 0.0,
+            roughness: 0.05,
             transmission: None,
         }],
         objects: vec![SceneObject {

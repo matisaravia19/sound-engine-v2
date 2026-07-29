@@ -38,18 +38,24 @@ void main() {
 
     // The diffraction primitive is represented as a finite plane strip around
     // the authored edge. The plane is virtual: it detects nearby rays, then
-    // closest-hit projects accepted hits back to the physical edge.
+    // ray generation projects accepted hits back to the physical edge. The
+    // procedural instance is identity-transformed because edge records are
+    // already stored in world coordinates.
     float denom = dot(gl_ObjectRayDirectionEXT, edge.positive_plane_normal);
     if (abs(denom) <= DIFFRACTION_PLANE_EPSILON) {
         return;
     }
 
+    // Intersect the infinite plane first. reportIntersectionEXT below turns it
+    // into a finite AABB-contained primitive only after the strip tests pass.
     float hit_t = dot(edge.start - gl_ObjectRayOriginEXT, edge.positive_plane_normal) / denom;
     if (hit_t < gl_RayTminEXT || hit_t > gl_RayTmaxEXT) {
         return;
     }
 
     vec3 hit_position = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * hit_t;
+    // edge_dir is unit length, so edge_t is both the projection parameter and a
+    // physical distance in meters from the authored start point.
     float edge_t = dot(hit_position - edge.start, edge.edge_dir);
 
     // Clamp the virtual strip to the actual edge segment so an authored edge does

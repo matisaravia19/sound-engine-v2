@@ -32,7 +32,7 @@ fn main() -> SoundResult<()> {
         sound_id: sound_a,
         source: PointSource {
             position: vec3(-3.0, 0.5, 2.0),
-            energy: 1_000.0,
+            amplitude: 1_000.0,
         },
         volume: 0.8,
     })?;
@@ -44,7 +44,7 @@ fn main() -> SoundResult<()> {
         sound_id: sound_b,
         source: PointSource {
             position: vec3(-2.5, -0.75, -3.0),
-            energy: 1_000.0,
+            amplitude: 1_000.0,
         },
         volume: 0.6,
     })?;
@@ -56,7 +56,7 @@ fn main() -> SoundResult<()> {
         sound_id: knocks,
         source: PointSource {
             position: vec3(3.5, 0.25, 4.0),
-            energy: 2_500.0,
+            amplitude: 2_500.0,
         },
         volume: 1.0,
     })?;
@@ -68,7 +68,7 @@ fn main() -> SoundResult<()> {
         sound_id: music,
         source: PointSource {
             position: vec3(3.5, 0.0, 0.0),
-            energy: 10_000.0,
+            amplitude: 10_000.0,
         },
         volume: 1.0,
     })?;
@@ -88,9 +88,11 @@ fn engine_config() -> EngineConfig {
             ir_num_samples: IR_SAMPLES,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.5,
-            rays_per_query: 262_144,
+            listener_ray_count: 262_144,
             max_bounces: 8,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
@@ -109,6 +111,7 @@ fn box_room_scene() -> SceneDescription {
             id: 1,
             absorption_bands: vec![0.08],
             scattering: 0.15,
+            roughness: 0.15,
             transmission: None,
         }],
         objects: vec![SceneObject {

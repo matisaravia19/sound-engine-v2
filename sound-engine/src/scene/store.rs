@@ -246,9 +246,15 @@ fn validate_material(material: &Material) -> SoundResult<()> {
             material.id
         )));
     }
-    if !(0.0..=1.0).contains(&material.scattering) {
+    if !material.scattering.is_finite() || !(0.0..=1.0).contains(&material.scattering) {
         return Err(SoundError::invalid_argument(format!(
-            "Material {} scattering must be in [0, 1]",
+            "Material {} scattering must be finite and in [0, 1]",
+            material.id
+        )));
+    }
+    if !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness) {
+        return Err(SoundError::invalid_argument(format!(
+            "Material {} roughness must be finite and in [0, 1]",
             material.id
         )));
     }
@@ -370,6 +376,7 @@ mod tests {
                         id: 2,
                         absorption_bands: vec![0.4],
                         scattering: 0.2,
+                        roughness: 0.2,
                         transmission: None,
                     }),
                     SceneUpdate::SetMaterial { id: 10, material_id: 2 },
@@ -401,6 +408,21 @@ mod tests {
         assert_eq!(store.version(), original_version);
     }
 
+    #[test]
+    fn material_roughness_must_be_finite_and_normalized() {
+        for roughness in [-0.1, 1.1, f32::NAN] {
+            let material = Material {
+                id: 1,
+                absorption_bands: vec![0.2],
+                scattering: 0.1,
+                roughness,
+                transmission: None,
+            };
+
+            assert!(validate_material(&material).is_err());
+        }
+    }
+
     fn populated_store() -> SceneStore {
         let mut store = SceneStore::new();
         store
@@ -410,6 +432,7 @@ mod tests {
                     id: 1,
                     absorption_bands: vec![0.2],
                     scattering: 0.1,
+                    roughness: 0.1,
                     transmission: None,
                 }],
                 objects: vec![object(10, 1), object(20, 2)],
@@ -461,6 +484,7 @@ mod tests {
                     id: 1,
                     absorption_bands: vec![0.2],
                     scattering: 0.1,
+                    roughness: 0.1,
                     transmission: None,
                 }],
                 objects: vec![object(10, 1)],
@@ -484,6 +508,7 @@ mod tests {
                     id: 1,
                     absorption_bands: vec![0.2],
                     scattering: 0.1,
+                    roughness: 0.1,
                     transmission: None,
                 }],
                 objects: vec![object(10, 1)],
@@ -508,6 +533,7 @@ mod tests {
                         id: 1,
                         absorption_bands: vec![0.2],
                         scattering: 0.1,
+                        roughness: 0.1,
                         transmission: None,
                     }],
                     objects: vec![object(10, 1)],

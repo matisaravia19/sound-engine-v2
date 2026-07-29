@@ -1,66 +1,14 @@
 use crate::scene::SceneVersion;
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
 use std::sync::Arc;
 
 use crate::gpu::memory::BufferHandle;
 
-/// One listener capture event produced by acoustic ray tracing.
-#[derive(Debug, Clone, Copy)]
-pub struct AcousticHit {
-    /// Direction from which energy arrives at the listener in world space.
-    pub incoming_direction: Vec3,
-    /// Direction from listener center to the hit point on the listener sphere.
-    pub listener_hit_direction: Vec3,
-    /// Arrival time relative to source emission.
-    pub arrival_time_seconds: f32,
-    /// Acoustic energy carried by this hit before listener orientation binning.
-    pub energy: f32,
-}
-
-/// Direction-independent hit snapshot ready for listener-orientation binning.
-#[derive(Debug, Clone)]
-pub struct AcousticHitSnapshot {
-    /// Listener capture events recorded by ray tracing.
-    pub hits: Vec<AcousticHit>,
-    /// Scene version represented by the traced paths.
-    pub scene_version: SceneVersion,
-    /// Query identifier copied from the acoustic request.
-    pub query_id: u32,
-    /// Source position in world meters used for tracing.
-    pub source_position: Vec3,
-    /// Acoustic source energy used for tracing.
-    pub source_energy: f32,
-    /// Listener position in world meters used for tracing.
-    pub listener_position: Vec3,
-    /// Number of listener hits dropped because the GPU hit buffer filled.
-    pub overflow_count: u32,
-}
-
-/// GPU-resident listener hit snapshot ready for orientation-dependent IR binning.
-#[derive(Clone)]
-pub struct GpuAcousticHitSnapshot {
-    /// GPU buffer containing a hit header followed by packed hit records.
-    ///
-    /// `None` represents an invalid/test snapshot and is rejected by GPU pipeline methods.
-    pub buffer: Option<Arc<BufferHandle>>,
-    /// Number of hit records the buffer can hold.
-    pub hit_capacity: u32,
-    /// Total storage buffer size in bytes.
-    pub byte_size: usize,
-    /// Scene version represented by the traced paths.
-    pub scene_version: SceneVersion,
-    /// Query identifier copied from the acoustic request.
-    pub query_id: u32,
-    /// Source position in world meters used for tracing.
-    pub source_position: Vec3,
-    /// Acoustic source energy used for tracing.
-    pub source_energy: f32,
-    /// Listener position in world meters used for tracing.
-    pub listener_position: Vec3,
-}
-
 /// GPU-resident time-domain impulse response.
+///
+/// The optional buffer is reference-counted so cache entries and convolution
+/// setup can share ownership. Ray-tracing writes are made visible before the
+/// acoustic pipeline returns a snapshot.
 #[derive(Clone)]
 pub struct GpuIrSnapshot {
     /// GPU buffer containing `IrSample` values.
@@ -82,6 +30,9 @@ pub struct GpuIrSnapshot {
 }
 
 /// Stereo impulse-response sample stored as left and right channel values.
+///
+/// This layout matches the shader's std430 `IrSample`. Values are signed
+/// pressure contributions rather than squared energy.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Zeroable, Pod)]
 pub struct IrSample {

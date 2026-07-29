@@ -77,30 +77,19 @@ impl AcousticsEngine {
             return Ok(snapshot);
         }
 
-        let hits = match self.cache.get_hits(cache_query) {
-            Some(hits) => hits,
-            None => {
-                // Tracing hits can update scene-side acceleration data, so the scene
-                // manager is passed mutably even though the acoustic query is read-only.
-                let hits = self.pipeline.trace_hits_gpu(
-                    gpu,
-                    &mut self.scene,
-                    AcousticQuery {
-                        query_id: cache_query.query_id,
-                        source_position: source.position,
-                        listener_position: listener.position,
-                        listener_right: listener.right,
-                        source_energy: source.energy,
-                    },
-                )?;
-                self.cache.insert_hits(cache_query, hits.clone());
-                hits
-            }
-        };
-
-        let snapshot = self
-            .pipeline
-            .build_ir_from_gpu_hits(gpu, &hits, listener.right, cache_query.query_id)?;
+        // Building an IR can update scene-side acceleration data, so the scene
+        // manager remains mutable even though the acoustic query is read-only.
+        let snapshot = self.pipeline.build_ir_gpu(
+            gpu,
+            &mut self.scene,
+            AcousticQuery {
+                query_id: cache_query.query_id,
+                source_position: source.position,
+                listener_position: listener.position,
+                listener_right: listener.right,
+                source_amplitude: source.amplitude,
+            },
+        )?;
         self.cache.insert_ir(cache_query, snapshot.clone());
         Ok(snapshot)
     }
@@ -112,7 +101,7 @@ fn cache_query(scene_version: SceneVersion, source: PointSource, listener: Liste
         scene_version,
         query_id: 0,
         source_position: source.position,
-        source_energy: source.energy,
+        source_amplitude: source.amplitude,
         listener_position: listener.position,
         listener_right: listener.right,
     }
@@ -120,8 +109,10 @@ fn cache_query(scene_version: SceneVersion, source: PointSource, listener: Liste
 
 /// Validates finite source parameters before they reach acoustic queries.
 pub(crate) fn validate_source(source: PointSource) -> SoundResult<()> {
-    if !source.energy.is_finite() {
-        return Err(SoundError::invalid_argument("source energy must be finite"));
+    if !source.amplitude.is_finite() || source.amplitude < 0.0 {
+        return Err(SoundError::invalid_argument(
+            "source amplitude must be finite and non-negative",
+        ));
     }
     if !source.position.is_finite() {
         return Err(SoundError::invalid_argument("source position must be finite"));
@@ -162,7 +153,9 @@ mod tests {
         assert!(validate_source(PointSource::new(Vec3::new(f32::INFINITY, 0.0, 0.0))).is_err());
 
         let mut source = PointSource::new(Vec3::ZERO);
-        source.energy = f32::NAN;
+        source.amplitude = f32::NAN;
+        assert!(validate_source(source).is_err());
+        source.amplitude = -0.1;
         assert!(validate_source(source).is_err());
 
         assert!(
@@ -211,7 +204,7 @@ mod tests {
         };
         let source = PointSource {
             position: Vec3::new(4.0, 5.0, 6.0),
-            energy: 0.75,
+            amplitude: 0.75,
         };
 
         let query = cache_query(9, source, listener);
@@ -219,7 +212,7 @@ mod tests {
         assert_eq!(query.scene_version, 9);
         assert_eq!(query.query_id, 0);
         assert_eq!(query.source_position, source.position);
-        assert_eq!(query.source_energy, source.energy);
+        assert_eq!(query.source_amplitude, source.amplitude);
         assert_eq!(query.listener_position, listener.position);
         assert_eq!(query.listener_right, listener.right);
     }

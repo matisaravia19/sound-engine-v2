@@ -409,9 +409,11 @@ fn engine_config(
             ir_num_samples,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.2,
-            rays_per_query: 1,
+            listener_ray_count: 1,
             max_bounces: 0,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size },

@@ -15,7 +15,7 @@ const IR_SAMPLES: u32 = SAMPLE_RATE;
 
 fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
-    let source_position = vec3(-1.0, 0.0, -0.5);
+    let source_position = vec3(1.0, 0.0, -1.0);
     let listener_position = vec3(-1.0, 0.0, 0.5);
 
     let baseline = trace_scene(&gpu, diffraction_scene(false), 1, source_position, listener_position)?;
@@ -77,7 +77,7 @@ fn trace_scene(
             source_position,
             listener_position,
             listener_right: Vec3::X,
-            source_energy: 2_000.0,
+            source_amplitude: 2_000.0,
         },
     )
 }
@@ -90,9 +90,11 @@ fn engine_config() -> EngineConfig {
             ir_num_samples: IR_SAMPLES,
         },
         acoustics: AcousticsConfig {
-            listener_radius: 0.35,
-            rays_per_query: 131_072,
+            listener_ray_count: 131_072,
             max_bounces: 1,
+            maximum_path_length: 343.0,
+            minimum_throughput: 1.0e-6,
+            sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
         auralization: AuralizationConfig { block_size: 1024 },
@@ -111,6 +113,7 @@ fn diffraction_scene(include_edge: bool) -> SceneDescription {
             id: 1,
             absorption_bands: vec![1.0],
             scattering: 0.0,
+            roughness: 0.0,
             transmission: None,
         }],
         objects: vec![SceneObject {
@@ -123,8 +126,8 @@ fn diffraction_scene(include_edge: bool) -> SceneDescription {
         diffraction_edges: include_edge
             .then_some(DiffractionEdge {
                 id: 1,
-                start: vec3(-0.05, -2.0, 0.0),
-                end: vec3(-0.05, 2.0, 0.0),
+                start: vec3(0.0, -2.0, 0.0),
+                end: vec3(0.0, 2.0, 0.0),
                 bisector_dir: vec3(1.0, 0.0, 0.0),
                 edge_angle_radians: 1.5 * std::f32::consts::PI,
                 diffraction_radius: 0.45,

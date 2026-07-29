@@ -11,6 +11,10 @@ use ash::vk;
 use glam::Vec3;
 use std::collections::HashMap;
 
+// Physical geometry is the only class allowed to occlude explicit source
+// connections. Diffraction proxies use 0x02 when assembled into a query TLAS.
+const SURFACE_GEOMETRY_MASK: u8 = 0x01;
+
 /// GPU-side mirror of a `SceneStore`.
 ///
 /// The resource owns uploaded mesh buffers, acceleration-structure handles
@@ -39,10 +43,12 @@ struct UploadedMesh {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuMaterial {
+    // The current pressure tracer uses the first authored coefficient from each
+    // optional band list as its broad-band transport value.
     absorption: f32,
     scattering: f32,
     transmission: f32,
-    _pad0: f32,
+    roughness: f32,
 }
 
 #[repr(C)]
@@ -126,7 +132,7 @@ impl GpuSceneResources {
                     blas_id: uploaded.blas_id,
                     transform: object.transform,
                     custom_index: object_index as u32,
-                    mask: 0xff,
+                    mask: SURFACE_GEOMETRY_MASK,
                     sbt_record_offset: 0,
                 })
             })
@@ -288,15 +294,17 @@ fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u
                 .as_ref()
                 .and_then(|bands| bands.first().copied())
                 .unwrap_or(0.0),
-            _pad0: 0.0,
+            roughness: material.roughness.clamp(0.0, 1.0),
         });
     }
     if materials.is_empty() {
+        // Descriptor binding 3 must remain valid even for an empty scene. The
+        // absorbing fallback cannot be indexed unless malformed geometry exists.
         materials.push(GpuMaterial {
             absorption: 1.0,
             scattering: 0.0,
             transmission: 0.0,
-            _pad0: 0.0,
+            roughness: 0.0,
         });
     }
 
