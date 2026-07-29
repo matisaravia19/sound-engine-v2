@@ -12,7 +12,9 @@ use sound_engine::core::config::{
 };
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{
+    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
+};
 use std::env;
 use std::f64::consts::PI;
 use std::fs::File;
@@ -29,6 +31,8 @@ const MAXIMUM_PATH_LENGTH: f64 = SPEED_OF_SOUND * SAMPLE_COUNT as f64 / SAMPLE_R
 const SOURCE_AMPLITUDE: f32 = 1.0;
 const ROOM_REFLECTION_PRESSURE: f64 = 0.8;
 const ROOM_ABSORPTION_ENERGY: f32 = 1.0 - (ROOM_REFLECTION_PRESSURE * ROOM_REFLECTION_PRESSURE) as f32;
+const DIFFRACTION_EDGE_HALF_LENGTH: f64 = 20.0;
+const DIFFRACTION_QUADRATURE_SEGMENTS: usize = 131_072;
 const FREQUENCIES_HZ: &[f64] = &[125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
 
 #[derive(Debug, Clone)]
@@ -295,6 +299,9 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
     // this benchmark's 341 ms IR. The test below guards that assumption if the
     // room dimensions, sample count, or speed of sound change.
     let rigid_room_bounces = 30;
+    let diffraction_source = vec3(-2.0, 0.0, 3.0);
+    let diffraction_listener = vec3(-2.0, 0.0, -3.0);
+    let exterior_wedge_angle = 1.5 * PI;
 
     vec![
         BenchmarkCase {
@@ -395,6 +402,29 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
                 room_source,
                 room_listener,
                 MAXIMUM_PATH_LENGTH,
+            ),
+        },
+        BenchmarkCase {
+            name: "diffraction_wedge_shadow",
+            source: diffraction_source,
+            listener: diffraction_listener,
+            max_bounces: 1,
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.45,
+            ),
+            // The Biot-Tolstoy-Medwin secondary-edge-source integral is the
+            // exact first-order solution for an infinite rigid wedge. Truncating
+            // the integral to the authored edge gives the standard finite-edge
+            // first-order reference used by interactive geometric acoustics.
+            exact_paths: btm_diffraction_paths(
+                diffraction_source,
+                diffraction_listener,
+                exterior_wedge_angle,
+                -DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_QUADRATURE_SEGMENTS,
             ),
         },
     ]
@@ -590,6 +620,76 @@ fn rigid_shoebox_image_paths_within_length(
     paths
 }
 
+fn btm_diffraction_paths(
+    source: Vec3,
+    listener: Vec3,
+    exterior_wedge_angle: f64,
+    edge_start: f64,
+    edge_end: f64,
+    segment_count: usize,
+) -> Vec<ExactPath> {
+    // This benchmark wedge is aligned to +Y. Its upper face points along
+    // (-X + Z)/sqrt(2), and angles increase around +Y through the exterior
+    // (air) region. Source and receiver radii are therefore measured in XZ.
+    let edge_axis = Vec3::Y;
+    let angle_origin = vec3(-1.0, 0.0, 1.0).normalize();
+    let source_radial = vec3(source.x, 0.0, source.z);
+    let listener_radial = vec3(listener.x, 0.0, listener.z);
+    let source_radius = source_radial.length() as f64;
+    let listener_radius = listener_radial.length() as f64;
+    let source_angle = wedge_angle(angle_origin, edge_axis, source_radial);
+    let listener_angle = wedge_angle(angle_origin, edge_axis, listener_radial);
+    let wedge_index = PI / exterior_wedge_angle;
+    let segment_length = (edge_end - edge_start) / segment_count as f64;
+    let mut paths = Vec::with_capacity(segment_count);
+
+    for segment in 0..segment_count {
+        // Midpoint integration avoids evaluating the integrable BTM onset
+        // singularity exactly at the shortest source-edge-receiver path.
+        let edge_coordinate = edge_start + (segment as f64 + 0.5) * segment_length;
+        let source_axial = edge_coordinate - source.y as f64;
+        let listener_axial = edge_coordinate - listener.y as f64;
+        let source_distance = source_radius.hypot(source_axial);
+        let listener_distance = listener_radius.hypot(listener_axial);
+        let eta_argument = (
+            source_distance * listener_distance + source_axial * listener_axial
+        ) / (source_radius * listener_radius);
+        let eta = eta_argument.max(1.0).acosh();
+
+        let mut beta_sum = 0.0;
+        for source_sign in [-1.0, 1.0] {
+            for listener_sign in [-1.0, 1.0] {
+                let phi = PI + source_sign * source_angle + listener_sign * listener_angle;
+                let numerator = (wedge_index * phi).sin();
+                let denominator = (wedge_index * eta).cosh() - (wedge_index * phi).cos();
+                beta_sum += numerator / denominator;
+            }
+        }
+
+        let total_length = source_distance + listener_distance;
+        // The published BTM Green function carries -nu/(4*pi). The engine is
+        // calibrated to direct pressure 1/r instead of 1/(4*pi*r), so multiplying
+        // the whole reference by 4*pi leaves this -nu factor.
+        let pressure = -wedge_index * beta_sum * segment_length
+            / (source_distance * listener_distance);
+        paths.push(ExactPath {
+            length_meters: total_length,
+            // ExactPath stores the numerator of pressure/length.
+            pressure_reflection: pressure * total_length,
+            _reflection_order: 1,
+        });
+    }
+    paths
+}
+
+fn wedge_angle(origin: Vec3, axis: Vec3, direction: Vec3) -> f64 {
+    let origin = origin.normalize();
+    let direction = direction.normalize();
+    let sine = axis.dot(origin.cross(direction)) as f64;
+    let cosine = origin.dot(direction) as f64;
+    sine.atan2(cosine).rem_euclid(2.0 * PI)
+}
+
 fn image_coordinate(length: f32, source: f32, cell: i32, parity: i32) -> f32 {
     2.0 * cell as f32 * length + if parity == 0 { source } else { -source }
 }
@@ -631,6 +731,45 @@ fn shoebox_scene(size: Vec3, absorption: f32) -> SceneDescription {
         ],
         absorption,
     )
+}
+
+fn diffraction_wedge_scene(
+    exterior_wedge_angle: f32,
+    edge_half_length: f32,
+    proxy_radius: f32,
+) -> SceneDescription {
+    let face_length = 80.0;
+    let upper = vec3(-1.0, 0.0, 1.0).normalize() * face_length;
+    let lower = vec3(-1.0, 0.0, -1.0).normalize() * face_length;
+    let mut scene = scene_from_walls(
+        vec![
+            quad(
+                vec3(0.0, -edge_half_length, 0.0),
+                vec3(0.0, edge_half_length, 0.0),
+                vec3(upper.x, edge_half_length, upper.z),
+                vec3(upper.x, -edge_half_length, upper.z),
+            ),
+            quad(
+                vec3(0.0, -edge_half_length, 0.0),
+                vec3(lower.x, -edge_half_length, lower.z),
+                vec3(lower.x, edge_half_length, lower.z),
+                vec3(0.0, edge_half_length, 0.0),
+            ),
+        ],
+        1.0,
+    );
+    scene.diffraction_edges.push(DiffractionEdge {
+        id: 1,
+        start: vec3(0.0, -edge_half_length, 0.0),
+        end: vec3(0.0, edge_half_length, 0.0),
+        // The solid right-angle corner is centered on -X, so the exterior
+        // wedge and its two authored shadow boundaries are bisected by +X.
+        bisector_dir: Vec3::X,
+        edge_angle_radians: exterior_wedge_angle,
+        diffraction_radius: proxy_radius,
+        base_strength: 1.0,
+    });
+    scene
 }
 
 fn scene_from_walls(walls: Vec<Vec<Vec3>>, absorption: f32) -> SceneDescription {
@@ -793,6 +932,19 @@ mod tests {
         );
         assert!(paths.len() > 1_000);
         assert!(paths.iter().map(|path| path._reflection_order).max().unwrap() <= 30);
+    }
+
+    #[test]
+    fn btm_quadrature_is_converged_at_benchmark_resolution() {
+        let source = vec3(-2.0, 0.0, 3.0);
+        let listener = vec3(-2.0, 0.0, -3.0);
+        let coarse = btm_diffraction_paths(source, listener, 1.5 * PI, -20.0, 20.0, 65_536);
+        let fine = btm_diffraction_paths(source, listener, 1.5 * PI, -20.0, 20.0, 131_072);
+        let coarse_transfer = exact_transfer(&coarse, 8_000.0);
+        let fine_transfer = exact_transfer(&fine, 8_000.0);
+        let relative_error = (coarse_transfer - fine_transfer).magnitude()
+            / fine_transfer.magnitude().max(1.0e-12);
+        assert!(relative_error < 1.0e-4, "relative quadrature error was {relative_error}");
     }
 
     #[test]
