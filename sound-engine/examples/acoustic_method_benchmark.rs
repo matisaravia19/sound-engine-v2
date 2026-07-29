@@ -102,8 +102,9 @@ struct BenchmarkCase {
 struct TraceMeasurement {
     ir: IrSnapshot,
     setup: Duration,
-    cold_trace: Duration,
-    warm_median: Duration,
+    cold_gpu: Duration,
+    warm_gpu_median: Duration,
+    readback_median: Duration,
 }
 
 fn main() -> SoundResult<()> {
@@ -136,9 +137,10 @@ fn run_benchmarks(
 ) -> SoundResult<()> {
     writeln!(
         output,
-        "method,commit,case,rays,seed,max_bounces,gpu_setup_ms,setup_ms,cold_trace_ms,warm_trace_ms,\
+        "method,commit,case,rays,seed,max_bounces,gpu_setup_ms,setup_ms,cold_gpu_ms,warm_gpu_ms,readback_ms,\
 frequency_hz,measured_magnitude,exact_continuous_magnitude,exact_sampled_magnitude,\
-magnitude_error_db,phase_error_degrees,complex_relative_error,measured_ir_energy,exact_path_count"
+magnitude_error_db,phase_error_degrees,complex_relative_error,sampled_magnitude_error_db,\
+sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,exact_path_count"
     )?;
 
     for case in cases {
@@ -146,28 +148,33 @@ magnitude_error_db,phase_error_degrees,complex_relative_error,measured_ir_energy
             continue;
         }
         let measurement = trace_case(gpu, options, &case)?;
+        let exact_samples = exact_fractional_ir(&case.exact_paths);
         for &frequency in FREQUENCIES_HZ {
             let measured = transfer_from_samples(&measurement.ir.samples, frequency);
             let exact_continuous = exact_transfer(&case.exact_paths, frequency);
-            let exact_samples = exact_fractional_ir(&case.exact_paths);
             let exact_sampled = transfer_from_f64_samples(&exact_samples, frequency);
             let magnitude_error_db = ratio_db(measured.magnitude(), exact_continuous.magnitude());
             let phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_continuous.phase());
             let complex_relative_error =
                 (measured - exact_continuous).magnitude() / exact_continuous.magnitude().max(1.0e-12);
+            let sampled_magnitude_error_db = ratio_db(measured.magnitude(), exact_sampled.magnitude());
+            let sampled_phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_sampled.phase());
+            let sampled_complex_relative_error =
+                (measured - exact_sampled).magnitude() / exact_sampled.magnitude().max(1.0e-12);
 
             writeln!(
                 output,
-                "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
-{:.6},{:.6},{:.9},{:.9},{}",
+                "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
+{:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{}",
                 case.name,
                 options.rays,
                 options.seed,
                 case.max_bounces,
                 milliseconds(gpu_setup),
                 milliseconds(measurement.setup),
-                milliseconds(measurement.cold_trace),
-                milliseconds(measurement.warm_median),
+                milliseconds(measurement.cold_gpu),
+                milliseconds(measurement.warm_gpu_median),
+                milliseconds(measurement.readback_median),
                 frequency,
                 measured.magnitude(),
                 exact_continuous.magnitude(),
@@ -175,6 +182,9 @@ magnitude_error_db,phase_error_degrees,complex_relative_error,measured_ir_energy
                 magnitude_error_db,
                 phase_error_degrees,
                 complex_relative_error,
+                sampled_magnitude_error_db,
+                sampled_phase_error_degrees,
+                sampled_complex_relative_error,
                 measurement.ir.energy,
                 case.exact_paths.len(),
             )?;
@@ -200,21 +210,28 @@ fn trace_case(gpu: &VkBackend, options: &Options, case: &BenchmarkCase) -> Sound
     };
 
     let cold_start = Instant::now();
-    let mut ir = pipeline.build_ir(gpu, &mut scene, query)?;
-    let cold_trace = cold_start.elapsed();
+    let gpu_ir = pipeline.build_ir_gpu(gpu, &mut scene, query)?;
+    let cold_gpu = cold_start.elapsed();
+    let readback_start = Instant::now();
+    let mut ir = pipeline.download_gpu_ir(gpu, &gpu_ir)?;
+    let mut readback_times = vec![readback_start.elapsed()];
 
     let mut warm_times = Vec::with_capacity(options.warm_repeats);
     for _ in 0..options.warm_repeats {
         let start = Instant::now();
-        ir = pipeline.build_ir(gpu, &mut scene, query)?;
+        let gpu_ir = pipeline.build_ir_gpu(gpu, &mut scene, query)?;
         warm_times.push(start.elapsed());
+        let readback_start = Instant::now();
+        ir = pipeline.download_gpu_ir(gpu, &gpu_ir)?;
+        readback_times.push(readback_start.elapsed());
     }
 
     Ok(TraceMeasurement {
         ir,
         setup,
-        cold_trace,
-        warm_median: median_duration(&mut warm_times),
+        cold_gpu,
+        warm_gpu_median: median_duration(&mut warm_times),
+        readback_median: median_duration(&mut readback_times),
     })
 }
 
