@@ -119,9 +119,7 @@ fn engine_config() -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
+        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
 }
 

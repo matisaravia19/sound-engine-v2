@@ -12,9 +12,7 @@ use sound_engine::core::config::{
 };
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{
-    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
-};
+use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
 use std::env;
 use std::f64::consts::PI;
 use std::fs::File;
@@ -451,11 +449,7 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(
-                exterior_wedge_angle as f32,
-                DIFFRACTION_EDGE_HALF_LENGTH as f32,
-                0.45,
-            ),
+            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.45),
             // The Biot-Tolstoy-Medwin secondary-edge-source integral is the
             // exact first-order solution for an infinite rigid wedge. Truncating
             // the integral to the authored edge gives the standard finite-edge
@@ -467,11 +461,7 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(
-                exterior_wedge_angle as f32,
-                DIFFRACTION_EDGE_HALF_LENGTH as f32,
-                0.20,
-            ),
+            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.20),
             exact_paths: diffraction_exact.clone(),
         },
         BenchmarkCase {
@@ -479,11 +469,7 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(
-                exterior_wedge_angle as f32,
-                DIFFRACTION_EDGE_HALF_LENGTH as f32,
-                0.90,
-            ),
+            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.90),
             exact_paths: diffraction_exact,
         },
     ]
@@ -710,9 +696,8 @@ fn btm_diffraction_paths(
         let listener_axial = edge_coordinate - listener.y as f64;
         let source_distance = source_radius.hypot(source_axial);
         let listener_distance = listener_radius.hypot(listener_axial);
-        let eta_argument = (
-            source_distance * listener_distance + source_axial * listener_axial
-        ) / (source_radius * listener_radius);
+        let eta_argument =
+            (source_distance * listener_distance + source_axial * listener_axial) / (source_radius * listener_radius);
         let eta = eta_argument.max(1.0).acosh();
 
         let mut beta_sum = 0.0;
@@ -729,8 +714,7 @@ fn btm_diffraction_paths(
         // The published BTM Green function carries -nu/(4*pi). The engine is
         // calibrated to direct pressure 1/r instead of 1/(4*pi*r), so multiplying
         // the whole reference by 4*pi leaves this -nu factor.
-        let pressure = -wedge_index * beta_sum * segment_length
-            / (source_distance * listener_distance);
+        let pressure = -wedge_index * beta_sum * segment_length / (source_distance * listener_distance);
         paths.push(ExactPath {
             length_meters: total_length,
             // ExactPath stores the numerator of pressure/length.
@@ -792,11 +776,7 @@ fn shoebox_scene(size: Vec3, absorption: f32) -> SceneDescription {
     )
 }
 
-fn diffraction_wedge_scene(
-    exterior_wedge_angle: f32,
-    edge_half_length: f32,
-    proxy_radius: f32,
-) -> SceneDescription {
+fn diffraction_wedge_scene(exterior_wedge_angle: f32, edge_half_length: f32, proxy_radius: f32) -> SceneDescription {
     let face_length = 80.0;
     let upper = vec3(-1.0, 0.0, 1.0).normalize() * face_length;
     let lower = vec3(-1.0, 0.0, -1.0).normalize() * face_length;
@@ -1001,9 +981,11 @@ mod tests {
         let fine = btm_diffraction_paths(source, listener, 1.5 * PI, -20.0, 20.0, 131_072);
         let coarse_transfer = exact_transfer(&coarse, 8_000.0);
         let fine_transfer = exact_transfer(&fine, 8_000.0);
-        let relative_error = (coarse_transfer - fine_transfer).magnitude()
-            / fine_transfer.magnitude().max(1.0e-12);
-        assert!(relative_error < 1.0e-4, "relative quadrature error was {relative_error}");
+        let relative_error = (coarse_transfer - fine_transfer).magnitude() / fine_transfer.magnitude().max(1.0e-12);
+        assert!(
+            relative_error < 1.0e-4,
+            "relative quadrature error was {relative_error}"
+        );
     }
 
     #[test]

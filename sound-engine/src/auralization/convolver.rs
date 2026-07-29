@@ -97,10 +97,7 @@ impl PartitionedConvolver {
             self.fft_size
         );
 
-        let buffer = self
-            .gpu
-            .memory()
-            .create_storage_buffer(self.ir_staging_buffer.size)?;
+        let buffer = self.gpu.memory().create_storage_buffer(self.ir_staging_buffer.size)?;
 
         self.gpu.memory().clear_buffer(&self.ir_staging_buffer)?;
         self.gpu.memory().upload_typed(&self.ir_staging_buffer, samples)?;
@@ -117,10 +114,7 @@ impl PartitionedConvolver {
             .as_ref()
             .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
 
-        let buffer = self
-            .gpu
-            .memory()
-            .create_storage_buffer(self.ir_staging_buffer.size)?;
+        let buffer = self.gpu.memory().create_storage_buffer(self.ir_staging_buffer.size)?;
         let copy_bytes = snapshot
             .sample_count
             .checked_mul(std::mem::size_of::<IrSample>() as u32)
@@ -161,9 +155,7 @@ impl PartitionedConvolver {
             // barrier makes the FFT shader writes available to that copy.
             self.gpu.compute().record_buffer_barrier(
                 command_buffer,
-                &BufferBarrierSpec::compute_shader_write_to_transfer_read(
-                    self.ir_staging_buffer.buffer,
-                ),
+                &BufferBarrierSpec::compute_shader_write_to_transfer_read(self.ir_staging_buffer.buffer),
             );
             Ok(())
         })?;

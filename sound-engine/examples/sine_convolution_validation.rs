@@ -26,14 +26,8 @@ fn main() -> SoundResult<()> {
     let gpu = Arc::new(VkBackend::new()?);
     let mut engine = AuralizationEngine::new(gpu.clone(), engine_config())?;
     let mut ir = vec![IrSample::zero(); IR_SAMPLE_COUNT];
-    ir[FIRST_DELAY] = IrSample {
-        left: 1.0,
-        right: 1.0,
-    };
-    ir[SECOND_DELAY] = IrSample {
-        left: 1.0,
-        right: 1.0,
-    };
+    ir[FIRST_DELAY] = IrSample { left: 1.0, right: 1.0 };
+    ir[SECOND_DELAY] = IrSample { left: 1.0, right: 1.0 };
     engine.register_impulse_response(1, &ir)?;
 
     println!("frequency_hz,expected_gain,measured_gain,relative_l2,steady_rms");
@@ -72,8 +66,7 @@ fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundR
     let input_rms = rms(&input[steady_start..]);
     let measured_rms = rms(&measured[steady_start..]);
     let expected_gain = 2.0
-        * (std::f32::consts::PI * frequency * (SECOND_DELAY - FIRST_DELAY) as f32
-            / SAMPLE_RATE as f32)
+        * (std::f32::consts::PI * frequency * (SECOND_DELAY - FIRST_DELAY) as f32 / SAMPLE_RATE as f32)
             .cos()
             .abs();
     let relative_l2 = relative_l2(&measured, &exact);
@@ -93,12 +86,7 @@ fn delayed(input: &[f32], index: usize, delay: usize) -> f32 {
 }
 
 fn rms(samples: &[f32]) -> f32 {
-    (samples
-        .iter()
-        .map(|&sample| sample * sample)
-        .sum::<f32>()
-        / samples.len() as f32)
-        .sqrt()
+    (samples.iter().map(|&sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 fn relative_l2(measured: &[f32], exact: &[f32]) -> f32 {
@@ -130,8 +118,6 @@ fn engine_config() -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
+        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
 }

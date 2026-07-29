@@ -67,24 +67,20 @@ fn build_btm_ir(segment_count: usize) -> Vec<f64> {
         let edge_coordinate = EDGE_START + (segment as f64 + 0.5) * segment_length;
         let source_distance = SOURCE_RADIUS.hypot(edge_coordinate);
         let receiver_distance = RECEIVER_RADIUS.hypot(edge_coordinate);
-        let eta_argument = (
-            source_distance * receiver_distance + edge_coordinate * edge_coordinate
-        ) / (SOURCE_RADIUS * RECEIVER_RADIUS);
+        let eta_argument = (source_distance * receiver_distance + edge_coordinate * edge_coordinate)
+            / (SOURCE_RADIUS * RECEIVER_RADIUS);
         let eta = eta_argument.max(1.0).acosh();
 
         let mut beta_sum = 0.0;
         for source_sign in [-1.0, 1.0] {
             for receiver_sign in [-1.0, 1.0] {
                 let phi = PI + source_sign * SOURCE_ANGLE + receiver_sign * RECEIVER_ANGLE;
-                beta_sum += (WEDGE_INDEX * phi).sin()
-                    / ((WEDGE_INDEX * eta).cosh() - (WEDGE_INDEX * phi).cos());
+                beta_sum += (WEDGE_INDEX * phi).sin() / ((WEDGE_INDEX * eta).cosh() - (WEDGE_INDEX * phi).cos());
             }
         }
         // The common 4*pi calibration matches engine direct pressure 1/r.
-        let pressure = -WEDGE_INDEX * beta_sum * segment_length
-            / (source_distance * receiver_distance);
-        let sample_position =
-            (source_distance + receiver_distance) / SPEED_OF_SOUND * SAMPLE_RATE;
+        let pressure = -WEDGE_INDEX * beta_sum * segment_length / (source_distance * receiver_distance);
+        let sample_position = (source_distance + receiver_distance) / SPEED_OF_SOUND * SAMPLE_RATE;
         deposit_fractional(&mut ir, sample_position, pressure);
     }
     ir
