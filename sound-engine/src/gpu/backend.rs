@@ -13,12 +13,14 @@ use std::sync::Arc;
 /// The backend selects a ray-tracing-capable device at construction time and
 /// tears down child contexts before the device is destroyed.
 pub struct VkBackend {
-    entry: Entry,
     memory: Arc<GpuAllocator>,
     shaders: Arc<ShaderLibrary>,
     compute: Arc<ComputeContext>,
     rt: RtContext,
     device: Arc<VkDeviceContext>,
+    // Rust drops fields in declaration order. Keep the dynamically loaded
+    // Vulkan library alive until every instance/device owner has been dropped.
+    entry: Entry,
 }
 
 /// Shared Vulkan handles used by GPU subsystems.
@@ -101,12 +103,12 @@ impl VkBackend {
         let memory = Arc::new(GpuAllocator::new(device.clone(), compute.clone())?);
 
         Ok(Self {
-            entry,
             memory: memory.clone(),
             shaders: shaders.clone(),
             compute: compute.clone(),
             rt: RtContext::new(device.clone(), memory, shaders.clone(), compute),
             device,
+            entry,
         })
     }
 
