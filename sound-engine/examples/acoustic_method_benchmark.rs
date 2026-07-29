@@ -35,6 +35,7 @@ struct Options {
     rays: u32,
     seed: u32,
     warm_repeats: usize,
+    case_filter: Option<String>,
     output: Option<PathBuf>,
 }
 
@@ -133,6 +134,9 @@ magnitude_error_db,phase_error_degrees,complex_relative_error,measured_ir_energy
     )?;
 
     for case in cases {
+        if options.case_filter.as_deref().is_some_and(|filter| filter != case.name) {
+            continue;
+        }
         let measurement = trace_case(gpu, options, &case)?;
         for &frequency in FREQUENCIES_HZ {
             let measured = transfer_from_samples(&measurement.ir.samples, frequency);
@@ -226,9 +230,10 @@ fn engine_config(listener_ray_count: u32, sampling_seed: u32, max_bounces: u32) 
 }
 
 fn benchmark_cases() -> Vec<BenchmarkCase> {
-    let direct_source = vec3(0.0, 0.0, 0.0);
-    let direct_listener = vec3(1.003, 0.217, -0.091);
-    let direct_length = direct_source.distance(direct_listener) as f64;
+    let direct_source = Vec3::ZERO;
+    let direct_listener_1m = vec3(1.003, 0.217, -0.091);
+    let direct_listener_2m = direct_listener_1m.normalize() * 2.0;
+    let direct_listener_5m = direct_listener_1m.normalize() * 5.0;
 
     let plane_source = vec3(1.1, -0.3, 0.2);
     let plane_listener = vec3(2.7, 0.8, -0.4);
@@ -248,13 +253,37 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
 
     vec![
         BenchmarkCase {
-            name: "free_field_direct",
+            name: "free_field_1m",
             source: direct_source,
-            listener: direct_listener,
+            listener: direct_listener_1m,
             max_bounces: 0,
             scene: empty_scene(),
             exact_paths: vec![ExactPath {
-                length_meters: direct_length,
+                length_meters: direct_source.distance(direct_listener_1m) as f64,
+                pressure_reflection: 1.0,
+                _reflection_order: 0,
+            }],
+        },
+        BenchmarkCase {
+            name: "free_field_2m",
+            source: direct_source,
+            listener: direct_listener_2m,
+            max_bounces: 0,
+            scene: empty_scene(),
+            exact_paths: vec![ExactPath {
+                length_meters: 2.0,
+                pressure_reflection: 1.0,
+                _reflection_order: 0,
+            }],
+        },
+        BenchmarkCase {
+            name: "free_field_5m",
+            source: direct_source,
+            listener: direct_listener_5m,
+            max_bounces: 0,
+            scene: empty_scene(),
+            exact_paths: vec![ExactPath {
+                length_meters: 5.0,
                 pressure_reflection: 1.0,
                 _reflection_order: 0,
             }],
@@ -521,6 +550,7 @@ fn parse_options() -> SoundResult<Options> {
         rays: 65_536,
         seed: 7,
         warm_repeats: 5,
+        case_filter: None,
         output: None,
     };
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -538,6 +568,14 @@ fn parse_options() -> SoundResult<Options> {
             "--warm-repeats" => {
                 index += 1;
                 options.warm_repeats = parse_value(&args, index, "--warm-repeats")?;
+            }
+            "--case" => {
+                index += 1;
+                options.case_filter = Some(
+                    args.get(index)
+                        .ok_or_else(|| SoundError::invalid_argument("--case needs a name"))?
+                        .clone(),
+                );
             }
             "--output" => {
                 index += 1;
@@ -585,4 +623,38 @@ fn ratio_db(measured: f64, expected: f64) -> f64 {
 fn wrapped_phase_degrees(phase: f64) -> f64 {
     let wrapped = (phase + PI).rem_euclid(2.0 * PI) - PI;
     wrapped.to_degrees()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parallel_image_enumeration_has_direct_and_two_first_reflections() {
+        let paths = parallel_image_paths(10.0, vec3(2.0, 0.0, 0.0), vec3(7.0, 0.0, 0.0), 1, 1.0);
+        assert_eq!(paths.len(), 3);
+        assert_eq!(paths.iter().filter(|path| path._reflection_order == 0).count(), 1);
+        assert_eq!(paths.iter().filter(|path| path._reflection_order == 1).count(), 2);
+    }
+
+    #[test]
+    fn shoebox_first_order_has_six_walls_and_direct_path() {
+        let paths = shoebox_image_paths(vec3(10.0, 8.0, 6.0), vec3(2.0, 2.0, 2.0), vec3(7.0, 5.0, 3.0), 1, 1.0);
+        assert_eq!(paths.len(), 7);
+        assert_eq!(paths.iter().filter(|path| path._reflection_order == 0).count(), 1);
+        assert_eq!(paths.iter().filter(|path| path._reflection_order == 1).count(), 6);
+    }
+
+    #[test]
+    fn fractional_reference_preserves_path_pressure() {
+        let path = ExactPath {
+            length_meters: 1.2345,
+            pressure_reflection: 0.75,
+            _reflection_order: 0,
+        };
+        let expected = path.pressure_reflection / path.length_meters;
+        let samples = exact_fractional_ir(&[path]);
+        assert!((samples.iter().sum::<f64>() - expected).abs() < 1.0e-12);
+        assert_eq!(samples.iter().filter(|sample| **sample != 0.0).count(), 2);
+    }
 }
