@@ -33,6 +33,10 @@ pub struct PartitionedConvolver {
     signal_plan: FFTPlan,
     /// Reusable GPU storage buffer for signal FFT input and output.
     signal_buffer: BufferHandle,
+    /// Reusable forward plan for transforming newly supplied impulse responses.
+    ir_plan: FFTPlan,
+    /// Scratch buffer bound to `ir_plan`; transformed spectra are copied out.
+    ir_staging_buffer: BufferHandle,
     /// Compiled compute pipeline for complex-domain frequency multiplication.
     multiply_pipeline_id: PipelineId,
     /// FFT size: next power of two of (block_size + ir_samples - 1).
@@ -58,6 +62,10 @@ impl PartitionedConvolver {
         let tail_size = fft_size - config.auralization.block_size as usize;
 
         let (signal_plan, signal_buffer) = Self::build_fft_plan(gpu.as_ref(), fft_size as u64, true)?;
+        // VkFFT plan construction is expensive (~165 ms on the benchmark GPU).
+        // Bind one reusable scratch buffer at engine setup instead of creating a
+        // new plan synchronously every time a moving voice receives a new IR.
+        let (ir_plan, ir_staging_buffer) = Self::build_fft_plan(gpu.as_ref(), fft_size as u64, false)?;
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
 
         Ok(Self {
@@ -65,6 +73,8 @@ impl PartitionedConvolver {
             config,
             signal_plan,
             signal_buffer,
+            ir_plan,
+            ir_staging_buffer,
             multiply_pipeline_id,
             fft_size,
             tail_size,
@@ -87,18 +97,14 @@ impl PartitionedConvolver {
             self.fft_size
         );
 
-        let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref(), self.fft_size as u64, false)?;
+        let buffer = self
+            .gpu
+            .memory()
+            .create_storage_buffer(self.ir_staging_buffer.size)?;
 
-        self.gpu.memory().clear_buffer(&buffer)?;
-        self.gpu.memory().upload_typed(&buffer, samples)?;
-
-        // Transform the IR once so voices can reuse the spectrum per block.
-        self.gpu.compute().submit_compute_and_wait(|command_buffer| {
-            plan.append(command_buffer)
-                .map_err(|e| SoundError::external(format!("IR forward launch failed: {e:?}")))?;
-
-            Ok(())
-        })?;
+        self.gpu.memory().clear_buffer(&self.ir_staging_buffer)?;
+        self.gpu.memory().upload_typed(&self.ir_staging_buffer, samples)?;
+        self.transform_staged_ir_into(&buffer)?;
 
         Ok(Arc::new(ImpulseResponse { buffer }))
     }
@@ -111,30 +117,26 @@ impl PartitionedConvolver {
             .as_ref()
             .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
 
-        let (plan, buffer) = Self::build_fft_plan(self.gpu.as_ref(), self.fft_size as u64, false)?;
+        let buffer = self
+            .gpu
+            .memory()
+            .create_storage_buffer(self.ir_staging_buffer.size)?;
         let copy_bytes = snapshot
             .sample_count
             .checked_mul(std::mem::size_of::<IrSample>() as u32)
             .ok_or_else(|| SoundError::invalid_argument("GPU IR copy byte size overflow"))?
             as u64;
 
-        self.gpu.memory().clear_buffer(&buffer)?;
+        self.gpu.memory().clear_buffer(&self.ir_staging_buffer)?;
         self.gpu.memory().copy_buffer(
             source_buffer,
-            &buffer,
+            &self.ir_staging_buffer,
             copy_bytes,
             Some(BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
-                buffer.buffer,
+                self.ir_staging_buffer.buffer,
             )),
         )?;
-
-        // The copied time-domain IR is transformed once and then shared by voices.
-        self.gpu.compute().submit_compute_and_wait(|command_buffer| {
-            plan.append(command_buffer)
-                .map_err(|e| SoundError::external(format!("GPU IR forward launch failed: {e:?}")))?;
-
-            Ok(())
-        })?;
+        self.transform_staged_ir_into(&buffer)?;
 
         Ok(Arc::new(ImpulseResponse { buffer }))
     }
@@ -147,6 +149,32 @@ impl PartitionedConvolver {
     /// Returns the number of overlap frames kept per voice.
     pub fn tail_size(&self) -> usize {
         self.tail_size
+    }
+
+    /// Transforms the scratch time-domain IR and copies its reusable spectrum.
+    fn transform_staged_ir_into(&self, destination: &BufferHandle) -> SoundResult<()> {
+        self.gpu.compute().submit_compute_and_wait(|command_buffer| {
+            self.ir_plan
+                .append(command_buffer)
+                .map_err(|e| SoundError::external(format!("IR forward launch failed: {e:?}")))?;
+            // The following transfer is a separate ordered submission. This
+            // barrier makes the FFT shader writes available to that copy.
+            self.gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::compute_shader_write_to_transfer_read(
+                    self.ir_staging_buffer.buffer,
+                ),
+            );
+            Ok(())
+        })?;
+        self.gpu.memory().copy_buffer(
+            &self.ir_staging_buffer,
+            destination,
+            self.ir_staging_buffer.size,
+            Some(BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
+                destination.buffer,
+            )),
+        )
     }
 
     /// Processes one mono input block for a voice into the configured output layout.
