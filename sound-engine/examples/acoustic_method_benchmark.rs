@@ -25,6 +25,7 @@ const COMMIT: &str = "a5c4e408483cd91e71301f6c6b88e8d9c807f2c9";
 const SAMPLE_RATE: u32 = 48_000;
 const SAMPLE_COUNT: u32 = 16_384;
 const SPEED_OF_SOUND: f64 = 343.0;
+const MAXIMUM_PATH_LENGTH: f64 = SPEED_OF_SOUND * SAMPLE_COUNT as f64 / SAMPLE_RATE as f64;
 const SOURCE_AMPLITUDE: f32 = 1.0;
 const ROOM_REFLECTION_PRESSURE: f64 = 0.8;
 const ROOM_ABSORPTION_ENERGY: f32 = 1.0 - (ROOM_REFLECTION_PRESSURE * ROOM_REFLECTION_PRESSURE) as f32;
@@ -260,7 +261,7 @@ fn engine_config(listener_ray_count: u32, sampling_seed: u32, max_bounces: u32) 
         acoustics: AcousticsConfig {
             listener_ray_count,
             max_bounces,
-            maximum_path_length: SPEED_OF_SOUND as f32 * SAMPLE_COUNT as f32 / SAMPLE_RATE as f32,
+            maximum_path_length: MAXIMUM_PATH_LENGTH as f32,
             minimum_throughput: 0.0,
             sampling_seed,
         },
@@ -290,6 +291,10 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
     let room_source = vec3(2.1, 2.7, 2.2);
     let room_listener = vec3(7.4, 5.9, 3.8);
     let room_bounces = 6;
+    // Thirty reflections cover every rigid-room image that can arrive inside
+    // this benchmark's 341 ms IR. The test below guards that assumption if the
+    // room dimensions, sample count, or speed of sound change.
+    let rigid_room_bounces = 30;
 
     vec![
         BenchmarkCase {
@@ -373,6 +378,23 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
                 room_listener,
                 room_bounces,
                 ROOM_REFLECTION_PRESSURE,
+            ),
+        },
+        BenchmarkCase {
+            name: "rigid_shoebox_exact",
+            source: room_source,
+            listener: room_listener,
+            max_bounces: rigid_room_bounces,
+            scene: shoebox_scene(room_size, 0.0),
+            // For rigid (Neumann) rectangular boundaries, mirroring the
+            // monopole in every room cell is an exact time-domain solution of
+            // the scalar wave equation. Retaining all images whose arrival is
+            // inside the finite IR gives an exact reference for this window.
+            exact_paths: rigid_shoebox_image_paths_within_length(
+                room_size,
+                room_source,
+                room_listener,
+                MAXIMUM_PATH_LENGTH,
             ),
         },
     ]
@@ -515,6 +537,50 @@ fn shoebox_image_paths(
                                 pressure_reflection: reflection_pressure.powi(order as i32),
                                 _reflection_order: order,
                             });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
+fn rigid_shoebox_image_paths_within_length(
+    room_size: Vec3,
+    source: Vec3,
+    listener: Vec3,
+    maximum_length: f64,
+) -> Vec<ExactPath> {
+    // Each image coordinate is 2*n*L +/- source. One extra cell beyond the
+    // simple radius bound accounts for the source/listener offsets within the
+    // base room; the final Euclidean-distance check removes that overreach.
+    let x_cells = (maximum_length / (2.0 * room_size.x as f64)).ceil() as i32 + 1;
+    let y_cells = (maximum_length / (2.0 * room_size.y as f64)).ceil() as i32 + 1;
+    let z_cells = (maximum_length / (2.0 * room_size.z as f64)).ceil() as i32 + 1;
+    let mut paths = Vec::new();
+    for nx in -x_cells..=x_cells {
+        for px in 0..=1 {
+            let ox = (2 * nx - px).unsigned_abs();
+            for ny in -y_cells..=y_cells {
+                for py in 0..=1 {
+                    let oy = (2 * ny - py).unsigned_abs();
+                    for nz in -z_cells..=z_cells {
+                        for pz in 0..=1 {
+                            let oz = (2 * nz - pz).unsigned_abs();
+                            let image = Vec3::new(
+                                image_coordinate(room_size.x, source.x, nx, px),
+                                image_coordinate(room_size.y, source.y, ny, py),
+                                image_coordinate(room_size.z, source.z, nz, pz),
+                            );
+                            let length = image.distance(listener) as f64;
+                            if length <= maximum_length {
+                                paths.push(ExactPath {
+                                    length_meters: length,
+                                    pressure_reflection: 1.0,
+                                    _reflection_order: ox + oy + oz,
+                                });
+                            }
                         }
                     }
                 }
@@ -715,6 +781,18 @@ mod tests {
         assert_eq!(paths.len(), 7);
         assert_eq!(paths.iter().filter(|path| path._reflection_order == 0).count(), 1);
         assert_eq!(paths.iter().filter(|path| path._reflection_order == 1).count(), 6);
+    }
+
+    #[test]
+    fn rigid_shoebox_ir_window_needs_at_most_thirty_reflections() {
+        let paths = rigid_shoebox_image_paths_within_length(
+            vec3(10.0, 8.0, 6.0),
+            vec3(2.1, 2.7, 2.2),
+            vec3(7.4, 5.9, 3.8),
+            MAXIMUM_PATH_LENGTH,
+        );
+        assert!(paths.len() > 1_000);
+        assert!(paths.iter().map(|path| path._reflection_order).max().unwrap() <= 30);
     }
 
     #[test]
