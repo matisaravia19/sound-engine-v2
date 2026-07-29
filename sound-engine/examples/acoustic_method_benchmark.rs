@@ -375,6 +375,25 @@ fn benchmark_cases() -> Vec<BenchmarkCase> {
             ],
         },
         BenchmarkCase {
+            name: "absorbing_single_plane",
+            source: plane_source,
+            listener: plane_listener,
+            max_bounces: 1,
+            scene: single_plane_scene(ROOM_ABSORPTION_ENERGY),
+            exact_paths: vec![
+                ExactPath {
+                    length_meters: plane_direct,
+                    pressure_reflection: 1.0,
+                    _reflection_order: 0,
+                },
+                ExactPath {
+                    length_meters: plane_reflected,
+                    pressure_reflection: ROOM_REFLECTION_PRESSURE,
+                    _reflection_order: 1,
+                },
+            ],
+        },
+        BenchmarkCase {
             name: "parallel_planes",
             source: parallel_source,
             listener: parallel_listener,
