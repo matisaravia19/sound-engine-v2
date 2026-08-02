@@ -17,7 +17,8 @@ fn main() -> SoundResult<()> {
     let listener_position = vec3(0.55, 0.35, -0.05);
     let listener = ListenerPose {
         position: listener_position,
-        right: vec3(1.0, 0.0, 0.0),
+        forward: -Vec3::Z,
+        up: Vec3::Y,
     };
     let source = PointSource {
         position: source_position,
@@ -102,6 +103,7 @@ fn engine_config() -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
 }

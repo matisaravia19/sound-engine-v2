@@ -340,6 +340,7 @@ mod tests {
                 sampling_seed: 0,
             },
             cache: crate::core::config::IrCacheConfig::default(),
+            binaural: Default::default(),
             auralization: crate::core::config::AuralizationConfig { block_size: 64 },
         }
     }

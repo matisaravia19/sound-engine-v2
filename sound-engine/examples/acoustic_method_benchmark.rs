@@ -232,7 +232,8 @@ fn trace_case(gpu: &VkBackend, options: &Options, case: &BenchmarkCase) -> Sound
         query_id: 1,
         source_position: case.source,
         listener_position: case.listener,
-        listener_right: Vec3::X,
+        listener_forward: -Vec3::Z,
+        listener_up: Vec3::Y,
         source_amplitude: SOURCE_AMPLITUDE,
     };
 
@@ -283,6 +284,7 @@ fn engine_config(listener_ray_count: u32, sampling_seed: u32, max_bounces: u32) 
             sampling_seed,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: 1024 },
     }
 }

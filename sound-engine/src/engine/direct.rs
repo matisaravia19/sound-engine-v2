@@ -89,8 +89,7 @@ impl EngineCore {
 
     /// Sets the listener pose used by future IR queries.
     pub(super) fn set_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
-        crate::acoustics::validate_listener(listener)?;
-        self.listener = listener;
+        self.listener = crate::acoustics::canonicalize_listener(listener)?;
         self.mark_all_spatial_voices_dirty();
         Ok(())
     }

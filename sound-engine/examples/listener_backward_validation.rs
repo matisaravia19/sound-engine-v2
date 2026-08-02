@@ -25,7 +25,8 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
         query_id: 1,
         source_position: Vec3::ZERO,
         listener_position: Vec3::X,
-        listener_right: Vec3::X,
+        listener_forward: -Vec3::Z,
+        listener_up: Vec3::Y,
         source_amplitude: 1.0,
     };
     let low = trace(gpu, empty_scene(), config(64, 0), query)?;
@@ -51,7 +52,8 @@ fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
         query_id: 2,
         source_position: vec3(-1.0, 0.0, 0.0),
         listener_position: vec3(1.0, 0.0, 0.0),
-        listener_right: Vec3::X,
+        listener_forward: -Vec3::Z,
+        listener_up: Vec3::Y,
         source_amplitude: 1.0,
     };
     let ir = trace(gpu, occluding_wall_scene(), config(4_096, 0), query)?;
@@ -65,7 +67,8 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
         query_id: 3,
         source_position: source,
         listener_position: listener,
-        listener_right: Vec3::X,
+        listener_forward: -Vec3::Z,
+        listener_up: Vec3::Y,
         source_amplitude: 1.0,
     };
     let ir = trace(gpu, reflection_scene(), config(262_144, 1), query)?;
@@ -88,7 +91,8 @@ fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<(
         query_id: 4,
         source_position: vec3(1.0, 0.0, -1.0),
         listener_position: vec3(-1.0, 0.0, 0.5),
-        listener_right: Vec3::X,
+        listener_forward: -Vec3::Z,
+        listener_up: Vec3::Y,
         source_amplitude: 1.0,
     };
     let baseline = trace(gpu, diffraction_scene(None), config(65_536, 1), query)?;
@@ -147,6 +151,7 @@ fn config(listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
             sampling_seed: 7,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: 1024 },
     }
 }

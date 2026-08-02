@@ -10,8 +10,8 @@ pub struct IrCacheConfig {
     pub position_cell_meters: f32,
     /// Maximum source/listener movement that may reuse an IR inside a cell.
     pub reuse_distance_meters: f32,
-    /// Dot-product tolerance for listener right-vector reuse.
-    pub listener_right_dot_threshold: f32,
+    /// Dot-product tolerance applied to both listener orientation axes during reuse.
+    pub listener_orientation_dot_threshold: f32,
     /// Maximum cached IR snapshots retained per engine instance.
     pub max_entries: usize,
     /// Maximum GPU memory retained by cached IR buffers.
@@ -23,7 +23,7 @@ impl Default for IrCacheConfig {
         Self {
             position_cell_meters: 0.25,
             reuse_distance_meters: 0.2,
-            listener_right_dot_threshold: 0.98,
+            listener_orientation_dot_threshold: 0.98,
             max_entries: 32,
             max_gpu_cache_bytes: 512 * 1024 * 1024,
         }
@@ -43,8 +43,10 @@ pub struct IrCacheQuery {
     pub source_amplitude: f32,
     /// Listener position in world meters.
     pub listener_position: Vec3,
-    /// Listener right-ear direction in world space.
-    pub listener_right: Vec3,
+    /// Listener forward direction in world space.
+    pub listener_forward: Vec3,
+    /// Listener up direction in world space.
+    pub listener_up: Vec3,
 }
 
 /// Small GPU IR LRU cache keyed by scene and oriented source/listener state.
@@ -75,7 +77,8 @@ struct LocationCacheKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IrCacheKey {
     location: LocationCacheKey,
-    listener_right_cell: [i32; 3],
+    listener_forward_cell: [i32; 3],
+    listener_up_cell: [i32; 3],
 }
 
 impl IrCache {
@@ -162,10 +165,16 @@ impl IrCache {
             && entry.query.listener_position.distance(query.listener_position) <= self.cfg.reuse_distance_meters
             && entry
                 .query
-                .listener_right
+                .listener_forward
                 .normalize_or_zero()
-                .dot(query.listener_right.normalize_or_zero())
-                >= self.cfg.listener_right_dot_threshold
+                .dot(query.listener_forward.normalize_or_zero())
+                >= self.cfg.listener_orientation_dot_threshold
+            && entry
+                .query
+                .listener_up
+                .normalize_or_zero()
+                .dot(query.listener_up.normalize_or_zero())
+                >= self.cfg.listener_orientation_dot_threshold
     }
 
     fn location_key(&self, query: IrCacheQuery) -> LocationCacheKey {
@@ -180,7 +189,11 @@ impl IrCache {
     fn key_for_query(&self, query: IrCacheQuery) -> IrCacheKey {
         IrCacheKey {
             location: self.location_key(query),
-            listener_right_cell: quantize_direction(query.listener_right, self.cfg.listener_right_dot_threshold),
+            listener_forward_cell: quantize_direction(
+                query.listener_forward,
+                self.cfg.listener_orientation_dot_threshold,
+            ),
+            listener_up_cell: quantize_direction(query.listener_up, self.cfg.listener_orientation_dot_threshold),
         }
     }
 
@@ -194,12 +207,13 @@ impl IrCache {
             let Some(oldest) = self.lru.pop_front() else {
                 break;
             };
-            let threshold = self.cfg.listener_right_dot_threshold;
+            let threshold = self.cfg.listener_orientation_dot_threshold;
             if let Some(entries) = self.entries.get_mut(&oldest.location) {
                 if let Some(index) = entries.iter().position(|entry| {
                     IrCacheKey {
                         location: oldest.location,
-                        listener_right_cell: quantize_direction(entry.query.listener_right, threshold),
+                        listener_forward_cell: quantize_direction(entry.query.listener_forward, threshold),
+                        listener_up_cell: quantize_direction(entry.query.listener_up, threshold),
                     } == oldest
                 }) {
                     let entry = entries.remove(index);
@@ -239,9 +253,13 @@ mod tests {
         cache.insert_ir(query, ir_snapshot(query));
 
         let mut rotated = query;
-        rotated.listener_right = Vec3::Z;
+        rotated.listener_forward = Vec3::Z;
 
         assert!(cache.get_ir(rotated).is_none());
+
+        let mut tilted = query;
+        tilted.listener_up = Vec3::Z;
+        assert!(cache.get_ir(tilted).is_none());
     }
 
     #[test]
@@ -277,14 +295,15 @@ mod tests {
         assert!(cache.get_ir(second).is_some());
     }
 
-    fn query(listener_right: Vec3) -> IrCacheQuery {
+    fn query(listener_forward: Vec3) -> IrCacheQuery {
         IrCacheQuery {
             scene_version: 1,
             query_id: 0,
             source_position: Vec3::ZERO,
             source_amplitude: 1.0,
             listener_position: Vec3::Y,
-            listener_right,
+            listener_forward,
+            listener_up: Vec3::Y,
         }
     }
 

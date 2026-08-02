@@ -20,7 +20,8 @@ fn main() -> SoundResult<()> {
     engine.load_scene(box_room_scene())?;
     engine.set_listener_pose(ListenerPose {
         position: vec3(2.0, 0.0, -1.0),
-        right: Vec3::Y,
+        forward: -Vec3::X,
+        up: Vec3::Z,
     })?;
 
     let sound_id = engine.insert_sound(sine_tone(440.0, 0.75)?)?;
@@ -66,6 +67,7 @@ fn engine_config() -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
 }

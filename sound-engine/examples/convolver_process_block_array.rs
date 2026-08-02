@@ -91,6 +91,7 @@ fn engine_config(
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size },
     }
 }

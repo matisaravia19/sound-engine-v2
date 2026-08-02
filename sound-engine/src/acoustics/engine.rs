@@ -6,6 +6,7 @@ use crate::core::error::{SoundError, SoundResult};
 use crate::engine::{ListenerPose, PointSource};
 use crate::gpu::backend::VkBackend;
 use crate::scene::{SceneDescription, SceneManager, SceneUpdates, SceneVersion};
+use glam::Vec3;
 
 /// Scene-backed acoustic IR engine with synchronous cache-backed queries.
 ///
@@ -70,7 +71,7 @@ impl AcousticsEngine {
         listener: ListenerPose,
     ) -> SoundResult<GpuIrSnapshot> {
         validate_source(source)?;
-        validate_listener(listener)?;
+        let listener = canonicalize_listener(listener)?;
 
         let cache_query = cache_query(self.scene.version(), source, listener);
         if let Some(snapshot) = self.cache.get_ir(cache_query) {
@@ -86,7 +87,8 @@ impl AcousticsEngine {
                 query_id: cache_query.query_id,
                 source_position: source.position,
                 listener_position: listener.position,
-                listener_right: listener.right,
+                listener_forward: listener.forward,
+                listener_up: listener.up,
                 source_amplitude: source.amplitude,
             },
         )?;
@@ -103,7 +105,8 @@ fn cache_query(scene_version: SceneVersion, source: PointSource, listener: Liste
         source_position: source.position,
         source_amplitude: source.amplitude,
         listener_position: listener.position,
-        listener_right: listener.right,
+        listener_forward: listener.forward,
+        listener_up: listener.up,
     }
 }
 
@@ -120,15 +123,31 @@ pub(crate) fn validate_source(source: PointSource) -> SoundResult<()> {
     Ok(())
 }
 
-/// Validates finite listener parameters before they reach acoustic queries.
-pub(crate) fn validate_listener(listener: ListenerPose) -> SoundResult<()> {
+/// Validates and orthonormalizes listener parameters before acoustic queries.
+pub(crate) fn canonicalize_listener(listener: ListenerPose) -> SoundResult<ListenerPose> {
     if !listener.position.is_finite() {
         return Err(SoundError::invalid_argument("listener position must be finite"));
     }
-    if !listener.right.is_finite() {
-        return Err(SoundError::invalid_argument("listener right vector must be finite"));
+    if !listener.forward.is_finite() || !listener.up.is_finite() {
+        return Err(SoundError::invalid_argument(
+            "listener forward and up vectors must be finite",
+        ));
     }
-    Ok(())
+    let forward = listener.forward.normalize_or_zero();
+    let approximate_up = listener.up.normalize_or_zero();
+    let approximate_right = forward.cross(approximate_up);
+    if forward == Vec3::ZERO || approximate_right.length_squared() <= 1.0e-8 {
+        return Err(SoundError::invalid_argument(
+            "listener forward and up vectors must be non-zero and non-collinear",
+        ));
+    }
+    let right = approximate_right.normalize();
+    let up = right.cross(forward);
+    Ok(ListenerPose {
+        position: listener.position,
+        forward,
+        up,
+    })
 }
 
 /// Converts the public core cache configuration into acoustic cache settings.
@@ -136,7 +155,7 @@ fn cache_config(config: CoreIrCacheConfig) -> IrCacheConfig {
     IrCacheConfig {
         position_cell_meters: config.position_cell_meters,
         reuse_distance_meters: config.reuse_distance_meters,
-        listener_right_dot_threshold: config.listener_right_dot_threshold,
+        listener_orientation_dot_threshold: config.listener_orientation_dot_threshold,
         max_entries: config.max_entries,
         max_gpu_cache_bytes: config.max_gpu_cache_bytes,
     }
@@ -145,7 +164,7 @@ fn cache_config(config: CoreIrCacheConfig) -> IrCacheConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
+    use glam::{Quat, Vec3};
 
     #[test]
     fn rejects_non_finite_acoustic_query_values() {
@@ -159,20 +178,34 @@ mod tests {
         assert!(validate_source(source).is_err());
 
         assert!(
-            validate_listener(ListenerPose {
+            canonicalize_listener(ListenerPose {
                 position: Vec3::new(0.0, f32::NAN, 0.0),
-                right: Vec3::X,
+                forward: -Vec3::Z,
+                up: Vec3::Y,
             })
             .is_err()
         );
         assert!(
-            validate_listener(ListenerPose {
+            canonicalize_listener(ListenerPose {
                 position: Vec3::ZERO,
-                right: Vec3::new(0.0, 0.0, f32::INFINITY),
+                forward: Vec3::new(0.0, 0.0, f32::INFINITY),
+                up: Vec3::Y,
             })
             .is_err()
         );
-        assert!(validate_listener(listener).is_ok());
+        assert!(canonicalize_listener(listener).is_ok());
+        assert!(canonicalize_listener(ListenerPose::new(Vec3::ZERO, Vec3::ZERO, Vec3::Y)).is_err());
+        assert!(canonicalize_listener(ListenerPose::new(Vec3::ZERO, Vec3::Y, Vec3::Y)).is_err());
+
+        let canonical = canonicalize_listener(ListenerPose::new(
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -2.0),
+            Vec3::new(0.0, 3.0, -0.5),
+        ))
+        .unwrap();
+        assert!((canonical.forward.length() - 1.0).abs() < 1.0e-6);
+        assert!((canonical.up.length() - 1.0).abs() < 1.0e-6);
+        assert!(canonical.forward.dot(canonical.up).abs() < 1.0e-6);
     }
 
     #[test]
@@ -180,7 +213,7 @@ mod tests {
         let config = CoreIrCacheConfig {
             position_cell_meters: 0.5,
             reuse_distance_meters: 0.25,
-            listener_right_dot_threshold: 0.9,
+            listener_orientation_dot_threshold: 0.9,
             max_entries: 4,
             max_gpu_cache_bytes: 1234,
         };
@@ -189,8 +222,8 @@ mod tests {
         assert_eq!(acoustic.position_cell_meters, config.position_cell_meters);
         assert_eq!(acoustic.reuse_distance_meters, config.reuse_distance_meters);
         assert_eq!(
-            acoustic.listener_right_dot_threshold,
-            config.listener_right_dot_threshold
+            acoustic.listener_orientation_dot_threshold,
+            config.listener_orientation_dot_threshold
         );
         assert_eq!(acoustic.max_entries, config.max_entries);
         assert_eq!(acoustic.max_gpu_cache_bytes, config.max_gpu_cache_bytes);
@@ -200,7 +233,8 @@ mod tests {
     fn builds_cache_query_from_listener_and_source() {
         let listener = ListenerPose {
             position: Vec3::new(1.0, 2.0, 3.0),
-            right: Vec3::Y,
+            forward: -Vec3::Z,
+            up: Vec3::Y,
         };
         let source = PointSource {
             position: Vec3::new(4.0, 5.0, 6.0),
@@ -214,6 +248,25 @@ mod tests {
         assert_eq!(query.source_position, source.position);
         assert_eq!(query.source_amplitude, source.amplitude);
         assert_eq!(query.listener_position, listener.position);
-        assert_eq!(query.listener_right, listener.right);
+        assert_eq!(query.listener_forward, listener.forward);
+        assert_eq!(query.listener_up, listener.up);
+    }
+
+    #[test]
+    fn listener_relative_lateral_direction_is_rotation_invariant() {
+        let listener = canonicalize_listener(ListenerPose::default()).unwrap();
+        let arrival = Vec3::new(0.7, 0.2, -0.4).normalize();
+        let lateral = listener.right().dot(arrival);
+
+        let rotation = Quat::from_rotation_y(0.8) * Quat::from_rotation_x(-0.35);
+        let rotated = canonicalize_listener(ListenerPose::new(
+            rotation * listener.position,
+            rotation * listener.forward,
+            rotation * listener.up,
+        ))
+        .unwrap();
+        let rotated_lateral = rotated.right().dot(rotation * arrival);
+
+        assert!((rotated_lateral - lateral).abs() < 1.0e-6);
     }
 }

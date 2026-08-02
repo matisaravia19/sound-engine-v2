@@ -35,8 +35,10 @@ pub struct AcousticQuery {
     pub source_position: Vec3,
     /// Listener position in world meters.
     pub listener_position: Vec3,
-    /// Listener right-ear direction used for direction-based stereo panning.
-    pub listener_right: Vec3,
+    /// Listener forward direction in world space.
+    pub listener_forward: Vec3,
+    /// Listener up direction in world space.
+    pub listener_up: Vec3,
     /// Reference source pressure amplitude.
     pub source_amplitude: f32,
 }
@@ -70,6 +72,8 @@ struct ListenerTracePushConstants {
     output_channels: u32,
     sampling_seed: u32,
     minimum_throughput: f32,
+    head_radius_meters: f32,
+    max_ild_db: f32,
     _pad0: u32,
 }
 
@@ -193,7 +197,12 @@ impl AcousticPipeline {
             source_amplitude: query.source_amplitude,
             listener_position: query.listener_position.to_array(),
             speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
-            listener_right: query.listener_right.to_array(),
+            listener_right: query
+                .listener_forward
+                .normalize()
+                .cross(query.listener_up.normalize())
+                .normalize_or_zero()
+                .to_array(),
             maximum_path_length: self.config.acoustics.maximum_path_length,
             listener_ray_count: self.config.acoustics.listener_ray_count,
             max_bounces: self.config.acoustics.max_bounces,
@@ -202,6 +211,8 @@ impl AcousticPipeline {
             output_channels: output_channels_to_shader(self.config.sound.output_channels),
             sampling_seed: self.config.acoustics.sampling_seed,
             minimum_throughput: self.config.acoustics.minimum_throughput,
+            head_radius_meters: self.config.binaural.head_radius_meters,
+            max_ild_db: self.config.binaural.max_ild_db,
             _pad0: 0,
         };
 
@@ -351,12 +362,33 @@ fn validate_config(config: EngineConfig) -> SoundResult<()> {
             "minimum_throughput must be finite and non-negative",
         ));
     }
+    if !config.binaural.head_radius_meters.is_finite() || config.binaural.head_radius_meters <= 0.0 {
+        return Err(SoundError::invalid_argument(
+            "binaural head radius must be finite and positive",
+        ));
+    }
+    if !config.binaural.max_ild_db.is_finite() || config.binaural.max_ild_db < 0.0 {
+        return Err(SoundError::invalid_argument(
+            "binaural maximum ILD must be finite and non-negative",
+        ));
+    }
     Ok(())
 }
 
 fn validate_query(query: AcousticQuery) -> SoundResult<()> {
-    if !query.source_position.is_finite() || !query.listener_position.is_finite() || !query.listener_right.is_finite() {
+    if !query.source_position.is_finite()
+        || !query.listener_position.is_finite()
+        || !query.listener_forward.is_finite()
+        || !query.listener_up.is_finite()
+    {
         return Err(SoundError::invalid_argument("acoustic query vectors must be finite"));
+    }
+    let forward = query.listener_forward.normalize_or_zero();
+    let up = query.listener_up.normalize_or_zero();
+    if forward == Vec3::ZERO || up == Vec3::ZERO || forward.cross(up).length_squared() <= 1.0e-8 {
+        return Err(SoundError::invalid_argument(
+            "listener forward and up vectors must be non-zero and non-collinear",
+        ));
     }
     if !query.source_amplitude.is_finite() || query.source_amplitude < 0.0 {
         return Err(SoundError::invalid_argument(
@@ -398,22 +430,87 @@ fn pressure_branch_probabilities(energies: &[f32]) -> Vec<f32> {
 
 #[cfg(test)]
 fn deposit_fractional(samples: &mut [f32], sample_position: f32, amplitude: f32) {
-    if !sample_position.is_finite() || !amplitude.is_finite() || sample_position < 0.0 {
+    if !sample_position.is_finite()
+        || !amplitude.is_finite()
+        || sample_position <= -1.0
+        || sample_position >= samples.len() as f32
+    {
         return;
     }
-    let base = sample_position.floor() as usize;
+    let base = sample_position.floor() as isize;
     let fraction = sample_position - base as f32;
-    if let Some(sample) = samples.get_mut(base) {
+    if base >= 0
+        && let Some(sample) = samples.get_mut(base as usize)
+    {
         *sample += amplitude * (1.0 - fraction);
     }
-    if let Some(sample) = samples.get_mut(base.saturating_add(1)) {
+    let next = base + 1;
+    if next >= 0
+        && let Some(sample) = samples.get_mut(next as usize)
+    {
         *sample += amplitude * fraction;
     }
 }
 
 #[cfg(test)]
+fn analytic_binaural_estimate(
+    lateral: f32,
+    head_radius_meters: f32,
+    max_ild_db: f32,
+    sample_rate: u32,
+) -> ([f32; 2], [f32; 2]) {
+    let lateral = lateral.clamp(-1.0, 1.0);
+    let absolute_lateral = lateral.abs();
+    let itd_seconds = lateral.signum() * head_radius_meters / SPEED_OF_SOUND_METERS_PER_SECOND
+        * (absolute_lateral.asin() + absolute_lateral);
+    let half_itd_samples = 0.5 * itd_seconds * sample_rate as f32;
+    let far_to_near = 10.0_f32.powf(-max_ild_db * absolute_lateral / 20.0);
+    let near_factor = (1.0 + far_to_near * far_to_near).sqrt().recip();
+    let far_factor = far_to_near * near_factor;
+    let gains = if lateral < 0.0 {
+        [near_factor, far_factor]
+    } else if lateral > 0.0 {
+        [far_factor, near_factor]
+    } else {
+        [near_factor, near_factor]
+    };
+    ([half_itd_samples, -half_itd_samples], gains)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> EngineConfig {
+        EngineConfig {
+            sound: crate::core::config::SoundConfig {
+                output_channels: OutputChannels::Binaural,
+                sample_rate: 48_000,
+                ir_num_samples: 16_384,
+            },
+            acoustics: crate::core::config::AcousticsConfig {
+                listener_ray_count: 1,
+                max_bounces: 0,
+                maximum_path_length: 343.0,
+                minimum_throughput: 0.0,
+                sampling_seed: 0,
+            },
+            cache: crate::core::config::IrCacheConfig::default(),
+            binaural: crate::core::config::BinauralConfig::default(),
+            auralization: crate::core::config::AuralizationConfig { block_size: 1_024 },
+        }
+    }
+
+    fn test_query() -> AcousticQuery {
+        AcousticQuery {
+            query_id: 1,
+            source_position: Vec3::Z,
+            listener_position: Vec3::ZERO,
+            listener_forward: -Vec3::Z,
+            listener_up: Vec3::Y,
+            source_amplitude: 1.0,
+        }
+    }
 
     #[test]
     fn power_cosine_pdf_integrates_to_one() {
@@ -471,7 +568,105 @@ mod tests {
 
     #[test]
     fn push_constants_match_shader_layout() {
-        assert_eq!(size_of::<ListenerTracePushConstants>(), 80);
+        assert_eq!(size_of::<ListenerTracePushConstants>(), 88);
+        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, minimum_throughput), 72);
+        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, head_radius_meters), 76);
+        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, max_ild_db), 80);
+    }
+
+    #[test]
+    fn centered_binaural_arrivals_have_equal_levels_and_no_itd() {
+        let right = Vec3::X;
+        for direction in [-Vec3::Z, Vec3::Z, Vec3::Y, Vec3::ZERO] {
+            let lateral = direction.normalize_or_zero().dot(right);
+            let (offsets, gains) = analytic_binaural_estimate(lateral, 0.0875, 12.0, 48_000);
+            assert_eq!(offsets, [0.0, 0.0]);
+            assert!((gains[0] - gains[1]).abs() < 1.0e-7);
+        }
+    }
+
+    #[test]
+    fn left_and_right_binaural_arrivals_are_mirrored() {
+        let (left_offsets, left_gains) = analytic_binaural_estimate(-0.75, 0.0875, 12.0, 48_000);
+        let (right_offsets, right_gains) = analytic_binaural_estimate(0.75, 0.0875, 12.0, 48_000);
+        assert_eq!(left_offsets, [right_offsets[1], right_offsets[0]]);
+        assert_eq!(left_gains, [right_gains[1], right_gains[0]]);
+    }
+
+    #[test]
+    fn maximum_binaural_itd_matches_spherical_head_formula() {
+        let radius = 0.0875;
+        let sample_rate = 48_000;
+        let (offsets, _) = analytic_binaural_estimate(1.0, radius, 12.0, sample_rate);
+        let expected =
+            radius / SPEED_OF_SOUND_METERS_PER_SECOND * (std::f32::consts::FRAC_PI_2 + 1.0) * sample_rate as f32;
+        assert!(((offsets[0] - offsets[1]) - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn binaural_ild_gains_preserve_unit_energy() {
+        for lateral in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+            let (_, gains) = analytic_binaural_estimate(lateral, 0.0875, 12.0, 48_000);
+            assert!((gains[0] * gains[0] + gains[1] * gains[1] - 1.0).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn binaural_fractional_deposition_preserves_each_ear_pressure() {
+        let (offsets, gains) = analytic_binaural_estimate(0.6, 0.0875, 12.0, 48_000);
+        let center = 10.25;
+        let amplitude = -2.0;
+        let mut left = [0.0; 32];
+        let mut right = [0.0; 32];
+        deposit_fractional(&mut left, center + offsets[0], amplitude * gains[0]);
+        deposit_fractional(&mut right, center + offsets[1], amplitude * gains[1]);
+        assert!((left.iter().sum::<f32>() - amplitude * gains[0]).abs() < 1.0e-6);
+        assert!((right.iter().sum::<f32>() - amplitude * gains[1]).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fractional_deposition_clips_only_the_out_of_bounds_portion() {
+        let mut samples = [0.0; 2];
+        deposit_fractional(&mut samples, -0.25, -2.0);
+        assert_eq!(samples, [-1.5, 0.0]);
+
+        samples.fill(0.0);
+        deposit_fractional(&mut samples, 1.25, 2.0);
+        assert_eq!(samples, [0.0, 1.5]);
+    }
+
+    #[test]
+    fn rejects_invalid_binaural_configuration() {
+        let mut config = test_config();
+        config.binaural.head_radius_meters = 0.0;
+        assert!(validate_config(config).is_err());
+
+        config = test_config();
+        config.binaural.head_radius_meters = f32::NAN;
+        assert!(validate_config(config).is_err());
+
+        config = test_config();
+        config.binaural.max_ild_db = -1.0;
+        assert!(validate_config(config).is_err());
+
+        config = test_config();
+        config.binaural.max_ild_db = f32::INFINITY;
+        assert!(validate_config(config).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_acoustic_query_orientation() {
+        let mut query = test_query();
+        query.listener_forward = Vec3::ZERO;
+        assert!(validate_query(query).is_err());
+
+        query = test_query();
+        query.listener_up = query.listener_forward;
+        assert!(validate_query(query).is_err());
+
+        query = test_query();
+        query.listener_up = Vec3::splat(f32::NAN);
+        assert!(validate_query(query).is_err());
     }
 
     #[test]

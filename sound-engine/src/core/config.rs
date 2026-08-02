@@ -7,8 +7,28 @@ pub struct EngineConfig {
     pub acoustics: AcousticsConfig,
     /// Configuration for acoustic IR caching and reuse.
     pub cache: IrCacheConfig,
+    /// Configuration for analytic binaural rendering.
+    pub binaural: BinauralConfig,
     /// Configuration for the auralization engine and output generation.
     pub auralization: AuralizationConfig,
+}
+
+/// Parameters for the angle-derived binaural estimator.
+#[derive(Debug, Clone, Copy)]
+pub struct BinauralConfig {
+    /// Radius of the spherical head model in meters.
+    pub head_radius_meters: f32,
+    /// Maximum broadband interaural level difference in decibels.
+    pub max_ild_db: f32,
+}
+
+impl Default for BinauralConfig {
+    fn default() -> Self {
+        Self {
+            head_radius_meters: 0.0875,
+            max_ild_db: 12.0,
+        }
+    }
 }
 
 /// Runtime configuration for sound generation and impulse response construction.
@@ -65,8 +85,8 @@ pub struct IrCacheConfig {
     pub position_cell_meters: f32,
     /// Maximum source/listener movement that may reuse an IR inside a cell.
     pub reuse_distance_meters: f32,
-    /// Dot-product tolerance for listener right-vector reuse.
-    pub listener_right_dot_threshold: f32,
+    /// Dot-product tolerance applied to both listener orientation axes during reuse.
+    pub listener_orientation_dot_threshold: f32,
     /// Maximum cached IR snapshots retained per engine instance.
     pub max_entries: usize,
     /// Maximum GPU memory used by cached acoustic IR buffers.
@@ -78,7 +98,7 @@ impl Default for IrCacheConfig {
         Self {
             position_cell_meters: 0.25,
             reuse_distance_meters: 0.2,
-            listener_right_dot_threshold: 0.98,
+            listener_orientation_dot_threshold: 0.98,
             max_entries: 32,
             max_gpu_cache_bytes: 512 * 1024 * 1024,
         }

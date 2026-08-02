@@ -27,7 +27,8 @@ fn main() -> SoundResult<()> {
             query_id: 2,
             source_position,
             listener_position,
-            listener_right: vec3(1.0, 0.0, 0.0),
+            listener_forward: -Vec3::Z,
+            listener_up: Vec3::Y,
             source_amplitude: 500.0,
         },
     )?;
@@ -82,6 +83,7 @@ fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32,
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: 1024 },
     }
 }

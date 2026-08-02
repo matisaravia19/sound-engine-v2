@@ -17,8 +17,10 @@ pub mod error;
 pub struct ListenerPose {
     /// Listener position in world meters.
     pub position: Vec3,
-    /// Listener right-ear direction in world space.
-    pub right: Vec3,
+    /// Listener forward direction in world space.
+    pub forward: Vec3,
+    /// Listener up direction in world space.
+    pub up: Vec3,
 }
 
 /// Point sound source rendered through the current acoustic scene.

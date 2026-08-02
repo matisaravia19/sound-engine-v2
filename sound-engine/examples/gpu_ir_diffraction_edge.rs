@@ -76,7 +76,8 @@ fn trace_scene(
             query_id,
             source_position,
             listener_position,
-            listener_right: Vec3::X,
+            listener_forward: -Vec3::Z,
+            listener_up: Vec3::Y,
             source_amplitude: 2_000.0,
         },
     )
@@ -97,6 +98,7 @@ fn engine_config() -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: 1024 },
     }
 }

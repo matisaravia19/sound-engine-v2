@@ -113,7 +113,8 @@ impl PlaygroundState {
         let forward = self.listener_forward().normalize_or_zero();
         ListenerPose {
             position: to_glam(self.listener_position()),
-            right: forward.cross(Vec3::Y).normalize_or_zero(),
+            forward,
+            up: Vec3::Y,
         }
     }
 
@@ -229,6 +230,7 @@ fn engine_config(sample_rate: u32) -> EngineConfig {
             sampling_seed: 0,
         },
         cache: IrCacheConfig::default(),
+        binaural: Default::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
 }
