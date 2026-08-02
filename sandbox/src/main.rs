@@ -217,9 +217,30 @@ fn main() -> SoundResult<()> {
         Vector3::new(0.0, 1.0, 0.0),
         60.0,
     );
+    let camera_stress_seconds = std::env::args()
+        .find_map(|argument| argument.strip_prefix("--camera-stress-seconds=").map(str::to_owned))
+        .and_then(|seconds| seconds.parse::<f32>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+    let camera_stress = camera_stress_seconds.map(|seconds| (Duration::from_secs_f32(seconds), Instant::now()));
+    if camera_stress.is_some() {
+        state.listener_mode = ListenerMode::Camera;
+        sync_camera_listener_if_changed(&mut engine, &mut state, &camera, true);
+        let voice_id = play_source_sound(&mut engine, sound_id, &state, &camera)?;
+        state.ui.last_voice = Some(voice_id);
+    }
 
     while !rl.window_should_close() {
-        rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
+        if let Some((duration, started)) = camera_stress {
+            let elapsed = started.elapsed().as_secs_f32();
+            if started.elapsed() >= duration {
+                break;
+            }
+            let angle = elapsed * 0.75;
+            camera.position = Vector3::new(angle.cos() * 7.0, 2.0 + (angle * 0.37).sin(), angle.sin() * 4.0);
+            camera.target = Vector3::new(0.0, 1.0, 0.0);
+        } else {
+            rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
+        }
         handle_config_keys(&rl, &mut engine, &mut state, &camera);
         if state.listener_mode == ListenerMode::Camera {
             sync_camera_listener_if_changed(&mut engine, &mut state, &camera, false);

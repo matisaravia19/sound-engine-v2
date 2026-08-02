@@ -6,9 +6,12 @@ use std::collections::{HashMap, VecDeque};
 /// Runtime policy for acoustic impulse-response reuse.
 #[derive(Debug, Clone, Copy)]
 pub struct IrCacheConfig {
-    /// Position quantization cell size in world meters.
+    /// Position bucket size in world meters.
+    ///
+    /// Reuse searches all populated buckets, so crossing a bucket boundary
+    /// does not bypass `reuse_distance_meters`.
     pub position_cell_meters: f32,
-    /// Maximum source/listener movement that may reuse an IR inside a cell.
+    /// Maximum source/listener movement that may reuse an IR.
     pub reuse_distance_meters: f32,
     /// Dot-product tolerance applied to both listener orientation axes during reuse.
     pub listener_orientation_dot_threshold: f32,
@@ -98,17 +101,34 @@ impl IrCache {
             return None;
         }
 
-        let location = self.location_key(query);
-        let (index, snapshot) = {
-            let entries = self.entries.get(&location)?;
-            let (index, entry) = entries
-                .iter()
-                .enumerate()
-                .find(|(_, entry)| self.can_reuse(entry, query))?;
-            (index, entry.snapshot.clone())
-        };
+        // The cache is deliberately small, so scanning its populated buckets
+        // is cheaper and more reliable than enumerating up to 27 source cells
+        // times 27 listener cells. Exact distance/orientation checks below are
+        // authoritative; quantization is only an insertion/eviction bucket.
+        let mut best: Option<(f32, LocationCacheKey, usize, IrCacheKey, GpuIrSnapshot)> = None;
+        for (&location, entries) in &self.entries {
+            if location.scene_version != query.scene_version || location.query_id != query.query_id {
+                continue;
+            }
+            for (index, entry) in entries.iter().enumerate() {
+                if !self.can_reuse(entry, query) {
+                    continue;
+                }
+                let score = reuse_score(entry.query, query);
+                if best.as_ref().is_none_or(|(best_score, ..)| score < *best_score) {
+                    best = Some((
+                        score,
+                        location,
+                        index,
+                        self.key_for_query(entry.query),
+                        entry.snapshot.clone(),
+                    ));
+                }
+            }
+        }
+        let (_, location, index, entry_key, snapshot) = best?;
 
-        self.touch(self.key_for_query(query));
+        self.touch(entry_key);
         if let Some(entries) = self.entries.get_mut(&location) {
             let entry = entries.remove(index);
             entries.push(entry);
@@ -227,6 +247,21 @@ impl IrCache {
     }
 }
 
+fn reuse_score(entry: IrCacheQuery, query: IrCacheQuery) -> f32 {
+    let forward_alignment = entry
+        .listener_forward
+        .normalize_or_zero()
+        .dot(query.listener_forward.normalize_or_zero());
+    let up_alignment = entry
+        .listener_up
+        .normalize_or_zero()
+        .dot(query.listener_up.normalize_or_zero());
+    entry.source_position.distance_squared(query.source_position)
+        + entry.listener_position.distance_squared(query.listener_position)
+        + (1.0 - forward_alignment)
+        + (1.0 - up_alignment)
+}
+
 fn quantize_direction(direction: Vec3, dot_threshold: f32) -> [i32; 3] {
     if !dot_threshold.is_finite() {
         return [0; 3];
@@ -275,6 +310,21 @@ mod tests {
         let mut changed = query;
         changed.source_amplitude = 2.0;
         assert!(cache.get_ir(changed).is_none());
+    }
+
+    #[test]
+    fn cache_reuses_nearby_positions_across_bucket_boundaries() {
+        let mut cache = IrCache::new(IrCacheConfig::default());
+        let mut original = query(Vec3::X);
+        original.source_position = Vec3::new(0.249, 0.0, 0.0);
+        original.listener_position = Vec3::new(1.249, 0.0, 0.0);
+        cache.insert_ir(original, ir_snapshot(original));
+
+        let mut across_boundary = original;
+        across_boundary.source_position.x = 0.251;
+        across_boundary.listener_position.x = 1.251;
+
+        assert!(cache.get_ir(across_boundary).is_some());
     }
 
     #[test]

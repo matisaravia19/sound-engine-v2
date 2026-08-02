@@ -246,11 +246,37 @@ impl RtContext {
                 );
         }
 
+        let scratch_alignment = self
+            .device_context
+            .rt_properties
+            .acceleration_structure
+            .min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize;
+        if scratch_alignment == 0 || !scratch_alignment.is_power_of_two() {
+            return Err(SoundError::invalid_state(format!(
+                "Invalid acceleration-structure scratch alignment {scratch_alignment}"
+            )));
+        }
+        let scratch_allocation_size = size_info
+            .build_scratch_size
+            .checked_add(scratch_alignment - 1)
+            .ok_or_else(|| SoundError::resource_allocation_failed("RT scratch buffer size overflow"))?;
+
         // The AS object is backed by a buffer owned by the returned handle.
         let storage = self.memory.create_device_address_buffer(
             size_info.acceleration_structure_size,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
         )?;
+
+        // A VMA buffer's base device address is not guaranteed to meet the
+        // stricter acceleration-structure scratch alignment. Reserve padding
+        // and point Vulkan at an aligned address inside the allocation.
+        // Scratch is temporary; the synchronous build below finishes before it drops.
+        let scratch = self
+            .memory
+            .create_device_address_buffer(scratch_allocation_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
+        let scratch_address = align_device_address(self.memory.buffer_device_address(&scratch), scratch_alignment)
+            .ok_or_else(|| SoundError::invalid_state("Acceleration-structure scratch address overflow"))?;
+
         let create_info = vk::AccelerationStructureCreateInfoKHR::default()
             .buffer(storage.buffer)
             .size(size_info.acceleration_structure_size)
@@ -260,24 +286,26 @@ impl RtContext {
                 .acceleration_structure
                 .create_acceleration_structure(&create_info, None)?
         };
-
-        // Scratch is temporary; the synchronous build below finishes before it drops.
-        let scratch = self
-            .memory
-            .create_device_address_buffer(size_info.build_scratch_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let build_info = build_info
             .dst_acceleration_structure(handle)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: self.memory.buffer_device_address(&scratch),
+                device_address: scratch_address,
             });
 
-        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
+        if let Err(error) = self.compute.submit_compute_and_wait(|command_buffer| unsafe {
             self.device_context
                 .acceleration_structure
                 .cmd_build_acceleration_structures(command_buffer, std::slice::from_ref(&build_info), &[ranges]);
 
             Ok(())
-        })?;
+        }) {
+            unsafe {
+                self.device_context
+                    .acceleration_structure
+                    .destroy_acceleration_structure(handle, None);
+            }
+            return Err(error);
+        }
 
         let address_info = vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle);
         let device_address = unsafe {
@@ -325,6 +353,13 @@ impl RtContext {
     }
 }
 
+fn align_device_address(address: vk::DeviceAddress, alignment: vk::DeviceSize) -> Option<vk::DeviceAddress> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return None;
+    }
+    address.checked_add(alignment - 1).map(|value| value & !(alignment - 1))
+}
+
 fn acceleration_instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
     // SAFETY:
     // - Vulkan defines VkAccelerationStructureInstanceKHR as the exact byte layout
@@ -356,6 +391,16 @@ fn matrix_to_tlas_transform(matrix: Mat4) -> [f32; 12] {
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+
+    #[test]
+    fn scratch_device_address_alignment_handles_unaligned_allocations() {
+        assert_eq!(align_device_address(0x1000, 128), Some(0x1000));
+        assert_eq!(align_device_address(0x1001, 128), Some(0x1080));
+        assert_eq!(align_device_address(0x107f, 128), Some(0x1080));
+        assert_eq!(align_device_address(u64::MAX, 128), None);
+        assert_eq!(align_device_address(0x1001, 0), None);
+        assert_eq!(align_device_address(0x1001, 96), None);
+    }
 
     #[test]
     fn translation_transform_is_converted_correctly() {

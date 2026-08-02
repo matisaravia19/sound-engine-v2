@@ -68,7 +68,11 @@ impl Voice {
         output_samples: usize,
         transition_frames: usize,
     ) {
-        let next = VoiceConvolutionState::new(impulse_response, tail_size, fft_size);
+        debug_assert_eq!(self.convolution.tail.len(), tail_size);
+        // The overlap tail summarizes every dry sample emitted before this IR
+        // update. Both transition branches must retain it; only contributions
+        // from new dry samples should diverge between the old and new filters.
+        let next = VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution, fft_size);
         let previous = std::mem::replace(&mut self.convolution, next);
         self.ir_transition = Some(VoiceIrTransition {
             previous,
@@ -139,6 +143,16 @@ impl VoiceConvolutionState {
             impulse_response,
             tail: vec![[0.0, 0.0]; tail_size],
             tail_position: 0,
+            complex_cpu_buffer: vec![[0.0, 0.0]; fft_size],
+        }
+    }
+
+    /// Creates a replacement filter while preserving pre-update overlap history.
+    fn with_carried_tail(impulse_response: Arc<ImpulseResponse>, previous: &Self, fft_size: usize) -> Self {
+        Self {
+            impulse_response,
+            tail: previous.tail.clone(),
+            tail_position: previous.tail_position,
             complex_cpu_buffer: vec![[0.0, 0.0]; fft_size],
         }
     }
