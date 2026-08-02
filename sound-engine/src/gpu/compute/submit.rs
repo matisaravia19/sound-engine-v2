@@ -32,17 +32,45 @@ impl ComputeContext {
                 .begin_command_buffer(command_buffer, &begin_info)?;
         }
 
-        record(command_buffer)?;
+        if let Err(error) = record(command_buffer) {
+            self.release_descriptor_sets(command_buffer)?;
+            unsafe {
+                self.device_context.device.destroy_fence(fence, None);
+            }
+            self.available_command_buffers
+                .lock()
+                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
+                .push(command_buffer);
+            return Err(error);
+        }
 
-        unsafe {
-            self.device_context.device.end_command_buffer(command_buffer)?;
+        if let Err(error) = unsafe { self.device_context.device.end_command_buffer(command_buffer) } {
+            self.release_descriptor_sets(command_buffer)?;
+            unsafe {
+                self.device_context.device.destroy_fence(fence, None);
+            }
+            self.available_command_buffers
+                .lock()
+                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
+                .push(command_buffer);
+            return Err(error.into());
         }
 
         let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
-        unsafe {
+        if let Err(error) = unsafe {
             self.device_context
                 .device
-                .queue_submit(queue.handle, std::slice::from_ref(&submit_info), fence)?;
+                .queue_submit(queue.handle, std::slice::from_ref(&submit_info), fence)
+        } {
+            self.release_descriptor_sets(command_buffer)?;
+            unsafe {
+                self.device_context.device.destroy_fence(fence, None);
+            }
+            self.available_command_buffers
+                .lock()
+                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
+                .push(command_buffer);
+            return Err(error.into());
         }
 
         self.in_flight
@@ -112,6 +140,8 @@ impl ComputeContext {
                 .wait_for_fences(std::slice::from_ref(&submission.fence), true, u64::MAX)?;
             self.device_context.device.destroy_fence(submission.fence, None);
         }
+
+        self.release_descriptor_sets(submission.command_buffer)?;
 
         self.available_command_buffers
             .lock()

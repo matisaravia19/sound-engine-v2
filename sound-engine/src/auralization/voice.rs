@@ -23,6 +23,13 @@ pub struct Voice {
     pub(crate) state: VoiceState,
     /// Per-voice overlap and FFT scratch state used by the convolver.
     pub(crate) convolution: VoiceConvolutionState,
+    /// Previous convolution state retained while an IR update crossfades.
+    pub(crate) ir_transition: Option<VoiceIrTransition>,
+    /// Most recent IR requested while another transition is still active.
+    ///
+    /// Coalescing rapid updates prevents an in-progress outgoing filter from
+    /// being dropped abruptly when listener poses arrive faster than the ramp.
+    pub(crate) pending_impulse_response: Option<Arc<ImpulseResponse>>,
 }
 
 impl Voice {
@@ -42,12 +49,49 @@ impl Voice {
             gain,
             state: VoiceState::Playing,
             convolution: VoiceConvolutionState::new(impulse_response, tail_size, fft_size),
+            ir_transition: None,
+            pending_impulse_response: None,
         }
     }
 
     /// Returns the unique id assigned to this voice.
     pub fn id(&self) -> VoiceId {
         self.id
+    }
+
+    /// Starts a sample-ramped transition from the current IR to `impulse_response`.
+    pub(crate) fn transition_impulse_response(
+        &mut self,
+        impulse_response: Arc<ImpulseResponse>,
+        tail_size: usize,
+        fft_size: usize,
+        output_samples: usize,
+        transition_frames: usize,
+    ) {
+        let next = VoiceConvolutionState::new(impulse_response, tail_size, fft_size);
+        let previous = std::mem::replace(&mut self.convolution, next);
+        self.ir_transition = Some(VoiceIrTransition {
+            previous,
+            output_buffer: vec![0.0; output_samples],
+            processed_frames: 0,
+            total_frames: transition_frames.max(1),
+        });
+    }
+
+    /// Starts an IR transition or coalesces it behind the active transition.
+    pub(crate) fn queue_impulse_response_transition(
+        &mut self,
+        impulse_response: Arc<ImpulseResponse>,
+        tail_size: usize,
+        fft_size: usize,
+        output_samples: usize,
+        transition_frames: usize,
+    ) {
+        if self.ir_transition.is_some() {
+            self.pending_impulse_response = Some(impulse_response);
+        } else {
+            self.transition_impulse_response(impulse_response, tail_size, fft_size, output_samples, transition_frames);
+        }
     }
 }
 
@@ -74,6 +118,18 @@ pub(crate) struct VoiceConvolutionState {
     pub(crate) tail_position: usize,
     /// Complex CPU staging buffer used for FFT input and output.
     pub(crate) complex_cpu_buffer: Vec<[f32; 2]>,
+}
+
+/// Previous filter state and ramp progress for one live IR replacement.
+pub(crate) struct VoiceIrTransition {
+    /// Convolution state using the outgoing IR, including its overlap tail.
+    pub(crate) previous: VoiceConvolutionState,
+    /// Interleaved scratch output rendered by the outgoing filter.
+    pub(crate) output_buffer: Vec<f32>,
+    /// Output frames already blended since this transition began.
+    pub(crate) processed_frames: usize,
+    /// Total output frames across which the incoming IR reaches full weight.
+    pub(crate) total_frames: usize,
 }
 
 impl VoiceConvolutionState {

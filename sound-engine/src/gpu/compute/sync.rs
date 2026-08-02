@@ -67,6 +67,21 @@ pub struct BufferBarrierSpec {
 }
 
 impl BufferBarrierSpec {
+    /// Synchronizes ray tracing writes with compute shader reads and writes.
+    pub fn ray_tracing_shader_write_to_compute_shader_read_write(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            src_access: vk::AccessFlags::SHADER_WRITE,
+            dst_access: vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
     /// Synchronizes ray tracing shader writes with later compute or transfer reads.
     pub fn ray_tracing_shader_write_to_compute_or_transfer_read(buffer: vk::Buffer) -> Self {
         Self {
@@ -138,6 +153,21 @@ impl BufferBarrierSpec {
             dst_stage: vk::PipelineStageFlags::TRANSFER,
             src_access: vk::AccessFlags::SHADER_WRITE,
             dst_access: vk::AccessFlags::TRANSFER_READ,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
+    /// Synchronizes compute writes with later compute or transfer reads.
+    pub fn compute_shader_write_to_compute_or_transfer_read(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+            src_access: vk::AccessFlags::SHADER_WRITE,
+            dst_access: vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_READ,
             src_queue_family: vk::QUEUE_FAMILY_IGNORED,
             dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
             buffer,

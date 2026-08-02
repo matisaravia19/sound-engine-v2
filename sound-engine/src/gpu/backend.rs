@@ -208,10 +208,14 @@ impl VkBackend {
             vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
         let mut shader_atomic_float_features =
             vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default().shader_buffer_float32_atomic_add(true);
+        // Surface hit shaders dereference 64-bit buffer device addresses. The
+        // corresponding core feature must be enabled in addition to BDA.
+        let core_features = vk::PhysicalDeviceFeatures::default().shader_int64(true);
 
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&extension_names)
+            .enabled_features(&core_features)
             .push_next(&mut buffer_device_address_features)
             .push_next(&mut acceleration_structure_features)
             .push_next(&mut ray_tracing_pipeline_features)
@@ -289,14 +293,18 @@ impl VkBackend {
         unsafe {
             instance.get_physical_device_features2(physical_device, &mut features);
         }
+        let shader_int64_supported = features.features.shader_int64 == vk::TRUE;
+        // End the feature-chain borrow before reading the chained structures.
+        let _ = features;
 
         if buffer_device_address_features.buffer_device_address != vk::TRUE
             || acceleration_structure_features.acceleration_structure != vk::TRUE
             || ray_tracing_pipeline_features.ray_tracing_pipeline != vk::TRUE
             || shader_atomic_float_features.shader_buffer_float32_atomic_add != vk::TRUE
+            || !shader_int64_supported
         {
             return Err(SoundError::unsupported_feature(
-                "Required Vulkan ray tracing or shader float atomic features are not supported",
+                "Required Vulkan ray tracing, shaderInt64, or shader float atomic features are not supported",
             ));
         }
 

@@ -30,6 +30,7 @@ pub struct ComputeContext {
     in_flight: Mutex<HashMap<u64, InFlightSubmission>>,
     queue: RwLock<QueueSet>,
     available_command_buffers: Mutex<Vec<vk::CommandBuffer>>,
+    descriptor_sets_by_command_buffer: Mutex<HashMap<vk::CommandBuffer, Vec<DescriptorSetAllocation>>>,
     pipelines: Mutex<HashMap<PipelineId, ComputePipeline>>,
 }
 
@@ -39,6 +40,15 @@ pub struct FrameToken(pub u64);
 struct InFlightSubmission {
     fence: vk::Fence,
     command_buffer: vk::CommandBuffer,
+}
+
+/// Descriptor set retained until the command buffer using it has completed.
+#[derive(Clone, Copy)]
+pub(crate) struct DescriptorSetAllocation {
+    /// Pool that owns the descriptor set.
+    pub pool: vk::DescriptorPool,
+    /// Set referenced by commands recorded into one submission.
+    pub set: vk::DescriptorSet,
 }
 
 /// Stable handle to a compute pipeline stored in `ComputeContext`.
@@ -74,6 +84,7 @@ impl ComputeContext {
             in_flight: Mutex::new(HashMap::new()),
             queue: RwLock::new(compute_queue),
             available_command_buffers: Mutex::new(preallocated_command_buffers),
+            descriptor_sets_by_command_buffer: Mutex::new(HashMap::new()),
             pipelines: Mutex::new(HashMap::new()),
         })
     }
@@ -141,6 +152,39 @@ impl ComputeContext {
             }
         }
 
+        Ok(())
+    }
+
+    /// Retains a descriptor set until the command buffer's fence completes.
+    pub(crate) fn track_descriptor_set(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        allocation: DescriptorSetAllocation,
+    ) -> SoundResult<()> {
+        self.descriptor_sets_by_command_buffer
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("Compute descriptor tracking lock is poisoned"))?
+            .entry(command_buffer)
+            .or_default()
+            .push(allocation);
+        Ok(())
+    }
+
+    /// Frees descriptor sets after all commands that reference them complete.
+    fn release_descriptor_sets(&self, command_buffer: vk::CommandBuffer) -> SoundResult<()> {
+        let allocations = self
+            .descriptor_sets_by_command_buffer
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("Compute descriptor tracking lock is poisoned"))?
+            .remove(&command_buffer)
+            .unwrap_or_default();
+        for allocation in allocations {
+            unsafe {
+                self.device_context
+                    .device
+                    .free_descriptor_sets(allocation.pool, std::slice::from_ref(&allocation.set))?;
+            }
+        }
         Ok(())
     }
 }

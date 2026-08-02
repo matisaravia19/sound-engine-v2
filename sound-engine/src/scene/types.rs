@@ -71,9 +71,12 @@ pub struct DiffractionEdge {
     pub bisector_dir: Vec3,
     /// Wedge angle in radians around the edge direction.
     pub edge_angle_radians: f32,
-    /// Maximum detection distance from the edge segment in world meters.
+    /// Legacy stochastic-proxy radius retained for scene compatibility.
+    ///
+    /// Deterministic BTM diffraction is independent of this value.
     pub diffraction_radius: f32,
-    /// Designer-authored energy share available to the diffracted child ray.
+    /// Designer-authored energy scale applied to the deterministic response.
+    /// The square root is used as a pressure multiplier.
     pub base_strength: f32,
 }
 

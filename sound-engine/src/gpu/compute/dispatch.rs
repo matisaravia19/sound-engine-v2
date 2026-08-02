@@ -76,7 +76,9 @@ impl ComputeContext {
         );
 
         // Descriptor sets are short-lived and allocated from growable pools.
-        let descriptor_set = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_set = descriptor_allocation.set;
+        self.track_descriptor_set(command_buffer, descriptor_allocation)?;
 
         let buffer_infos = build_buffer_infos(spec);
         let writes = build_descriptor_writes(spec, descriptor_set, &buffer_infos);

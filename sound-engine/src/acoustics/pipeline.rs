@@ -2,7 +2,10 @@ use crate::acoustics::{GpuIrSnapshot, IrSample, IrSnapshot};
 use crate::core::config::{EngineConfig, OutputChannels};
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
-use crate::gpu::compute::BufferBarrierSpec;
+use crate::gpu::compute::{
+    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
+    PushConstantSpec,
+};
 use crate::gpu::rt::{
     BlasBuildSpec, BlasId, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec,
     RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
@@ -17,14 +20,11 @@ use std::sync::Arc;
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
-#[cfg(test)]
-const SURFACE_GEOMETRY_MASK: u8 = 0x01;
-const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
-const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX - 1;
+const BTM_SEGMENTS_PER_EDGE: u32 = 4_096;
+const BTM_WORKGROUP_SIZE: u32 = 64;
 const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
 #[cfg(test)]
 const SURFACE_VISIBILITY_HIT_GROUP_OFFSET: u32 = 1;
-const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// Source/listener pair that should produce one impulse response.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +51,7 @@ pub struct AcousticQuery {
 pub struct AcousticPipeline {
     config: EngineConfig,
     listener_pipeline: RtPipelineId,
+    btm_diffraction_pipeline: PipelineId,
     /// Triangle storage kept alive for the mask-zero empty-scene sentinel BLAS.
     _empty_scene_mesh: RtMeshBuffers,
     empty_scene_blas: BlasId,
@@ -80,6 +81,28 @@ struct ListenerTracePushConstants {
 unsafe impl bytemuck::Zeroable for ListenerTracePushConstants {}
 unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct BtmDiffractionPushConstants {
+    source_position: [f32; 3],
+    source_amplitude: f32,
+    listener_position: [f32; 3],
+    maximum_path_length: f32,
+    listener_right: [f32; 3],
+    speed_of_sound: f32,
+    sample_rate: u32,
+    sample_count: u32,
+    output_channels: u32,
+    edge_count: u32,
+    segments_per_edge: u32,
+    head_radius_meters: f32,
+    max_ild_db: f32,
+    _pad0: u32,
+}
+
+unsafe impl bytemuck::Zeroable for BtmDiffractionPushConstants {}
+unsafe impl bytemuck::Pod for BtmDiffractionPushConstants {}
+
 impl AcousticPipeline {
     /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
     pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
@@ -90,12 +113,7 @@ impl AcousticPipeline {
         let visibility_miss = load_shader(gpu, ShaderStage::RayMiss, "visibility.rmiss.glsl")?;
         let surface_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "listener_backward_surface.rchit.glsl")?;
         let visibility_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "visibility.rchit.glsl")?;
-        let diffraction_closest_hit = load_shader(
-            gpu,
-            ShaderStage::RayClosestHit,
-            "listener_backward_diffraction.rchit.glsl",
-        )?;
-        let diffraction_intersection = load_shader(gpu, ShaderStage::RayIntersection, "diffraction.rint.glsl")?;
+        let btm_diffraction = load_shader(gpu, ShaderStage::Compute, "btm_diffraction.comp.glsl")?;
 
         let listener_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
@@ -104,22 +122,14 @@ impl AcousticPipeline {
                 RtShaderStageSpec::new(visibility_miss),
                 RtShaderStageSpec::new(surface_closest_hit),
                 RtShaderStageSpec::new(visibility_closest_hit),
-                RtShaderStageSpec::new(diffraction_closest_hit),
-                RtShaderStageSpec::new(diffraction_intersection),
             ],
-            // Hit records must remain in this order. Surface instances use SBT
-            // offset 0, visibility traces add 1, and diffraction instances use
-            // offset 2. The shaders use a zero SBT stride for both ray types.
+            // Surface continuation uses record zero and visibility adds one.
             groups: vec![
                 RtShaderGroupSpec::Raygen { shader: 0 },
                 RtShaderGroupSpec::Miss { shader: 1 },
                 RtShaderGroupSpec::Miss { shader: 2 },
                 RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 3 },
                 RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 4 },
-                RtShaderGroupSpec::ProceduralHit {
-                    closest_hit_shader: 5,
-                    intersection_shader: 6,
-                },
             ],
             // The compact descriptor set contains only traversal state, the
             // final IR, and immutable scene lookup tables. There is no
@@ -129,6 +139,8 @@ impl AcousticPipeline {
                 RtDescriptorBindingSpec::storage_buffer(1),
                 RtDescriptorBindingSpec::storage_buffer(2),
                 RtDescriptorBindingSpec::storage_buffer(3),
+                // Retained while the ray-generation module shares the edge
+                // record declaration with legacy dead-code paths.
                 RtDescriptorBindingSpec::storage_buffer(4),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(
@@ -136,6 +148,17 @@ impl AcousticPipeline {
                 size_of::<ListenerTracePushConstants>() as u32,
             )],
             max_ray_recursion_depth: 1,
+        })?;
+        let btm_diffraction_pipeline = gpu.compute().create_pipeline(ComputePipelineSpec {
+            shader_id: btm_diffraction,
+            descriptor_bindings: vec![
+                DescriptorBindingSpec::storage_buffer(0),
+                DescriptorBindingSpec::storage_buffer(1),
+            ],
+            push_constant_ranges: vec![PushConstantSpec::new(
+                0,
+                size_of::<BtmDiffractionPushConstants>() as u32,
+            )],
         })?;
 
         // RtContext currently rejects an empty TLAS. This masked triangle keeps
@@ -157,6 +180,7 @@ impl AcousticPipeline {
         Ok(Self {
             config,
             listener_pipeline,
+            btm_diffraction_pipeline,
             _empty_scene_mesh: empty_scene_mesh,
             empty_scene_blas,
         })
@@ -182,7 +206,9 @@ impl AcousticPipeline {
     ) -> SoundResult<GpuIrSnapshot> {
         validate_query(query)?;
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
+        // Diffraction is integrated deterministically after tracing. Virtual
+        // proxy geometry must not alter ordinary surface continuation paths.
+        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances())?;
         let ir_buffer = Arc::new(
             gpu.memory()
                 .create_storage_buffer(ir_buffer_size(self.config.sound.ir_num_samples) as u64)?,
@@ -215,6 +241,28 @@ impl AcousticPipeline {
             max_ild_db: self.config.binaural.max_ild_db,
             _pad0: 0,
         };
+        let edge_count = gpu_scene.diffraction_edge_count();
+        let btm_constants = BtmDiffractionPushConstants {
+            source_position: query.source_position.to_array(),
+            source_amplitude: query.source_amplitude,
+            listener_position: query.listener_position.to_array(),
+            maximum_path_length: self.config.acoustics.maximum_path_length,
+            listener_right: query
+                .listener_forward
+                .normalize()
+                .cross(query.listener_up.normalize())
+                .normalize_or_zero()
+                .to_array(),
+            speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
+            sample_rate: self.config.sound.sample_rate,
+            sample_count: self.config.sound.ir_num_samples,
+            output_channels: output_channels_to_shader(self.config.sound.output_channels),
+            edge_count,
+            segments_per_edge: BTM_SEGMENTS_PER_EDGE,
+            head_radius_meters: self.config.binaural.head_radius_meters,
+            max_ild_db: self.config.binaural.max_ild_db,
+            _pad0: 0,
+        };
 
         gpu.compute().submit_compute_and_wait(|command_buffer| {
             gpu.rt().record_trace(
@@ -234,13 +282,36 @@ impl AcousticPipeline {
                     barrier_after_trace: false,
                 },
             )?;
-            // Ray-generation float atomics are shader writes. Make them visible
-            // before this buffer is downloaded, cached, or copied into the
-            // convolution pipeline by a later command submission.
-            gpu.compute().record_buffer_barrier(
-                command_buffer,
-                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
-            );
+            if edge_count > 0 {
+                gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::ray_tracing_shader_write_to_compute_shader_read_write(ir_buffer.buffer),
+                );
+                gpu.compute().record_dispatch(
+                    command_buffer,
+                    &DispatchSpec {
+                        pipeline_id: self.btm_diffraction_pipeline,
+                        descriptor_writes: vec![
+                            DescriptorWrite::storage_buffer(0, ir_buffer.buffer),
+                            DescriptorWrite::storage_buffer(1, gpu_scene.diffraction_edge_buffer().buffer),
+                        ],
+                        push_constants: bytemuck::bytes_of(&btm_constants).to_vec(),
+                        push_constant_offset: 0,
+                        groups: [BTM_SEGMENTS_PER_EDGE.div_ceil(BTM_WORKGROUP_SIZE), edge_count, 1],
+                    },
+                )?;
+                gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::compute_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
+                );
+            } else {
+                // Ray-generation float atomics are shader writes. Make them
+                // visible to IR download, caching, or convolution.
+                gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
+                );
+            }
             Ok(())
         })?;
         // The submission above is synchronous, so no descriptor or command
@@ -301,21 +372,9 @@ impl AcousticPipeline {
         &self,
         gpu: &VkBackend,
         scene_instances: &[RtInstanceSpec],
-        diffraction_blas_id: Option<BlasId>,
     ) -> SoundResult<crate::gpu::rt::TlasId> {
         let mut instances = Vec::with_capacity(scene_instances.len() + 1);
         instances.extend_from_slice(scene_instances);
-        if let Some(blas_id) = diffraction_blas_id {
-            // Mask 0x02 keeps proxy strips out of surface-only visibility rays;
-            // SBT offset 2 routes continuation hits to the procedural record.
-            instances.push(RtInstanceSpec {
-                blas_id,
-                transform: Mat4::IDENTITY,
-                custom_index: DIFFRACTION_INSTANCE_CUSTOM_INDEX,
-                mask: DIFFRACTION_GEOMETRY_MASK,
-                sbt_record_offset: DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET,
-            });
-        }
         if instances.is_empty() {
             // The RT wrapper requires a non-empty TLAS. A zero mask makes this
             // sentinel unreachable while preserving direct empty-scene queries.
@@ -670,8 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_masks_do_not_overlap() {
-        assert_eq!(SURFACE_GEOMETRY_MASK & DIFFRACTION_GEOMETRY_MASK, 0);
+    fn visibility_hit_group_follows_surface_continuation() {
         assert_eq!(SURFACE_VISIBILITY_HIT_GROUP_OFFSET, 1);
     }
 }

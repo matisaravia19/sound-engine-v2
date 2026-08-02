@@ -35,10 +35,6 @@ fn main() -> SoundResult<()> {
         validate_frequency(&mut engine, frequency)?;
     }
 
-    // Backend teardown is excluded for the same lifecycle reason as the timing
-    // benchmarks; all numerical results have already been downloaded above.
-    std::mem::forget(engine);
-    std::mem::forget(gpu);
     Ok(())
 }
 

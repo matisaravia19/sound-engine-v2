@@ -2,7 +2,7 @@ use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
 use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
 use crate::auralization::voice::{Voice, VoiceState};
-use crate::auralization::{ImpulseResponseId, VoiceId};
+use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -39,7 +39,6 @@ impl PlaySoundRequest {
 /// requesting sounds and pulling interleaved output blocks.
 pub struct AuralizationEngine {
     config: EngineConfig,
-    convolver: PartitionedConvolver,
     sound_bank: SoundBank,
     impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
     active_voices: HashMap<VoiceId, Voice>,
@@ -47,6 +46,9 @@ pub struct AuralizationEngine {
     dry_block: Vec<f32>,
     wet_block: Vec<f32>,
     finished_voices: Vec<VoiceId>,
+    // Drop the registries and voices that own GPU buffers before the convolver,
+    // whose backend Arc keeps the Vulkan device alive through teardown.
+    convolver: PartitionedConvolver,
 }
 
 impl AuralizationEngine {
@@ -59,7 +61,6 @@ impl AuralizationEngine {
 
         Ok(Self {
             config,
-            convolver,
             sound_bank: SoundBank::new(),
             impulse_responses: HashMap::new(),
             active_voices: HashMap::new(),
@@ -67,6 +68,7 @@ impl AuralizationEngine {
             dry_block: vec![0.0; block_size],
             wet_block: vec![0.0; block_size * output_channels],
             finished_voices: Vec::new(),
+            convolver,
         })
     }
 
@@ -140,8 +142,8 @@ impl AuralizationEngine {
 
     /// Replaces the impulse response used by an active voice.
     ///
-    /// The voice keeps its current dry cursor and overlap tail; only future
-    /// convolution blocks use the new uploaded IR spectrum.
+    /// The voice keeps its dry cursor and crossfades from the outgoing filter,
+    /// including its overlap tail, to the new uploaded IR spectrum.
     pub fn update_voice_impulse_response(
         &mut self,
         voice_id: VoiceId,
@@ -157,7 +159,14 @@ impl AuralizationEngine {
             .get_mut(&voice_id)
             .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {}", voice_id)))?;
 
-        voice.convolution.impulse_response = impulse_response;
+        let transition_frames = self.config.auralization.block_size.saturating_mul(IR_TRANSITION_BLOCKS);
+        voice.queue_impulse_response_transition(
+            impulse_response,
+            self.convolver.tail_size(),
+            self.convolver.fft_size(),
+            self.wet_block.len(),
+            transition_frames,
+        );
         Ok(())
     }
 

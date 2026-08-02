@@ -44,8 +44,8 @@ fn main() -> SoundResult<()> {
         return Ok(());
     }
 
-    // Run each mode in a fresh process. Keeping two leaked Vulkan backends in
-    // one process measurably penalizes whichever mode is constructed second.
+    // Run each mode in a fresh process so device setup and allocator history do
+    // not measurably penalize whichever channel layout is constructed second.
     let stereo = run_isolated_mode("--stereo")?;
     let binaural = run_isolated_mode("--binaural")?;
     let deadline_ms = BLOCK_SIZE as f64 / SAMPLE_RATE as f64 * 1_000.0;
@@ -156,7 +156,8 @@ fn run_mode(output_channels: OutputChannels) -> SoundResult<Measurements> {
     engine.render_block(&mut output)?;
 
     // This movement is within the default 0.2 m cache tolerance. The following
-    // render therefore isolates cache-hit IR registration plus convolution.
+    // render therefore isolates cache lookup plus convolution; no redundant IR
+    // transform or registration should occur for the reused GPU buffer.
     engine.set_listener_pose(listener(vec3(1.1, 0.0, 0.0)))?;
     let cache_hit_start = Instant::now();
     engine.render_block(&mut output)?;
@@ -197,9 +198,6 @@ fn run_mode(output_channels: OutputChannels) -> SoundResult<Measurements> {
         warm_p99_ms: duration_ms(percentile(&warm_updates, 0.99)),
     };
 
-    // Backend teardown is a separately tracked lifecycle defect and currently
-    // stalls on this machine. Keep it out of the spatial-update measurements.
-    std::mem::forget(engine);
     Ok(measurements)
 }
 

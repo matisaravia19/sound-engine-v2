@@ -7,6 +7,7 @@ use sound_engine::core::error::SoundResult;
 use sound_engine::playback::{PlaybackConfig, SoundPlayer};
 use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneObject};
 use sound_engine::{ListenerPose, PointSource, SoundEngine, SoundSourceId};
+use std::time::{Duration, Instant};
 
 const GUITAR_SAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../circus.wav");
 const BLOCK_SIZE: usize = 1024;
@@ -18,6 +19,9 @@ const WALL_THICKNESS: f32 = 0.25;
 const DOOR_HALF_WIDTH: f32 = 1.0;
 const ROOF_THICKNESS: f32 = 0.2;
 const LISTENER_SPIN_RADIANS_PER_SECOND: f32 = std::f32::consts::PI * 0.125;
+const CAMERA_LISTENER_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+const CAMERA_LISTENER_POSITION_EPSILON_METERS: f32 = 0.01;
+const CAMERA_LISTENER_ORIENTATION_DOT_THRESHOLD: f32 = 0.999_96;
 
 struct PlaygroundScene {
     acoustic_mesh: AcousticMesh,
@@ -42,6 +46,12 @@ struct UiState {
     show_bisector_planes: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListenerMode {
+    RedSphere,
+    Camera,
+}
+
 #[derive(Clone, Copy)]
 struct SceneConfig {
     roof_enabled: bool,
@@ -56,6 +66,9 @@ struct PlaygroundState {
     listener_rotation_index: usize,
     listener_spin_enabled: bool,
     listener_spin_angle: f32,
+    listener_mode: ListenerMode,
+    last_camera_listener_pose: Option<ListenerPose>,
+    last_camera_listener_sync: Option<Instant>,
     source_index: usize,
     sound_source_id: Option<SoundSourceId>,
     ui: UiState,
@@ -76,6 +89,9 @@ impl PlaygroundState {
             listener_rotation_index: 0,
             listener_spin_enabled: false,
             listener_spin_angle: 0.0,
+            listener_mode: ListenerMode::RedSphere,
+            last_camera_listener_pose: None,
+            last_camera_listener_sync: None,
             source_index: 0,
             sound_source_id: None,
             ui: UiState {
@@ -109,13 +125,36 @@ impl PlaygroundState {
         }
     }
 
-    fn listener_pose(&self) -> ListenerPose {
+    fn red_sphere_listener_pose(&self) -> ListenerPose {
         let forward = self.listener_forward().normalize_or_zero();
         ListenerPose {
             position: to_glam(self.listener_position()),
             forward,
             up: Vec3::Y,
         }
+    }
+
+    fn active_listener_pose(&self, camera: &Camera3D) -> ListenerPose {
+        match self.listener_mode {
+            ListenerMode::RedSphere => self.red_sphere_listener_pose(),
+            ListenerMode::Camera => camera_listener_pose(camera),
+        }
+    }
+
+    fn listener_mode_label(&self) -> &'static str {
+        match self.listener_mode {
+            ListenerMode::RedSphere => "red sphere",
+            ListenerMode::Camera => "camera",
+        }
+    }
+
+    fn toggle_listener_mode(&mut self) {
+        self.listener_mode = match self.listener_mode {
+            ListenerMode::RedSphere => ListenerMode::Camera,
+            ListenerMode::Camera => ListenerMode::RedSphere,
+        };
+        self.last_camera_listener_pose = None;
+        self.last_camera_listener_sync = None;
     }
 
     fn source_position(&self) -> Vector3 {
@@ -125,7 +164,7 @@ impl PlaygroundState {
     fn point_source(&self) -> PointSource {
         PointSource {
             position: to_glam(self.source_position()),
-            amplitude: 10.0,
+            amplitude: 1.0,
         }
     }
 
@@ -156,7 +195,7 @@ fn main() -> SoundResult<()> {
     let sample_rate = SoundPlayer::default_output_sample_rate()?;
     let mut engine = SoundEngine::new(engine_config(sample_rate))?;
     engine.load_scene(scene_description(&state.scene))?;
-    engine.set_listener_pose(state.listener_pose())?;
+    engine.set_listener_pose(state.red_sphere_listener_pose())?;
     let sound_source_id = engine.create_sound_source(state.point_source())?;
     state.sound_source_id = Some(sound_source_id);
     let sound_id = engine.load_wav_sound(GUITAR_SAMPLE_PATH)?;
@@ -181,14 +220,17 @@ fn main() -> SoundResult<()> {
 
     while !rl.window_should_close() {
         rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
-        handle_config_keys(&rl, &mut engine, &mut state);
-        if state.update_listener_spin(rl.get_frame_time()) {
-            sync_listener(&mut engine, &mut state, "listener spin");
+        handle_config_keys(&rl, &mut engine, &mut state, &camera);
+        if state.listener_mode == ListenerMode::Camera {
+            sync_camera_listener_if_changed(&mut engine, &mut state, &camera, false);
+        }
+        if state.update_listener_spin(rl.get_frame_time()) && state.listener_mode == ListenerMode::RedSphere {
+            sync_red_sphere_listener(&mut engine, &mut state, "listener spin");
         }
 
         if start_sound_requested(&rl) {
             state.ui.status = "Building IR and starting sound...".to_owned();
-            match play_source_sound(&mut engine, sound_id, &state) {
+            match play_source_sound(&mut engine, sound_id, &state, &camera) {
                 Ok(voice_id) => {
                     state.ui.last_voice = Some(voice_id);
                     state.ui.status = format!("Started voice {voice_id}");
@@ -235,15 +277,20 @@ fn engine_config(sample_rate: u32) -> EngineConfig {
     }
 }
 
-fn play_source_sound(engine: &mut SoundEngine, sound_id: u64, state: &PlaygroundState) -> SoundResult<u64> {
-    engine.set_listener_pose(state.listener_pose())?;
+fn play_source_sound(
+    engine: &mut SoundEngine,
+    sound_id: u64,
+    state: &PlaygroundState,
+    camera: &Camera3D,
+) -> SoundResult<u64> {
+    engine.set_listener_pose(state.active_listener_pose(camera))?;
     let source_id = state.sound_source_id.ok_or_else(|| {
         sound_engine::core::error::SoundError::invalid_state("sandbox sound source is not initialized")
     })?;
     engine.play_sound_from_source(sound_id, source_id, 0.9)
 }
 
-fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut PlaygroundState) {
+fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut PlaygroundState, camera: &Camera3D) {
     if rl.is_key_pressed(KeyboardKey::KEY_ONE) {
         state.scene_config.roof_enabled = !state.scene_config.roof_enabled;
         reload_scene(engine, state, "roof");
@@ -256,13 +303,13 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
 
     if rl.is_key_pressed(KeyboardKey::KEY_THREE) {
         state.listener_index = next_index(state.listener_index, listener_position_count());
-        sync_listener(engine, state, "listener position");
+        sync_red_sphere_listener(engine, state, "red sphere position");
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_FOUR) {
         state.listener_spin_enabled = false;
         state.listener_rotation_index = next_index(state.listener_rotation_index, listener_rotation_count());
-        sync_listener(engine, state, "listener rotation");
+        sync_red_sphere_listener(engine, state, "red sphere rotation");
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_FIVE) {
@@ -277,7 +324,15 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
 
     if rl.is_key_pressed(KeyboardKey::KEY_SEVEN) {
         state.toggle_listener_spin();
-        sync_listener(engine, state, "listener spin");
+        sync_red_sphere_listener(engine, state, "red sphere spin");
+    }
+
+    if rl.is_key_pressed(KeyboardKey::KEY_L) {
+        state.toggle_listener_mode();
+        match state.listener_mode {
+            ListenerMode::RedSphere => sync_red_sphere_listener(engine, state, "listener mode"),
+            ListenerMode::Camera => sync_camera_listener_if_changed(engine, state, camera, true),
+        }
     }
 
     if bisector_plane_toggle_requested(rl) {
@@ -321,8 +376,17 @@ fn reload_scene(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &s
     }
 }
 
-fn sync_listener(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &str) {
-    match engine.set_listener_pose(state.listener_pose()) {
+fn sync_red_sphere_listener(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &str) {
+    if state.listener_mode == ListenerMode::Camera {
+        state.ui.status = format!(
+            "Changed {label}: {} / {}; camera remains the active listener",
+            listener_position_name(state.listener_index),
+            state.listener_rotation_label()
+        );
+        return;
+    }
+
+    match engine.set_listener_pose(state.red_sphere_listener_pose()) {
         Ok(()) => {
             state.ui.status = format!(
                 "Changed {label}: {} / {}",
@@ -334,6 +398,56 @@ fn sync_listener(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &
             state.ui.status = format!("Listener update error: {error}");
         }
     }
+}
+
+fn sync_camera_listener_if_changed(
+    engine: &mut SoundEngine,
+    state: &mut PlaygroundState,
+    camera: &Camera3D,
+    announce: bool,
+) {
+    if !announce
+        && state
+            .last_camera_listener_sync
+            .is_some_and(|last_sync| last_sync.elapsed() < CAMERA_LISTENER_UPDATE_INTERVAL)
+    {
+        return;
+    }
+
+    let pose = camera_listener_pose(camera);
+    if state
+        .last_camera_listener_pose
+        .is_some_and(|previous| listener_poses_match(previous, pose))
+    {
+        return;
+    }
+
+    match engine.set_listener_pose(pose) {
+        Ok(()) => {
+            state.last_camera_listener_pose = Some(pose);
+            state.last_camera_listener_sync = Some(Instant::now());
+            if announce {
+                state.ui.status = "Camera is now the active listener".to_owned();
+            }
+        }
+        Err(error) => {
+            state.ui.status = format!("Camera listener update error: {error}");
+        }
+    }
+}
+
+fn camera_listener_pose(camera: &Camera3D) -> ListenerPose {
+    ListenerPose {
+        position: to_glam(camera.position),
+        forward: (to_glam(camera.target) - to_glam(camera.position)).normalize_or_zero(),
+        up: to_glam(camera.up).normalize_or_zero(),
+    }
+}
+
+fn listener_poses_match(left: ListenerPose, right: ListenerPose) -> bool {
+    left.position.distance_squared(right.position) <= CAMERA_LISTENER_POSITION_EPSILON_METERS.powi(2)
+        && left.forward.dot(right.forward) >= CAMERA_LISTENER_ORIENTATION_DOT_THRESHOLD
+        && left.up.dot(right.up) >= CAMERA_LISTENER_ORIENTATION_DOT_THRESHOLD
 }
 
 fn next_index(index: usize, len: usize) -> usize {
@@ -679,7 +793,8 @@ fn draw_plane_line(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, start: Vec3, 
 
 fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundState) {
     let fps = d.get_fps();
-    d.draw_rectangle(12, 12, 800, 284, Color::new(12, 16, 20, 220));
+    let active_listener = state.active_listener_pose(camera).position;
+    d.draw_rectangle(12, 12, 1_040, 284, Color::new(12, 16, 20, 220));
 
     let button_color = Color::new(42, 128, 74, 255);
     d.draw_rectangle(24, 24, 160, 40, button_color);
@@ -695,7 +810,13 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     d.draw_rectangle_lines(24, 70, 230, 34, Color::new(160, 205, 225, 255));
     d.draw_text("Bisector Planes", 42, 78, 17, Color::RAYWHITE);
 
-    d.draw_text("Space: start sound | B: toggle planes", 278, 34, 18, Color::LIGHTGRAY);
+    d.draw_text(
+        "Space: start sound | B: toggle planes | L: toggle camera/red-sphere listener",
+        278,
+        34,
+        18,
+        Color::LIGHTGRAY,
+    );
     d.draw_text(
         &format!(
             "camera: {:.1}, {:.1}, {:.1} | FPS: {fps}",
@@ -708,13 +829,14 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     );
     d.draw_text(
         &format!(
-            "source: {:.1}, {:.1}, {:.1} | listener: {:.1}, {:.1}, {:.1}",
+            "source: {:.1}, {:.1}, {:.1} | active listener ({}): {:.1}, {:.1}, {:.1}",
             state.source_position().x,
             state.source_position().y,
             state.source_position().z,
-            state.listener_position().x,
-            state.listener_position().y,
-            state.listener_position().z
+            state.listener_mode_label(),
+            active_listener.x,
+            active_listener.y,
+            active_listener.z
         ),
         24,
         138,
@@ -723,7 +845,7 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     );
     d.draw_text(
         &format!(
-            "1 roof: {} | 2 door: {} | 3 listener pos: {} | 4 listener rot: {}",
+            "1 roof: {} | 2 door: {} | 3 red pos: {} | 4 red rot: {}",
             on_off(state.scene_config.roof_enabled),
             if state.scene_config.door_open { "open" } else { "closed" },
             listener_position_name(state.listener_index),
@@ -747,8 +869,9 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     );
     d.draw_text(
         &format!(
-            "7 listener spin: {} | bisector planes: {}",
+            "7 red spin: {} | L listener: {} | bisector planes: {}",
             on_off(state.listener_spin_enabled),
+            state.listener_mode_label(),
             on_off(state.ui.show_bisector_planes)
         ),
         24,

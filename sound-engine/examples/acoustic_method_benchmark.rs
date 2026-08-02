@@ -134,11 +134,10 @@ fn main() -> SoundResult<()> {
         None => Box::new(BufWriter::new(std::io::stdout())),
     };
     let result = run_benchmarks(&gpu, &options, gpu_setup, cases, output);
-    if !options.drop_backend {
-        // Backend destruction currently stalls in Vulkan teardown on the test
-        // machine. Per-query sweeps skip that unrelated lifecycle cost so each
-        // process exits promptly; `--drop-backend` reproduces and times it.
-        std::mem::forget(gpu);
+    if options.drop_backend {
+        // Preserve the diagnostic flag: an explicit drop makes teardown occur
+        // before the benchmark result is returned instead of at scope exit.
+        drop(gpu);
     }
     result
 }

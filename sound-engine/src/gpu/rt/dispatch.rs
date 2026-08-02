@@ -87,7 +87,10 @@ impl RtContext {
         );
 
         // Descriptor sets are allocated per trace from growable pools.
-        let descriptor_set = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_set = descriptor_allocation.set;
+        self.compute
+            .track_descriptor_set(command_buffer, descriptor_allocation)?;
         self.update_descriptor_set(descriptor_set, &spec.descriptor_writes)?;
 
         unsafe {

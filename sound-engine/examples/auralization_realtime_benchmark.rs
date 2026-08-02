@@ -36,10 +36,6 @@ fn main() -> SoundResult<()> {
         benchmark_voice_count(gpu.clone(), gpu_setup, voice_count)?;
     }
 
-    // Vulkan backend destruction is measured separately by the acoustic
-    // lifecycle diagnostic. Avoid folding that known teardown stall into the
-    // real-time audio-block measurements reported by this process.
-    std::mem::forget(gpu);
     Ok(())
 }
 

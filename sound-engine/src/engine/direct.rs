@@ -6,6 +6,7 @@ use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundReques
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
+use crate::gpu::memory::BufferHandle;
 use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,8 +14,6 @@ use std::sync::Arc;
 
 /// Private owner of GPU, scene, acoustic cache, assets, voices, and block rendering.
 pub(super) struct EngineCore {
-    /// Shared Vulkan backend used by acoustic tracing and auralization compute work.
-    gpu: Arc<VkBackend>,
     /// Scene-backed acoustic IR builder and cache.
     acoustics: AcousticsEngine,
     /// Asset bank, active voices, and convolver used to render output blocks.
@@ -29,6 +28,10 @@ pub(super) struct EngineCore {
     next_sound_source_id: SoundSourceId,
     /// Monotonic id assigned to impulse responses registered with the auralizer.
     next_impulse_response_id: ImpulseResponseId,
+    /// Shared Vulkan backend kept after every dependent GPU resource.
+    ///
+    /// Rust drops fields in declaration order, so this owner must remain last.
+    gpu: Arc<VkBackend>,
 }
 
 /// Stored source transform and ownership policy.
@@ -41,12 +44,16 @@ struct SoundSourceRecord {
 }
 
 /// Acoustic state associated with one active spatial voice.
-#[derive(Debug, Clone, Copy)]
 struct SpatialVoice {
     /// Source handle used when refreshing the voice IR.
     source_id: SoundSourceId,
     /// Currently registered IR id assigned to the voice.
     impulse_response_id: ImpulseResponseId,
+    /// Time-domain acoustic buffer whose transformed IR is currently registered.
+    ///
+    /// Shared ownership keeps pointer identity stable even if the acoustic LRU
+    /// evicts the entry while this voice remains active.
+    acoustic_ir_buffer: Arc<BufferHandle>,
     /// Whether the voice should refresh its IR before the next rendered block.
     dirty: bool,
 }
@@ -59,7 +66,6 @@ impl EngineCore {
         let auralization = AuralizationEngine::new(gpu.clone(), config)?;
 
         Ok(Self {
-            gpu,
             acoustics,
             auralization,
             sound_sources: HashMap::new(),
@@ -67,6 +73,7 @@ impl EngineCore {
             listener: ListenerPose::default(),
             next_sound_source_id: 1,
             next_impulse_response_id: 1,
+            gpu,
         })
     }
 
@@ -89,7 +96,14 @@ impl EngineCore {
 
     /// Sets the listener pose used by future IR queries.
     pub(super) fn set_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
-        self.listener = crate::acoustics::canonicalize_listener(listener)?;
+        let listener = crate::acoustics::canonicalize_listener(listener)?;
+        if self.listener.position == listener.position
+            && self.listener.forward == listener.forward
+            && self.listener.up == listener.up
+        {
+            return Ok(());
+        }
+        self.listener = listener;
         self.mark_all_spatial_voices_dirty();
         Ok(())
     }
@@ -162,6 +176,11 @@ impl EngineCore {
         }
         let source = self.source(source_id)?;
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
+        let acoustic_ir_buffer = snapshot
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
+            .clone();
         let impulse_response_id = self.register_gpu_impulse_response(&snapshot)?;
         let voice_id = match self.auralization.play_sound(PlaySoundRequest {
             sound_id,
@@ -179,6 +198,7 @@ impl EngineCore {
             SpatialVoice {
                 source_id,
                 impulse_response_id,
+                acoustic_ir_buffer,
                 dirty: false,
             },
         );
@@ -303,6 +323,22 @@ impl EngineCore {
                 .ok_or_else(|| SoundError::not_found(format!("Unknown spatial voice id {}", voice_id)))?;
             let source = self.source(source_id)?;
             let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
+            let next_acoustic_ir_buffer = snapshot
+                .buffer
+                .as_ref()
+                .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
+                .clone();
+            let reuses_registered_ir = self
+                .spatial_voices
+                .get(&voice_id)
+                .is_some_and(|voice| Arc::ptr_eq(&voice.acoustic_ir_buffer, &next_acoustic_ir_buffer));
+            if reuses_registered_ir {
+                if let Some(voice) = self.spatial_voices.get_mut(&voice_id) {
+                    voice.dirty = false;
+                }
+                continue;
+            }
+
             let next_ir_id = self.register_gpu_impulse_response(&snapshot)?;
             if let Err(error) = self.auralization.update_voice_impulse_response(voice_id, next_ir_id) {
                 self.auralization.forget_impulse_response(next_ir_id);
@@ -312,6 +348,7 @@ impl EngineCore {
             if let Some(voice) = self.spatial_voices.get_mut(&voice_id) {
                 let previous_ir_id = voice.impulse_response_id;
                 voice.impulse_response_id = next_ir_id;
+                voice.acoustic_ir_buffer = next_acoustic_ir_buffer;
                 voice.dirty = false;
                 self.auralization.forget_impulse_response(previous_ir_id);
             }
