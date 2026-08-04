@@ -31,8 +31,8 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
     };
     let low = trace(gpu, empty_scene(), config(64, 0), query)?;
     let high = trace(gpu, empty_scene(), config(16_384, 0), query)?;
-    let low_sum = channel_sum(&low);
-    let high_sum = channel_sum(&high);
+    let low_sum = signed_channel_sum(&low);
+    let high_sum = signed_channel_sum(&high);
     require(
         (low_sum - 1.0).abs() < 1.0e-5,
         "direct path amplitude must equal 1 / distance",
@@ -42,8 +42,13 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
         "direct path must not scale with listener ray count",
     )?;
     require(
-        nonzero_samples(&low) <= 2,
-        "fractional direct deposition must touch at most two samples",
+        nonzero_samples(&low) <= 16,
+        "windowed-sinc direct deposition must touch at most sixteen samples",
+    )?;
+    let expected_position = SAMPLE_RATE as f32 / 343.0;
+    require(
+        (signed_arrival_centroid(&low) - expected_position).abs() < 0.01,
+        "direct path centroid must match its fractional arrival time",
     )
 }
 
@@ -251,6 +256,20 @@ fn wall_scene(vertices: Vec<Vec3>, absorption: f32, roughness: f32) -> SceneDesc
 
 fn channel_sum(ir: &IrSnapshot) -> f32 {
     ir.samples.iter().map(|sample| sample.left.abs()).sum()
+}
+
+fn signed_channel_sum(ir: &IrSnapshot) -> f32 {
+    ir.samples.iter().map(|sample| sample.left).sum()
+}
+
+fn signed_arrival_centroid(ir: &IrSnapshot) -> f32 {
+    let pressure = signed_channel_sum(ir);
+    ir.samples
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| index as f32 * sample.left)
+        .sum::<f32>()
+        / pressure
 }
 
 fn nonzero_samples(ir: &IrSnapshot) -> usize {

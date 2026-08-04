@@ -87,18 +87,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         unsafe { device.unmap_memory(memory) };
     }
 
-    let mut builder = FFTPlanBuilder::new(DeviceHandles {
+    let device_handles = DeviceHandles {
         physical_device,
         device: device.handle(),
         queue,
         command_pool,
         fence,
-    })
-    .map_err(|e| format!("PlanBuilder::new failed: {e:?}"))?;
-
-    builder.with_dimensions(&[N as u64]).with_buffer(buffer, buffer_bytes);
-
-    let plan = builder
+    };
+    let plan = FFTPlanBuilder::new(&device_handles)
+        .with_dimensions(&[N as u64])
+        .with_buffer(buffer, buffer_bytes)
         .build()
         .map_err(|e| format!("PlanBuilder::build failed: {e:?}"))?;
 
@@ -143,7 +141,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     unsafe { device.device_wait_idle()? };
 
     drop(plan);
-    drop(builder);
 
     unsafe {
         device.free_command_buffers(command_pool, std::slice::from_ref(&command_buffer));

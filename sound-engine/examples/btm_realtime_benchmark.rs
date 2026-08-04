@@ -1,8 +1,8 @@
-//! Accuracy/cost sweep for deterministic first-order BTM diffraction.
+//! Offline accuracy/cost reference for deterministic first-order BTM diffraction.
 //!
-//! This is an alternative to stochastic diffraction proxies, not a replacement
-//! for the complete transport pipeline. It integrates secondary edge sources
-//! directly into the same 48 kHz fractional pressure IR used by convolution.
+//! The production engine uses procedural edge geometry in its ray-tracing
+//! pipeline. This standalone CPU calculation is only a mathematical comparison;
+//! it is not compiled into or dispatched by the runtime transport path.
 
 use std::f64::consts::PI;
 use std::time::{Duration, Instant};
@@ -78,8 +78,9 @@ fn build_btm_ir(segment_count: usize) -> Vec<f64> {
                 beta_sum += (WEDGE_INDEX * phi).sin() / ((WEDGE_INDEX * eta).cosh() - (WEDGE_INDEX * phi).cos());
             }
         }
-        // The common 4*pi calibration matches engine direct pressure 1/r.
-        let pressure = -WEDGE_INDEX * beta_sum * segment_length / (source_distance * receiver_distance);
+        // This coefficient uses the same source convention whose direct field
+        // is 1/r; no additional 4*pi calibration is required.
+        let pressure = -WEDGE_INDEX / (4.0 * PI) * beta_sum * segment_length / (source_distance * receiver_distance);
         let sample_position = (source_distance + receiver_distance) / SPEED_OF_SOUND * SAMPLE_RATE;
         deposit_fractional(&mut ir, sample_position, pressure);
     }

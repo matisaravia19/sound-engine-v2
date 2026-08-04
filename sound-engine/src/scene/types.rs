@@ -71,11 +71,12 @@ pub struct DiffractionEdge {
     pub bisector_dir: Vec3,
     /// Wedge angle in radians around the edge direction.
     pub edge_angle_radians: f32,
-    /// Legacy stochastic-proxy radius retained for scene compatibility.
+    /// Half-width of the ray-traced virtual edge strip in meters.
     ///
-    /// Deterministic BTM diffraction is independent of this value.
+    /// The estimator normalizes its triangular radial kernel by this width, so
+    /// changing it primarily trades variance against edge locality.
     pub diffraction_radius: f32,
-    /// Designer-authored energy scale applied to the deterministic response.
+    /// Designer-authored energy scale applied to the ray-traced response.
     /// The square root is used as a pressure multiplier.
     pub base_strength: f32,
 }

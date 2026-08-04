@@ -2,10 +2,7 @@ use crate::acoustics::{GpuIrSnapshot, IrSample, IrSnapshot};
 use crate::core::config::{EngineConfig, OutputChannels};
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
-use crate::gpu::compute::{
-    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
-    PushConstantSpec,
-};
+use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
     BlasBuildSpec, BlasId, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec,
     RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
@@ -20,11 +17,12 @@ use std::sync::Arc;
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
-const BTM_SEGMENTS_PER_EDGE: u32 = 4_096;
-const BTM_WORKGROUP_SIZE: u32 = 64;
+const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
+const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX - 1;
 const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
 #[cfg(test)]
 const SURFACE_VISIBILITY_HIT_GROUP_OFFSET: u32 = 1;
+const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// Source/listener pair that should produce one impulse response.
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +49,6 @@ pub struct AcousticQuery {
 pub struct AcousticPipeline {
     config: EngineConfig,
     listener_pipeline: RtPipelineId,
-    btm_diffraction_pipeline: PipelineId,
     /// Triangle storage kept alive for the mask-zero empty-scene sentinel BLAS.
     _empty_scene_mesh: RtMeshBuffers,
     empty_scene_blas: BlasId,
@@ -81,28 +78,6 @@ struct ListenerTracePushConstants {
 unsafe impl bytemuck::Zeroable for ListenerTracePushConstants {}
 unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct BtmDiffractionPushConstants {
-    source_position: [f32; 3],
-    source_amplitude: f32,
-    listener_position: [f32; 3],
-    maximum_path_length: f32,
-    listener_right: [f32; 3],
-    speed_of_sound: f32,
-    sample_rate: u32,
-    sample_count: u32,
-    output_channels: u32,
-    edge_count: u32,
-    segments_per_edge: u32,
-    head_radius_meters: f32,
-    max_ild_db: f32,
-    _pad0: u32,
-}
-
-unsafe impl bytemuck::Zeroable for BtmDiffractionPushConstants {}
-unsafe impl bytemuck::Pod for BtmDiffractionPushConstants {}
-
 impl AcousticPipeline {
     /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
     pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
@@ -113,7 +88,12 @@ impl AcousticPipeline {
         let visibility_miss = load_shader(gpu, ShaderStage::RayMiss, "visibility.rmiss.glsl")?;
         let surface_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "listener_backward_surface.rchit.glsl")?;
         let visibility_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "visibility.rchit.glsl")?;
-        let btm_diffraction = load_shader(gpu, ShaderStage::Compute, "btm_diffraction.comp.glsl")?;
+        let diffraction_closest_hit = load_shader(
+            gpu,
+            ShaderStage::RayClosestHit,
+            "listener_backward_diffraction.rchit.glsl",
+        )?;
+        let diffraction_intersection = load_shader(gpu, ShaderStage::RayIntersection, "diffraction.rint.glsl")?;
 
         let listener_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
@@ -122,6 +102,8 @@ impl AcousticPipeline {
                 RtShaderStageSpec::new(visibility_miss),
                 RtShaderStageSpec::new(surface_closest_hit),
                 RtShaderStageSpec::new(visibility_closest_hit),
+                RtShaderStageSpec::new(diffraction_closest_hit),
+                RtShaderStageSpec::new(diffraction_intersection),
             ],
             // Surface continuation uses record zero and visibility adds one.
             groups: vec![
@@ -130,6 +112,10 @@ impl AcousticPipeline {
                 RtShaderGroupSpec::Miss { shader: 2 },
                 RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 3 },
                 RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 4 },
+                RtShaderGroupSpec::ProceduralHit {
+                    closest_hit_shader: 5,
+                    intersection_shader: 6,
+                },
             ],
             // The compact descriptor set contains only traversal state, the
             // final IR, and immutable scene lookup tables. There is no
@@ -139,8 +125,6 @@ impl AcousticPipeline {
                 RtDescriptorBindingSpec::storage_buffer(1),
                 RtDescriptorBindingSpec::storage_buffer(2),
                 RtDescriptorBindingSpec::storage_buffer(3),
-                // Retained while the ray-generation module shares the edge
-                // record declaration with legacy dead-code paths.
                 RtDescriptorBindingSpec::storage_buffer(4),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(
@@ -149,18 +133,6 @@ impl AcousticPipeline {
             )],
             max_ray_recursion_depth: 1,
         })?;
-        let btm_diffraction_pipeline = gpu.compute().create_pipeline(ComputePipelineSpec {
-            shader_id: btm_diffraction,
-            descriptor_bindings: vec![
-                DescriptorBindingSpec::storage_buffer(0),
-                DescriptorBindingSpec::storage_buffer(1),
-            ],
-            push_constant_ranges: vec![PushConstantSpec::new(
-                0,
-                size_of::<BtmDiffractionPushConstants>() as u32,
-            )],
-        })?;
-
         // RtContext currently rejects an empty TLAS. This masked triangle keeps
         // direct-path queries valid without participating in traversal.
         let empty_scene_mesh = gpu.rt().upload_mesh(RtMeshSpec {
@@ -176,11 +148,9 @@ impl AcousticPipeline {
             mesh: &empty_scene_mesh,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
-
         Ok(Self {
             config,
             listener_pipeline,
-            btm_diffraction_pipeline,
             _empty_scene_mesh: empty_scene_mesh,
             empty_scene_blas,
         })
@@ -206,9 +176,7 @@ impl AcousticPipeline {
     ) -> SoundResult<GpuIrSnapshot> {
         validate_query(query)?;
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        // Diffraction is integrated deterministically after tracing. Virtual
-        // proxy geometry must not alter ordinary surface continuation paths.
-        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances())?;
+        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
         let ir_buffer = Arc::new(
             gpu.memory()
                 .create_storage_buffer(ir_buffer_size(self.config.sound.ir_num_samples) as u64)?,
@@ -241,29 +209,6 @@ impl AcousticPipeline {
             max_ild_db: self.config.binaural.max_ild_db,
             _pad0: 0,
         };
-        let edge_count = gpu_scene.diffraction_edge_count();
-        let btm_constants = BtmDiffractionPushConstants {
-            source_position: query.source_position.to_array(),
-            source_amplitude: query.source_amplitude,
-            listener_position: query.listener_position.to_array(),
-            maximum_path_length: self.config.acoustics.maximum_path_length,
-            listener_right: query
-                .listener_forward
-                .normalize()
-                .cross(query.listener_up.normalize())
-                .normalize_or_zero()
-                .to_array(),
-            speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
-            sample_rate: self.config.sound.sample_rate,
-            sample_count: self.config.sound.ir_num_samples,
-            output_channels: output_channels_to_shader(self.config.sound.output_channels),
-            edge_count,
-            segments_per_edge: BTM_SEGMENTS_PER_EDGE,
-            head_radius_meters: self.config.binaural.head_radius_meters,
-            max_ild_db: self.config.binaural.max_ild_db,
-            _pad0: 0,
-        };
-
         gpu.compute().submit_compute_and_wait(|command_buffer| {
             gpu.rt().record_trace(
                 command_buffer,
@@ -282,36 +227,12 @@ impl AcousticPipeline {
                     barrier_after_trace: false,
                 },
             )?;
-            if edge_count > 0 {
-                gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::ray_tracing_shader_write_to_compute_shader_read_write(ir_buffer.buffer),
-                );
-                gpu.compute().record_dispatch(
-                    command_buffer,
-                    &DispatchSpec {
-                        pipeline_id: self.btm_diffraction_pipeline,
-                        descriptor_writes: vec![
-                            DescriptorWrite::storage_buffer(0, ir_buffer.buffer),
-                            DescriptorWrite::storage_buffer(1, gpu_scene.diffraction_edge_buffer().buffer),
-                        ],
-                        push_constants: bytemuck::bytes_of(&btm_constants).to_vec(),
-                        push_constant_offset: 0,
-                        groups: [BTM_SEGMENTS_PER_EDGE.div_ceil(BTM_WORKGROUP_SIZE), edge_count, 1],
-                    },
-                )?;
-                gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::compute_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
-                );
-            } else {
-                // Ray-generation float atomics are shader writes. Make them
-                // visible to IR download, caching, or convolution.
-                gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
-                );
-            }
+            // Ray-generation float atomics are shader writes. Make them visible
+            // to IR download, caching, or convolution.
+            gpu.compute().record_buffer_barrier(
+                command_buffer,
+                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
+            );
             Ok(())
         })?;
         // The submission above is synchronous, so no descriptor or command
@@ -372,9 +293,21 @@ impl AcousticPipeline {
         &self,
         gpu: &VkBackend,
         scene_instances: &[RtInstanceSpec],
+        diffraction_blas_id: Option<BlasId>,
     ) -> SoundResult<crate::gpu::rt::TlasId> {
         let mut instances = Vec::with_capacity(scene_instances.len() + 1);
         instances.extend_from_slice(scene_instances);
+        if let Some(blas_id) = diffraction_blas_id {
+            // The separate mask keeps virtual strips out of visibility rays;
+            // SBT offset two selects the procedural intersection/hit pair.
+            instances.push(RtInstanceSpec {
+                blas_id,
+                transform: Mat4::IDENTITY,
+                custom_index: DIFFRACTION_INSTANCE_CUSTOM_INDEX,
+                mask: DIFFRACTION_GEOMETRY_MASK,
+                sbt_record_offset: DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET,
+            });
+        }
         if instances.is_empty() {
             // The RT wrapper requires a non-empty TLAS. A zero mask makes this
             // sentinel unreachable while preserving direct empty-scene queries.
@@ -512,6 +445,58 @@ fn deposit_fractional(samples: &mut [f32], sample_position: f32, amplitude: f32)
 }
 
 #[cfg(test)]
+fn direct_lanczos_weights(fraction: f32) -> [f32; 16] {
+    const RADIUS: i32 = 8;
+    let mut weights = [0.0; 16];
+    for (index, offset) in (-RADIUS + 1..=RADIUS).enumerate() {
+        let distance = offset as f32 - fraction;
+        let sinc = if distance.abs() < 1.0e-6 {
+            1.0
+        } else {
+            (std::f32::consts::PI * distance).sin() / (std::f32::consts::PI * distance)
+        };
+        let window_argument = distance / RADIUS as f32;
+        let window = if distance.abs() < 1.0e-6 {
+            1.0
+        } else {
+            (std::f32::consts::PI * window_argument).sin() / (std::f32::consts::PI * window_argument)
+        };
+        weights[index] = sinc * window;
+    }
+    let sum = weights.iter().sum::<f32>();
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    weights
+}
+
+#[cfg(test)]
+fn specular_exponent_from_roughness(roughness: f32) -> f32 {
+    let alpha = roughness.clamp(0.0, 1.0).max(0.0001);
+    (2.0 / (alpha * alpha) - 2.0).clamp(1.0, 4096.0)
+}
+
+#[cfg(test)]
+fn folded_power_cosine_pdf(direction: Vec3, axis: Vec3, normal: Vec3, exponent: f32) -> f32 {
+    power_cosine_pdf(direction.dot(axis).max(0.0), exponent)
+        + power_cosine_pdf(direction.reflect(normal).dot(axis).max(0.0), exponent)
+}
+
+#[cfg(test)]
+fn diffraction_radial_kernel(distance_to_edge: f32, radius: f32) -> f32 {
+    (1.0 - distance_to_edge.abs() / radius).clamp(0.0, 1.0) / radius
+}
+
+#[cfg(test)]
+fn material_energies(absorption: f32, scattering: f32, transmission: f32) -> [f32; 4] {
+    let absorption = absorption.clamp(0.0, 1.0);
+    let transmission = transmission.clamp(0.0, 1.0).min(1.0 - absorption);
+    let reflection = (1.0 - absorption - transmission).max(0.0);
+    let rough = reflection * scattering.clamp(0.0, 1.0);
+    [reflection - rough, rough, transmission, absorption]
+}
+
+#[cfg(test)]
 fn analytic_binaural_estimate(
     lateral: f32,
     head_radius_meters: f32,
@@ -585,6 +570,62 @@ mod tests {
     }
 
     #[test]
+    fn folded_surface_lobe_preserves_probability_at_grazing_angles() {
+        let normal = Vec3::Y;
+        let axis = Vec3::new(1.0, 0.05, 0.0).normalize();
+        let exponent = 32.0;
+        let polar_steps = 512;
+        let azimuth_steps = 1_024;
+        let mut integral = 0.0;
+        for polar_index in 0..polar_steps {
+            let cosine = (polar_index as f32 + 0.5) / polar_steps as f32;
+            let sine = (1.0 - cosine * cosine).sqrt();
+            for azimuth_index in 0..azimuth_steps {
+                let azimuth = std::f32::consts::TAU * (azimuth_index as f32 + 0.5) / azimuth_steps as f32;
+                let direction = Vec3::new(sine * azimuth.cos(), cosine, sine * azimuth.sin());
+                integral += folded_power_cosine_pdf(direction, axis, normal, exponent);
+            }
+        }
+        integral *= std::f32::consts::TAU / (polar_steps * azimuth_steps) as f32;
+        assert!((integral - 1.0).abs() < 0.002, "folded lobe integral was {integral}");
+    }
+
+    #[test]
+    fn diffraction_strip_kernel_is_finite_normalized_and_bounded() {
+        for radius in [0.05, 0.2, 1.0, 4.0] {
+            let steps = 100_000;
+            let width = 2.0 * radius / steps as f32;
+            let integral = (0..steps)
+                .map(|index| {
+                    let distance = -radius + (index as f32 + 0.5) * width;
+                    diffraction_radial_kernel(distance, radius) * width
+                })
+                .sum::<f32>();
+            assert!((integral - 1.0).abs() < 1.0e-4);
+            assert_eq!(diffraction_radial_kernel(0.0, radius), radius.recip());
+            assert_eq!(diffraction_radial_kernel(radius, radius), 0.0);
+            assert_eq!(diffraction_radial_kernel(2.0 * radius, radius), 0.0);
+        }
+    }
+
+    #[test]
+    fn material_energy_partition_neither_loses_nor_creates_energy() {
+        for absorption_step in 0..=20 {
+            for scattering_step in 0..=20 {
+                for transmission_step in 0..=20 {
+                    let energies = material_energies(
+                        absorption_step as f32 / 20.0,
+                        scattering_step as f32 / 20.0,
+                        transmission_step as f32 / 20.0,
+                    );
+                    assert!(energies.iter().all(|energy| energy.is_finite() && *energy >= 0.0));
+                    assert!((energies.iter().sum::<f32>() - 1.0).abs() < 1.0e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn branch_probabilities_follow_pressure_weights() {
         let probabilities = pressure_branch_probabilities(&[0.81, 0.09, 0.0]);
         assert!((probabilities[0] - 0.75).abs() < 1.0e-6);
@@ -605,6 +646,32 @@ mod tests {
         deposit_fractional(&mut samples, f32::NAN, 1.0);
         deposit_fractional(&mut samples, 0.0, f32::INFINITY);
         assert_eq!(samples, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn direct_lanczos_delay_preserves_pressure_and_bounds_energy_ripple() {
+        let mut minimum_energy = f32::INFINITY;
+        let mut maximum_energy = f32::NEG_INFINITY;
+        for step in 0..=100 {
+            let weights = direct_lanczos_weights(step as f32 / 100.0);
+            assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1.0e-5);
+            let energy = weights.iter().map(|weight| weight * weight).sum::<f32>();
+            minimum_energy = minimum_energy.min(energy);
+            maximum_energy = maximum_energy.max(energy);
+        }
+        let ripple_db = 10.0 * (maximum_energy / minimum_energy).log10();
+        assert!(
+            ripple_db < 0.4,
+            "direct fractional-delay energy ripple was {ripple_db} dB"
+        );
+    }
+
+    #[test]
+    fn specular_exponent_uses_rms_slope_relation() {
+        assert_eq!(specular_exponent_from_roughness(0.0), 4096.0);
+        assert!((specular_exponent_from_roughness(0.15) - 86.888_89).abs() < 1.0e-4);
+        assert_eq!(specular_exponent_from_roughness(1.0), 1.0);
+        assert!(specular_exponent_from_roughness(0.1) > specular_exponent_from_roughness(0.2));
     }
 
     #[test]

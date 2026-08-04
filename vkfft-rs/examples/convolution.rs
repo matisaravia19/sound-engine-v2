@@ -117,24 +117,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         fence,
     };
 
-    let mut kernel_builder = FFTPlanBuilder::new(DeviceHandles { ..device_handles })
-        .map_err(|e| format!("kernel PlanBuilder::new failed: {e:?}"))?;
-    kernel_builder
+    let kernel_plan = FFTPlanBuilder::new(&device_handles)
         .with_dimensions(&[N as u64])
-        .with_buffer(kernel_buffer, buffer_bytes);
-
-    let kernel_plan = kernel_builder
+        .with_buffer(kernel_buffer, buffer_bytes)
         .build()
         .map_err(|e| format!("kernel PlanBuilder::build failed: {e:?}"))?;
 
-    let mut signal_builder = FFTPlanBuilder::new(DeviceHandles { ..device_handles })
-        .map_err(|e| format!("signal PlanBuilder::new failed: {e:?}"))?;
-    signal_builder
+    let signal_plan = FFTPlanBuilder::new(&device_handles)
         .with_dimensions(&[N as u64])
         .with_buffer(signal_buffer, buffer_bytes)
-        .with_normalization();
-
-    let signal_plan = signal_builder
+        .with_normalization()
         .build()
         .map_err(|e| format!("signal PlanBuilder::build failed: {e:?}"))?;
 
@@ -218,8 +210,6 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     drop(signal_plan);
     drop(kernel_plan);
-    drop(signal_builder);
-    drop(kernel_builder);
 
     unsafe {
         device.free_command_buffers(command_pool, std::slice::from_ref(&command_buffer));

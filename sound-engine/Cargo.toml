@@ -21,5 +21,9 @@ name = "auralization_engine_stream_wav"
 required-features = ["playback"]
 
 [[example]]
+name = "convolver_stream_wav"
+required-features = ["playback"]
+
+[[example]]
 name = "sound_engine_runtime_mode"
 required-features = ["playback"]

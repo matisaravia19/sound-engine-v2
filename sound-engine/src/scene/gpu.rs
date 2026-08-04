@@ -3,9 +3,11 @@ use super::types::{DiffractionEdge, MaterialId, MeshId, SceneObject, SceneVersio
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
-use crate::gpu::rt::{BlasBuildSpec, BlasId, RtInstanceSpec, RtMeshBuffers, RtMeshSpec, TlasBuildSpec, TlasId};
+use crate::gpu::rt::{
+    AabbBlasBuildSpec, BlasBuildSpec, BlasId, RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec,
+    TlasBuildSpec, TlasId,
+};
 use ash::vk;
-#[cfg(test)]
 use glam::Vec3;
 use std::collections::HashMap;
 
@@ -24,7 +26,8 @@ pub struct GpuSceneResources {
     material_buffer: BufferHandle,
     object_buffer: BufferHandle,
     diffraction_edge_buffer: BufferHandle,
-    diffraction_edge_count: u32,
+    _diffraction_bounds: Option<RtAabbBuffers>,
+    diffraction_blas_id: Option<BlasId>,
     tlas_id: Option<TlasId>,
     instances: Vec<RtInstanceSpec>,
     instance_count: u32,
@@ -155,7 +158,8 @@ impl GpuSceneResources {
             material_buffer: scene_buffers.material_buffer,
             object_buffer: scene_buffers.object_buffer,
             diffraction_edge_buffer: diffraction_resources.edge_buffer,
-            diffraction_edge_count: diffraction_edges.len() as u32,
+            _diffraction_bounds: diffraction_resources.bounds,
+            diffraction_blas_id: diffraction_resources.blas_id,
             tlas_id,
             instance_count: instances.len() as u32,
             instances,
@@ -197,9 +201,9 @@ impl GpuSceneResources {
         &self.diffraction_edge_buffer
     }
 
-    /// Returns the number of authored edges stored in the diffraction buffer.
-    pub fn diffraction_edge_count(&self) -> u32 {
-        self.diffraction_edge_count
+    /// Returns the procedural diffraction-edge BLAS when the scene has edges.
+    pub fn diffraction_blas_id(&self) -> Option<BlasId> {
+        self.diffraction_blas_id
     }
 }
 
@@ -210,6 +214,8 @@ struct SceneGpuBuffers {
 
 struct DiffractionGpuResources {
     edge_buffer: BufferHandle,
+    bounds: Option<RtAabbBuffers>,
+    blas_id: Option<BlasId>,
 }
 
 fn upload_scene_buffers(
@@ -341,9 +347,55 @@ fn upload_diffraction_edges(
     let edge_buffer = upload_gpu_slice(gpu, &gpu_edges)?;
 
     if diffraction_edges.is_empty() {
-        return Ok(DiffractionGpuResources { edge_buffer });
+        return Ok(DiffractionGpuResources {
+            edge_buffer,
+            bounds: None,
+            blas_id: None,
+        });
     }
-    Ok(DiffractionGpuResources { edge_buffer })
+
+    let aabbs = gpu_edges
+        .iter()
+        .map(diffraction_edge_aabb)
+        .collect::<SoundResult<Vec<_>>>()?;
+    let bounds = gpu.rt().upload_aabbs(&aabbs)?;
+    let blas_id = gpu.rt().build_aabb_blas(AabbBlasBuildSpec {
+        aabbs: &bounds,
+        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+    })?;
+
+    Ok(DiffractionGpuResources {
+        edge_buffer,
+        bounds: Some(bounds),
+        blas_id: Some(blas_id),
+    })
+}
+
+fn diffraction_edge_aabb(edge: &GpuDiffractionEdge) -> SoundResult<RtAabbSpec> {
+    let radial = Vec3::from_array(edge.bisector_dir);
+    let plane_normal = Vec3::from_array(edge.positive_plane_normal);
+    let radius = edge.diffraction_radius;
+    // A procedural AABB needs non-zero thickness around its mathematical plane
+    // so Vulkan traversal can invoke the exact strip intersection shader.
+    let plane_epsilon = radius.max(1.0) * 0.001;
+    let offsets = [
+        radial * radius + plane_normal * plane_epsilon,
+        radial * radius - plane_normal * plane_epsilon,
+        -radial * radius + plane_normal * plane_epsilon,
+        -radial * radius - plane_normal * plane_epsilon,
+    ];
+
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for point in [Vec3::from_array(edge.start), Vec3::from_array(edge.end)] {
+        for offset in offsets {
+            let corner = point + offset;
+            min = min.min(corner);
+            max = max.max(corner);
+        }
+    }
+
+    Ok(RtAabbSpec { min, max, opaque: true })
 }
 
 fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {

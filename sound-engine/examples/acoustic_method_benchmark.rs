@@ -712,10 +712,9 @@ fn btm_diffraction_paths(
         }
 
         let total_length = source_distance + listener_distance;
-        // The published BTM Green function carries -nu/(4*pi). The engine is
-        // calibrated to direct pressure 1/r instead of 1/(4*pi*r), so multiplying
-        // the whole reference by 4*pi leaves this -nu factor.
-        let pressure = -wedge_index * beta_sum * segment_length / (source_distance * listener_distance);
+        // The published source convention already produces a 1/r direct field,
+        // so the BTM coefficient retains its 1/(4*pi) factor.
+        let pressure = -wedge_index / (4.0 * PI) * beta_sum * segment_length / (source_distance * listener_distance);
         paths.push(ExactPath {
             length_meters: total_length,
             // ExactPath stores the numerator of pressure/length.
