@@ -2,8 +2,8 @@
 #extension GL_EXT_ray_tracing : require
 
 // The procedural intersection stage has already found the virtual strip hit.
-// This closest-hit stage only labels the event and forwards the two attributes
-// needed to recover its closest physical edge point in ray generation.
+// This closest-hit stage labels the event and forwards its radial distance and
+// finite-edge coordinate. Ray generation keeps the interaction at the hit.
 
 struct HitPayload {
     uint hit_type;

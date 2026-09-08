@@ -649,7 +649,7 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             bisector_dir: vec3(-diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 2,
@@ -658,7 +658,7 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             bisector_dir: vec3(diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 3,
@@ -667,7 +667,7 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             bisector_dir: vec3(-diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 4,
@@ -676,7 +676,7 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             bisector_dir: vec3(diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
     ]
 }

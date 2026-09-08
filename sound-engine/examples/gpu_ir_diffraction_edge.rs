@@ -138,6 +138,7 @@ fn main() -> SoundResult<()> {
     let sandbox_source_position = vec3(-4.5, 0.45, 0.0);
     let (doorway_maximum_step_db, doorway_span_db, shadow_excess_db, boundary_step_db) =
         doorway_position_sweep(&gpu, sandbox_source_position)?;
+    let (multibounce_energy_ratio, multibounce_peak_ratio) = doorway_multibounce_growth(&gpu, sandbox_source_position)?;
     if doorway_maximum_step_db > 2.0 {
         return Err(SoundError::invalid_state(format!(
             "Visible doorway sweep changed by {doorway_maximum_step_db:.6} dB between adjacent 5 cm positions"
@@ -158,6 +159,11 @@ fn main() -> SoundResult<()> {
             "Doorway visibility boundary changes by {boundary_step_db:.6} dB over 2.5 mm"
         )));
     }
+    if multibounce_energy_ratio > 16.0 || multibounce_peak_ratio > 4.0 {
+        return Err(SoundError::invalid_state(format!(
+            "Doorway multi-bounce diffraction grew excessively: energy ratio {multibounce_energy_ratio:.6}, peak ratio {multibounce_peak_ratio:.6}"
+        )));
+    }
 
     println!("  signed diffraction pressure: {measured_pressure:.9}");
     println!("  proxy-radius relative pressure difference: {radius_error:.9}");
@@ -169,8 +175,30 @@ fn main() -> SoundResult<()> {
     println!("  doorway maximum adjacent level step: {doorway_maximum_step_db:.6} dB");
     println!("  doorway direct-view level span: {doorway_span_db:.6} dB");
     println!("  doorway shadow excess over direct view: {shadow_excess_db:.6} dB");
+    println!("  doorway 3-bounce/1-bounce energy ratio: {multibounce_energy_ratio:.9}");
+    println!("  doorway 3-bounce/1-bounce peak ratio: {multibounce_peak_ratio:.9}");
 
     Ok(())
+}
+
+fn doorway_multibounce_growth(gpu: &VkBackend, source_position: Vec3) -> SoundResult<(f64, f64)> {
+    let listener_position = vec3(1.8, 0.45, 0.0);
+    let first_order = trace_scene_with_bounces(gpu, doorway_scene(), 9_000, source_position, listener_position, 1)?;
+    let multibounce = trace_scene_with_bounces(gpu, doorway_scene(), 9_001, source_position, listener_position, 3)?;
+    let first_peak = first_order
+        .samples
+        .iter()
+        .map(|sample| sample.left.abs() as f64)
+        .fold(0.0_f64, f64::max);
+    let multibounce_peak = multibounce
+        .samples
+        .iter()
+        .map(|sample| sample.left.abs() as f64)
+        .fold(0.0_f64, f64::max);
+    Ok((
+        multibounce.energy as f64 / (first_order.energy as f64).max(1.0e-24),
+        multibounce_peak / first_peak.max(1.0e-24),
+    ))
 }
 
 fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult<(f64, f64, f64, f64)> {
@@ -299,9 +327,20 @@ fn trace_scene(
     source_position: Vec3,
     listener_position: Vec3,
 ) -> SoundResult<sound_engine::acoustics::IrSnapshot> {
+    trace_scene_with_bounces(gpu, scene_description, query_id, source_position, listener_position, 1)
+}
+
+fn trace_scene_with_bounces(
+    gpu: &VkBackend,
+    scene_description: SceneDescription,
+    query_id: u32,
+    source_position: Vec3,
+    listener_position: Vec3,
+    max_bounces: u32,
+) -> SoundResult<sound_engine::acoustics::IrSnapshot> {
     let mut scene = SceneManager::new();
     scene.load(scene_description)?;
-    let mut pipeline = AcousticPipeline::new(gpu, engine_config())?;
+    let mut pipeline = AcousticPipeline::new(gpu, engine_config_with_bounces(max_bounces))?;
 
     pipeline.build_ir(
         gpu,
@@ -318,6 +357,10 @@ fn trace_scene(
 }
 
 fn engine_config() -> EngineConfig {
+    engine_config_with_bounces(1)
+}
+
+fn engine_config_with_bounces(max_bounces: u32) -> EngineConfig {
     EngineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
@@ -326,7 +369,7 @@ fn engine_config() -> EngineConfig {
         },
         acoustics: AcousticsConfig {
             listener_ray_count: 131_072,
-            max_bounces: 1,
+            max_bounces,
             maximum_path_length: 343.0,
             minimum_throughput: 1.0e-6,
             sampling_seed: 0,
@@ -391,7 +434,7 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(-diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 2,
@@ -400,7 +443,7 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 3,
@@ -409,7 +452,7 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(-diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 4,
@@ -418,7 +461,7 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.65,
+            base_strength: 0.85,
         },
     ];
     SceneDescription {

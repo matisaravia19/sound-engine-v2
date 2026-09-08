@@ -29,12 +29,18 @@ layout(std430, set = 0, binding = 4) readonly buffer DiffractionEdgeBuffer {
 } diffraction_edges;
 
 // Passed to closest-hit. x is the virtual plane hit distance to the closest edge
-// point, which drives bend falloff. y is distance along the finite edge segment,
-// which lets closest-hit launch the diffracted child from the physical edge.
+// point and drives the normalized radial response. y records distance along the
+// finite edge segment; the interaction itself remains at the ray-traced hit.
 hitAttributeEXT vec2 diffraction_hit;
 
 void main() {
     DiffractionEdge edge = diffraction_edges.edges[gl_PrimitiveID];
+    // A disabled edge must not intercept ordinary transport. Skipping the
+    // procedural intersection removes it from both next-event evaluation and
+    // continuation without requiring a special branch in ray generation.
+    if (edge.base_strength <= 0.0 || edge.diffraction_radius <= 0.0) {
+        return;
+    }
 
     // The diffraction primitive is represented as a finite plane strip around
     // the authored edge. The plane is virtual: it detects nearby rays, then
@@ -69,12 +75,12 @@ void main() {
     
     // The radius is both the strip half-width and the zero-bend boundary used by
     // closest-hit's linear falloff, so hits outside it are not meaningful.
-    if (distance_to_edge > edge.diffraction_radius) {
+    if (distance_to_edge >= edge.diffraction_radius) {
         return;
     }
 
-    // Closest-hit needs both values because H, the plane hit, and O, the edge
-    // origin of the diffracted ray, intentionally differ.
+    // Keep the finite-edge coordinate in the payload for diagnostics and future
+    // edge-varying material data without moving the acoustic interaction.
     diffraction_hit = vec2(distance_to_edge, edge_t);
     reportIntersectionEXT(hit_t, 0);
 }

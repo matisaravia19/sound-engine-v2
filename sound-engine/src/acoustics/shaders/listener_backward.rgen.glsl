@@ -714,62 +714,92 @@ bool sampleSurfaceContinuation(
 // Diffraction geometry and next-event estimation
 // -----------------------------------------------------------------------------
 
-// Chooses which authored shadow boundary bounds the diffraction interval.
-bool chooseShadowDirection(DiffractionEdge edge, vec3 perpendicular_direction, out vec3 shadow_direction) {
-    // The proxy plane is not itself the diffraction domain. Reject incidence
-    // inside the solid wedge, then select the authored shadow boundary from the
-    // side of the edge on which the projected incoming direction lies.
-    if (dot(perpendicular_direction, -edge.bisector_dir) >= edge.solid_wedge_cos - DIRECTION_EPSILON) {
-        return false;
-    }
-    float side = dot(perpendicular_direction, edge.positive_plane_normal);
-    if (abs(side) <= DIRECTION_EPSILON) {
-        return false;
-    }
-    shadow_direction = side > 0.0 ? edge.positive_shadow_dir : edge.negative_shadow_dir;
-    return true;
+vec3 rotateAroundAxis(vec3 value, vec3 axis, float angle) {
+    // Rodrigues' formula rotates only the edge cross-section component. The
+    // component parallel to the edge is conserved by diffraction continuation.
+    float sine = sin(angle);
+    float cosine = cos(angle);
+    return value * cosine + cross(axis, value) * sine + axis * dot(axis, value) * (1.0 - cosine);
 }
 
-// Builds the valid one-dimensional angular sampling domain in the plane
-// perpendicular to the edge. Returns false for solid-wedge incidence, nearly
-// edge-parallel rays, and degenerate angular intervals.
-bool diffractionDomain(
+bool insideSolidWedge(DiffractionEdge edge, vec3 perpendicular_direction) {
+    return dot(perpendicular_direction, -edge.bisector_dir) > edge.solid_wedge_cos + DIRECTION_EPSILON;
+}
+
+// Builds the forward diffraction domain in the plane perpendicular to the
+// edge. Candidate directions may turn by at most 90 degrees from the incident
+// cross-section direction and may not enter the solid wedge. The free exterior
+// wedge is at least PI radians, so the accepted domain is always finite and has
+// measure of at least PI/2 for valid incidence.
+bool diffractionForwardDomain(
     DiffractionEdge edge,
     vec3 incoming_direction,
-    float distance_to_edge,
     out vec3 incoming_perpendicular,
     out float perpendicular_length,
     out vec3 parallel_component,
-    out float rotation_sign,
-    out float maximum_angle
+    out float valid_angle_measure,
+    out float valid_cosine_integral,
+    out float forbidden_start,
+    out float forbidden_end
 ) {
-    // Work in the cross-section perpendicular to the edge. The edge-parallel
-    // component is stored separately and restored after sampling a bend.
+    // Work in the edge cross-section. Keeping the parallel component fixed
+    // produces the diffraction cone rather than an unconstrained 3-D scatter.
     parallel_component = dot(incoming_direction, edge.edge_dir) * edge.edge_dir;
     vec3 perpendicular = incoming_direction - parallel_component;
     perpendicular_length = length(perpendicular);
-    if (perpendicular_length <= DIRECTION_EPSILON || edge.diffraction_radius <= DIRECTION_EPSILON) {
+    if (perpendicular_length <= DIRECTION_EPSILON) {
         return false;
     }
     incoming_perpendicular = perpendicular / perpendicular_length;
-
-    vec3 shadow_direction;
-    if (!chooseShadowDirection(edge, incoming_perpendicular, shadow_direction)) {
+    if (insideSolidWedge(edge, incoming_perpendicular)) {
         return false;
     }
-    // The interval starts at straight passage and rotates toward the selected
-    // shadow boundary. Large authored wedges are capped to a 90-degree bend.
-    float full_angle = min(
-        acos(clamp(dot(incoming_perpendicular, shadow_direction), -1.0, 1.0)),
+
+    // Express the solid wedge as a periodic angular interval relative to the
+    // incident direction, then subtract its overlap with the forward interval
+    // [-PI/2, PI/2]. At most endpoint-equivalent copies overlap, and summing the
+    // clipped lengths handles the wrap at +/-PI without a branch cut.
+    vec3 solid_center = -edge.bisector_dir;
+    float solid_center_angle = atan(
+        dot(cross(incoming_perpendicular, solid_center), edge.edge_dir),
+        dot(incoming_perpendicular, solid_center)
+    );
+    float solid_half_angle = clamp(
+        0.5 * (TWO_PI - edge.edge_angle_radians),
+        0.0,
         0.5 * PI
     );
-    // The radial kernel below already fades continuously at the strip boundary.
-    // Keeping the angular domain independent of proxy distance avoids the old
-    // 1/maximum_angle singularity as that distance approached the radius.
-    maximum_angle = full_angle;
-    float orientation = dot(cross(incoming_perpendicular, shadow_direction), edge.edge_dir);
-    rotation_sign = orientation >= 0.0 ? 1.0 : -1.0;
-    return maximum_angle > DIRECTION_EPSILON && finiteFloat(maximum_angle);
+    float solid_overlap = 0.0;
+    float solid_cosine_overlap = 0.0;
+    forbidden_start = 0.5 * PI;
+    forbidden_end = 0.5 * PI;
+    bool found_forbidden_interval = false;
+    for (int wrap = -1; wrap <= 1; ++wrap) {
+        float center = solid_center_angle + float(wrap) * TWO_PI;
+        float overlap_start = max(-0.5 * PI, center - solid_half_angle);
+        float overlap_end = min(0.5 * PI, center + solid_half_angle);
+        if (overlap_end > overlap_start) {
+            solid_overlap += overlap_end - overlap_start;
+            solid_cosine_overlap += sin(overlap_end) - sin(overlap_start);
+            if (!found_forbidden_interval) {
+                forbidden_start = overlap_start;
+                forbidden_end = overlap_end;
+                found_forbidden_interval = true;
+            } else {
+                // Positive wrapped overlaps can only meet at an endpoint for
+                // the validated wedge range. Merging also protects against
+                // last-bit disagreement at the +/-PI branch cut.
+                forbidden_start = min(forbidden_start, overlap_start);
+                forbidden_end = max(forbidden_end, overlap_end);
+            }
+        }
+    }
+    valid_angle_measure = PI - solid_overlap;
+    valid_cosine_integral = 2.0 - solid_cosine_overlap;
+    return finiteFloat(valid_angle_measure)
+        && finiteFloat(valid_cosine_integral)
+        && valid_angle_measure >= 0.5 * PI - DIRECTION_EPSILON
+        && valid_cosine_integral > DIRECTION_EPSILON;
 }
 
 // Evaluates whether the edge-to-source connection belongs to the same angular
@@ -785,39 +815,34 @@ bool diffractionSourceResponse(
     vec3 incoming_perpendicular;
     float perpendicular_length;
     vec3 parallel_component;
-    float rotation_sign;
-    float maximum_angle;
-    if (!diffractionDomain(
+    float valid_angle_measure;
+    float valid_cosine_integral;
+    float forbidden_start;
+    float forbidden_end;
+    if (!diffractionForwardDomain(
         edge,
         incoming_direction,
-        distance_to_edge,
         incoming_perpendicular,
         perpendicular_length,
         parallel_component,
-        rotation_sign,
-        maximum_angle
+        valid_angle_measure,
+        valid_cosine_integral,
+        forbidden_start,
+        forbidden_end
     )) {
         return false;
     }
 
-    // Project the source connection into the same cross-section and accept it
-    // only when it falls inside the same oriented interval used by continuation.
+    // Project the source connection into the same cross-section. Diffraction
+    // continuation uses a clipped forward cosine distribution outside the wall,
+    // and the deterministic source connection evaluates the same directional
+    // shape.
     vec3 source_perpendicular = source_direction
         - dot(source_direction, edge.edge_dir) * edge.edge_dir;
     source_perpendicular = normalizeOrZero(source_perpendicular);
-    // Directions on the authored wall boundary are valid diffraction limits;
-    // reject only directions measurably inside the solid wedge.
     if (dot(source_perpendicular, source_perpendicular) <= 0.0
-        || dot(source_perpendicular, -edge.bisector_dir) > edge.solid_wedge_cos + DIRECTION_EPSILON) {
-        return false;
-    }
-
-    // A dot product gives only the unsigned angle. The cross-product sign is
-    // also required so a source across the opposite shadow boundary is rejected.
-    float source_angle = acos(clamp(dot(incoming_perpendicular, source_perpendicular), -1.0, 1.0));
-    float source_orientation = dot(cross(incoming_perpendicular, source_perpendicular), edge.edge_dir);
-    float source_sign = source_orientation >= 0.0 ? 1.0 : -1.0;
-    if (source_sign != rotation_sign || source_angle > maximum_angle + DIRECTION_EPSILON) {
+        || dot(source_perpendicular, incoming_perpendicular) < -DIRECTION_EPSILON
+        || insideSolidWedge(edge, source_perpendicular)) {
         return false;
     }
 
@@ -825,37 +850,39 @@ bool diffractionSourceResponse(
     // reaches zero continuously at its virtual boundary.
     float radial_kernel = clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
         / edge.diffraction_radius;
-    // The source connection is evaluated deterministically; no outgoing angle
-    // was sampled here, so dividing by an angular PDF was both biased and
-    // unbounded as maximum_angle approached zero.
-    // Listener directions are sampled on the full sphere with a 4*pi/N path
-    // weight, while a straight edge occupies a one-dimensional azimuthal
-    // measure. The 2*pi cross-section measure converts the normalized radial
-    // strip kernel into that line-domain pressure estimator.
-    response = TWO_PI * sqrt(clamp(edge.base_strength, 0.0, 1.0)) * radial_kernel;
+    float forward_cosine = max(dot(source_perpendicular, incoming_perpendicular), 0.0);
+    float directional_shape = valid_angle_measure * forward_cosine / valid_cosine_integral;
+    // Listener directions are sampled on the full sphere while a straight edge
+    // occupies a one-dimensional cross-sectional measure. TWO_PI is the
+    // calibrated conversion between those measures. It is a bounded response,
+    // not the continuation sampler's angular PDF.
+    response = TWO_PI
+        * sqrt(clamp(edge.base_strength, 0.0, 1.0))
+        * radial_kernel
+        * directional_shape;
     return response > 0.0 && finiteFloat(response);
 }
 
 // Performs next-event estimation for listener -> ... -> edge -> source.
 void connectDiffractionToSource(
     DiffractionEdge edge,
-    vec3 edge_origin,
+    vec3 proxy_hit_position,
     vec3 incoming_direction,
     float distance_to_edge,
-    float edge_path_distance,
+    float proxy_path_distance,
     float path_throughput,
     float monte_carlo_normalization,
     vec3 listener_arrival_direction
 ) {
-    // The virtual-plane hit is projected onto the physical finite edge. The
-    // listener-to-edge distance and this edge-to-source distance remain local
-    // to the current path so nearby proxy hits retain distinct delays.
-    vec3 to_source = pc.source_position - edge_origin;
+    // The proxy hit is the diffraction interaction. Connecting from its
+    // projection on the edge would move both the visibility endpoint and the
+    // delay away from the ray-traced event.
+    vec3 to_source = pc.source_position - proxy_hit_position;
     float source_distance = length(to_source);
     if (!finiteFloat(source_distance) || source_distance <= DIRECTION_EPSILON) {
         return;
     }
-    float total_path_length = edge_path_distance + source_distance;
+    float total_path_length = proxy_path_distance + source_distance;
     if (total_path_length > pc.maximum_path_length) {
         return;
     }
@@ -873,7 +900,7 @@ void connectDiffractionToSource(
     }
     // Offset along the connection rather than an arbitrary proxy normal. The
     // proxy itself is invisible to this surface-only visibility trace.
-    if (!traceVisibility(edge_origin + source_direction * RAY_EPSILON, source_direction, source_distance)) {
+    if (!traceVisibility(proxy_hit_position + source_direction * RAY_EPSILON, source_direction, source_distance)) {
         return;
     }
     float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
@@ -885,26 +912,88 @@ void connectDiffractionToSource(
     depositPressure(total_path_length, amplitude, listener_arrival_direction);
 }
 
-// The strip is only an importance region for edge/source next-event paths. It
-// is not physical geometry, so ordinary transport crosses it without a random
-// gain or loss. Higher-order diffraction needs an explicit multi-edge estimator
-// rather than stealing energy from this continuation.
-bool continuePastDiffraction(
+// Samples one continuous forward diffraction direction. This is not a binary
+// straight/diffracted branch: zero bend is simply one point in the distribution.
+// The sampler preserves the component along the edge, rejects the solid wedge,
+// and never turns the cross-section direction by more than 90 degrees.
+bool sampleDiffractionContinuation(
+    DiffractionEdge edge,
     vec3 plane_hit_position,
     vec3 incoming_direction,
     float incoming_path_distance,
     float hit_distance,
+    inout uint random_state,
+    inout float path_throughput,
     out vec3 continuation_origin,
     out vec3 continuation_direction,
     out float continuation_path_distance
 ) {
-    continuation_origin = plane_hit_position + incoming_direction * RAY_EPSILON;
-    continuation_direction = incoming_direction;
+    vec3 incoming_perpendicular;
+    float perpendicular_length;
+    vec3 parallel_component;
+    float valid_angle_measure;
+    float valid_cosine_integral;
+    float forbidden_start;
+    float forbidden_end;
+    if (!diffractionForwardDomain(
+        edge,
+        incoming_direction,
+        incoming_perpendicular,
+        perpendicular_length,
+        parallel_component,
+        valid_angle_measure,
+        valid_cosine_integral,
+        forbidden_start,
+        forbidden_end
+    )) {
+        return false;
+    }
+
+    // Invert the clipped cosine CDF directly. The primitive integral is
+    // sin(theta), so the two free intervals can be sampled without rejection.
+    // Consuming exactly one random value keeps nearby listener queries
+    // correlated even as the solid-wedge boundary moves across the domain.
+    float left_mass = max(0.0, sin(forbidden_start) + 1.0);
+    float mass_sample = randomFloat(random_state) * valid_cosine_integral;
+    float sine_angle = mass_sample < left_mass
+        ? -1.0 + mass_sample
+        : sin(forbidden_end) + (mass_sample - left_mass);
+    float angle = asin(clamp(
+        sine_angle,
+        -1.0 + DIRECTION_EPSILON,
+        1.0 - DIRECTION_EPSILON
+    ));
+    vec3 sampled_perpendicular = normalizeOrZero(
+        rotateAroundAxis(incoming_perpendicular, edge.edge_dir, angle)
+    );
+    if (insideSolidWedge(edge, sampled_perpendicular)) {
+        return false;
+    }
+
+    continuation_direction = normalizeOrZero(
+        parallel_component + sampled_perpendicular * perpendicular_length
+    );
+    if (!finiteVector(continuation_direction)
+        || dot(continuation_direction, incoming_direction) < -DIRECTION_EPSILON) {
+        return false;
+    }
+
+    float continuation_gain = sqrt(clamp(edge.base_strength, 0.0, 1.0));
+    if (continuation_gain <= 0.0 || !finiteFloat(continuation_gain)) {
+        return false;
+    }
+    // Conditional on a proxy hit, continuation is a normalized scattering
+    // event: f(omega) = sqrt(strength) * q(omega), sampled from q. The PDF
+    // cancels exactly, so neither proxy radius nor angular-domain measure can
+    // amplify a continued path. The radial importance kernel belongs only to
+    // completed hit-to-source edge integration above.
+    path_throughput *= continuation_gain;
+    continuation_origin = plane_hit_position + continuation_direction * RAY_EPSILON;
     continuation_path_distance = incoming_path_distance + hit_distance;
     return finiteVector(continuation_origin)
         && finiteVector(continuation_direction)
-        && finiteFloat(continuation_path_distance);
-
+        && finiteFloat(continuation_path_distance)
+        && finiteFloat(path_throughput);
 }
 
 // -----------------------------------------------------------------------------
@@ -1016,25 +1105,22 @@ void main() {
             direction = continuation_direction;
             traveled_distance = hit_path_distance;
         } else if (hit_payload.hit_type == HIT_DIFFRACTION_EDGE) {
-            // The traversal hit lies on a virtual plane strip. Recover the
-            // closest physical point from the packed intersection attributes.
+            // The traversal hit on the finite proxy strip is the diffraction
+            // interaction point. The edge projection is used only to calculate
+            // the radial kernel in the intersection shader.
             DiffractionEdge edge = diffraction_edges.edges[hit_payload.data_id];
             float distance_to_edge = hit_payload.barycentrics.x;
-            float edge_t = hit_payload.barycentrics.y;
-            vec3 edge_origin = edge.start + edge.edge_dir * edge_t;
-            // Use listener-to-edge length for diffraction delays, not the
-            // shorter ray parameter that reached the proxy plane.
-            float edge_path_distance = traveled_distance + length(edge_origin - origin);
-            if (edge_path_distance > pc.maximum_path_length) {
+            float proxy_path_distance = traveled_distance + hit_payload.t;
+            if (proxy_path_distance > pc.maximum_path_length) {
                 break;
             }
 
             connectDiffractionToSource(
                 edge,
-                edge_origin,
+                hit_position,
                 direction,
                 distance_to_edge,
-                edge_path_distance,
+                proxy_path_distance,
                 path_throughput,
                 monte_carlo_normalization,
                 initial_direction
@@ -1048,18 +1134,22 @@ void main() {
             vec3 continuation_origin;
             vec3 continuation_direction;
             float continuation_path_distance;
-            if (!continuePastDiffraction(
+            if (!sampleDiffractionContinuation(
+                edge,
                 hit_position,
                 direction,
                 traveled_distance,
                 hit_payload.t,
+                random_state,
+                path_throughput,
                 continuation_origin,
                 continuation_direction,
                 continuation_path_distance
             )) {
                 break;
             }
-            // The proxy is transparent after its next-event contribution.
+            // Continue from the ray-traced interaction in the sampled forward
+            // diffraction direction.
             origin = continuation_origin;
             direction = continuation_direction;
             traveled_distance = continuation_path_distance;

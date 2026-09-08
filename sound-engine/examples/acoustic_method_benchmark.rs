@@ -5,7 +5,7 @@
 //! analytical references, frequencies, metrics, warm-up policy, and CSV schema
 //! must change in both worktrees together.
 
-use glam::{Mat4, Vec3, vec3};
+use glam::{vec3, Mat4, Vec3};
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, IrSample, IrSnapshot};
 use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
@@ -37,6 +37,7 @@ const FREQUENCIES_HZ: &[f64] = &[125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0,
 struct Options {
     rays: u32,
     seed: u32,
+    seed_repeats: u32,
     warm_repeats: usize,
     case_filter: Option<String>,
     drop_backend: bool,
@@ -119,6 +120,7 @@ struct TimeDomainMetrics {
     relative_l2: f64,
     measured_pressure_sum: f64,
     exact_pressure_sum: f64,
+    measured_peak_abs: f64,
     nonzero_samples: usize,
 }
 
@@ -156,36 +158,39 @@ warm_gpu_p99_ms,warm_gpu_max_ms,readback_ms,readback_p99_ms,\
 frequency_hz,measured_magnitude,exact_continuous_magnitude,exact_sampled_magnitude,\
 magnitude_error_db,phase_error_degrees,complex_relative_error,sampled_magnitude_error_db,\
 sampled_phase_error_degrees,sampled_complex_relative_error,measured_ir_energy,exact_path_count,\
-time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,nonzero_samples"
+time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,measured_peak_abs,nonzero_samples"
     )?;
 
     for case in cases {
         if options.case_filter.as_deref().is_some_and(|filter| filter != case.name) {
             continue;
         }
-        let measurement = trace_case(gpu, options, &case)?;
         let exact_samples = exact_fractional_ir(&case.exact_paths);
-        let time_metrics = time_domain_metrics(&measurement.ir.samples, &exact_samples);
-        for &frequency in FREQUENCIES_HZ {
-            let measured = transfer_from_samples(&measurement.ir.samples, frequency);
-            let exact_continuous = exact_transfer(&case.exact_paths, frequency);
-            let exact_sampled = transfer_from_f64_samples(&exact_samples, frequency);
-            let magnitude_error_db = ratio_db(measured.magnitude(), exact_continuous.magnitude());
-            let phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_continuous.phase());
-            let complex_relative_error =
-                (measured - exact_continuous).magnitude() / exact_continuous.magnitude().max(1.0e-12);
-            let sampled_magnitude_error_db = ratio_db(measured.magnitude(), exact_sampled.magnitude());
-            let sampled_phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_sampled.phase());
-            let sampled_complex_relative_error =
-                (measured - exact_sampled).magnitude() / exact_sampled.magnitude().max(1.0e-12);
+        for seed_offset in 0..options.seed_repeats {
+            let mut run_options = options.clone();
+            run_options.seed = options.seed.wrapping_add(seed_offset);
+            let measurement = trace_case(gpu, &run_options, &case)?;
+            let time_metrics = time_domain_metrics(&measurement.ir.samples, &exact_samples);
+            for &frequency in FREQUENCIES_HZ {
+                let measured = transfer_from_samples(&measurement.ir.samples, frequency);
+                let exact_continuous = exact_transfer(&case.exact_paths, frequency);
+                let exact_sampled = transfer_from_f64_samples(&exact_samples, frequency);
+                let magnitude_error_db = ratio_db(measured.magnitude(), exact_continuous.magnitude());
+                let phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_continuous.phase());
+                let complex_relative_error =
+                    (measured - exact_continuous).magnitude() / exact_continuous.magnitude().max(1.0e-12);
+                let sampled_magnitude_error_db = ratio_db(measured.magnitude(), exact_sampled.magnitude());
+                let sampled_phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_sampled.phase());
+                let sampled_complex_relative_error =
+                    (measured - exact_sampled).magnitude() / exact_sampled.magnitude().max(1.0e-12);
 
-            writeln!(
+                writeln!(
                 output,
                 "{METHOD},{COMMIT},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.9},{:.9},{:.9},\
-{:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{},{:.9},{:.9},{:.9},{:.9},{}",
+{:.6},{:.6},{:.9},{:.6},{:.6},{:.9},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{}",
                 case.name,
-                options.rays,
-                options.seed,
+                run_options.rays,
+                run_options.seed,
                 case.max_bounces,
                 milliseconds(gpu_setup),
                 milliseconds(measurement.setup),
@@ -212,8 +217,10 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,nonze
                 time_metrics.relative_l2,
                 time_metrics.measured_pressure_sum,
                 time_metrics.exact_pressure_sum,
+                time_metrics.measured_peak_abs,
                 time_metrics.nonzero_samples,
             )?;
+            }
         }
     }
     output.flush()?;
@@ -528,6 +535,7 @@ fn time_domain_metrics(measured: &[IrSample], exact: &[f64]) -> TimeDomainMetric
     let mut exact_l2 = 0.0;
     let mut measured_pressure_sum = 0.0;
     let mut exact_pressure_sum = 0.0;
+    let mut measured_peak_abs = 0.0_f64;
     let mut nonzero_samples = 0;
     for (measured, exact) in measured.iter().zip(exact) {
         let measured = measured.left as f64;
@@ -538,6 +546,7 @@ fn time_domain_metrics(measured: &[IrSample], exact: &[f64]) -> TimeDomainMetric
         exact_l2 += exact * exact;
         measured_pressure_sum += measured;
         exact_pressure_sum += exact;
+        measured_peak_abs = measured_peak_abs.max(measured.abs());
         nonzero_samples += usize::from(measured != 0.0);
     }
     TimeDomainMetrics {
@@ -545,6 +554,7 @@ fn time_domain_metrics(measured: &[IrSample], exact: &[f64]) -> TimeDomainMetric
         relative_l2: l2_error.sqrt() / exact_l2.sqrt().max(1.0e-15),
         measured_pressure_sum,
         exact_pressure_sum,
+        measured_peak_abs,
         nonzero_samples,
     }
 }
@@ -861,6 +871,7 @@ fn parse_options() -> SoundResult<Options> {
     let mut options = Options {
         rays: 65_536,
         seed: 7,
+        seed_repeats: 1,
         warm_repeats: 5,
         case_filter: None,
         drop_backend: false,
@@ -877,6 +888,10 @@ fn parse_options() -> SoundResult<Options> {
             "--seed" => {
                 index += 1;
                 options.seed = parse_value(&args, index, "--seed")?;
+            }
+            "--seed-repeats" => {
+                index += 1;
+                options.seed_repeats = parse_value(&args, index, "--seed-repeats")?;
             }
             "--warm-repeats" => {
                 index += 1;
@@ -908,9 +923,9 @@ fn parse_options() -> SoundResult<Options> {
         }
         index += 1;
     }
-    if options.rays == 0 || options.warm_repeats == 0 {
+    if options.rays == 0 || options.seed_repeats == 0 || options.warm_repeats == 0 {
         return Err(SoundError::invalid_argument(
-            "ray count and warm repeat count must be non-zero",
+            "ray count, seed repeat count, and warm repeat count must be non-zero",
         ));
     }
     Ok(options)

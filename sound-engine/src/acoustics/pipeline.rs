@@ -488,6 +488,67 @@ fn diffraction_radial_kernel(distance_to_edge: f32, radius: f32) -> f32 {
 }
 
 #[cfg(test)]
+fn diffraction_forward_angle_measure(solid_center_angle: f32, solid_half_angle: f32) -> f32 {
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    let mut solid_overlap = 0.0;
+    for wrap in -1..=1 {
+        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
+        let overlap_start = (-half_pi).max(center - solid_half_angle);
+        let overlap_end = half_pi.min(center + solid_half_angle);
+        solid_overlap += (overlap_end - overlap_start).max(0.0);
+    }
+    std::f32::consts::PI - solid_overlap
+}
+
+#[cfg(test)]
+fn diffraction_forward_cosine_integral(solid_center_angle: f32, solid_half_angle: f32) -> f32 {
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    let mut solid_overlap = 0.0;
+    for wrap in -1..=1 {
+        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
+        let overlap_start = (-half_pi).max(center - solid_half_angle);
+        let overlap_end = half_pi.min(center + solid_half_angle);
+        if overlap_end > overlap_start {
+            solid_overlap += overlap_end.sin() - overlap_start.sin();
+        }
+    }
+    2.0 - solid_overlap
+}
+
+#[cfg(test)]
+fn diffraction_forward_forbidden_interval(solid_center_angle: f32, solid_half_angle: f32) -> (f32, f32) {
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    let mut forbidden = None::<(f32, f32)>;
+    for wrap in -1..=1 {
+        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
+        let start = (-half_pi).max(center - solid_half_angle);
+        let end = half_pi.min(center + solid_half_angle);
+        if end > start {
+            forbidden = Some(match forbidden {
+                Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
+                None => (start, end),
+            });
+        }
+    }
+    forbidden.unwrap_or((half_pi, half_pi))
+}
+
+#[cfg(test)]
+fn diffraction_forward_angle_is_valid(angle: f32, solid_center_angle: f32, solid_half_angle: f32) -> bool {
+    if angle.abs() > std::f32::consts::FRAC_PI_2 {
+        return false;
+    }
+    let wrapped_delta =
+        (angle - solid_center_angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    wrapped_delta.abs() >= solid_half_angle
+}
+
+#[cfg(test)]
+fn diffraction_continuation_pressure_gain(base_strength: f32) -> f32 {
+    base_strength.clamp(0.0, 1.0).sqrt()
+}
+
+#[cfg(test)]
 fn material_energies(absorption: f32, scattering: f32, transmission: f32) -> [f32; 4] {
     let absorption = absorption.clamp(0.0, 1.0);
     let transmission = transmission.clamp(0.0, 1.0).min(1.0 - absorption);
@@ -605,6 +666,91 @@ mod tests {
             assert_eq!(diffraction_radial_kernel(0.0, radius), radius.recip());
             assert_eq!(diffraction_radial_kernel(radius, radius), 0.0);
             assert_eq!(diffraction_radial_kernel(2.0 * radius, radius), 0.0);
+        }
+    }
+
+    #[test]
+    fn diffraction_forward_domain_is_normalized_bounded_and_excludes_the_wall() {
+        let steps = 200_000;
+        for solid_half_angle in [0.0, 0.25 * std::f32::consts::PI, std::f32::consts::FRAC_PI_2] {
+            for center_step in 0..32 {
+                let solid_center_angle =
+                    -std::f32::consts::PI + (center_step as f32 + 0.5) * std::f32::consts::TAU / 32.0;
+                // Incidence at angle zero must originate in free space.
+                if solid_center_angle.abs() < solid_half_angle {
+                    continue;
+                }
+                let measure = diffraction_forward_angle_measure(solid_center_angle, solid_half_angle);
+                assert!(measure.is_finite());
+                assert!(measure >= std::f32::consts::FRAC_PI_2 - 1.0e-5);
+                assert!(measure <= std::f32::consts::PI + 1.0e-5);
+                let cosine_integral = diffraction_forward_cosine_integral(solid_center_angle, solid_half_angle);
+                assert!(cosine_integral.is_finite() && cosine_integral > 0.0);
+                let (forbidden_start, forbidden_end) =
+                    diffraction_forward_forbidden_interval(solid_center_angle, solid_half_angle);
+
+                let width = std::f64::consts::PI / steps as f64;
+                let integral = (0..steps)
+                    .map(|index| {
+                        let angle = -std::f32::consts::FRAC_PI_2 + (index as f32 + 0.5) * width as f32;
+                        if diffraction_forward_angle_is_valid(angle, solid_center_angle, solid_half_angle) {
+                            width / measure as f64
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum::<f64>();
+                assert!(
+                    (integral - 1.0).abs() < 2.0e-4,
+                    "forward diffraction integral was {integral}"
+                );
+
+                let cosine_integral_numeric = (0..steps)
+                    .map(|index| {
+                        let angle = -std::f32::consts::FRAC_PI_2 + (index as f32 + 0.5) * width as f32;
+                        if diffraction_forward_angle_is_valid(angle, solid_center_angle, solid_half_angle) {
+                            width * angle.cos() as f64 / cosine_integral as f64
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum::<f64>();
+                assert!(
+                    (cosine_integral_numeric - 1.0).abs() < 2.0e-4,
+                    "cosine diffraction integral was {cosine_integral_numeric}"
+                );
+
+                let left_mass = (forbidden_start.sin() + 1.0).max(0.0);
+                for sample_index in 0..10_000 {
+                    let mass_sample = (sample_index as f32 + 0.5) / 10_000.0 * cosine_integral;
+                    let sine_angle = if mass_sample < left_mass {
+                        -1.0 + mass_sample
+                    } else {
+                        forbidden_end.sin() + (mass_sample - left_mass)
+                    };
+                    let angle = sine_angle.clamp(-1.0, 1.0).asin();
+                    assert!(diffraction_forward_angle_is_valid(
+                        angle,
+                        solid_center_angle,
+                        solid_half_angle
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diffraction_continuation_never_amplifies_and_is_radius_independent() {
+        for strength in [0.0, 0.01, 0.25, 0.65, 1.0] {
+            let gain = diffraction_continuation_pressure_gain(strength);
+            assert!(gain.is_finite() && (0.0..=1.0).contains(&gain));
+            assert!((gain * gain - strength).abs() < 1.0e-6);
+
+            let mut multi_edge_gain = 1.0;
+            for _ in 0..16 {
+                multi_edge_gain *= gain;
+                assert!(multi_edge_gain <= 1.0);
+            }
         }
     }
 
