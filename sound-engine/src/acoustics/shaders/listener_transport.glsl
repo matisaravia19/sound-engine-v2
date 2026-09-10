@@ -803,9 +803,9 @@ bool diffractionShadowDomain(
 // Broadband scalar approximation, not an exact BTM or frequency-domain UTD
 // coefficient. The four rational terms include both wedge-face distances;
 // axial mismatch narrows the response near the incident shadow boundary.
-// A 0.02-radian floor bounds variance at that boundary. See the derivation and
+// A 0.01-radian floor bounds variance at that boundary. See the derivation and
 // limitations in references/scalar-diffraction-validation.md.
-const float DIFFRACTION_ANGULAR_FLOOR = 0.02;
+const float DIFFRACTION_ANGULAR_FLOOR = 0.01;
 
 float diffractionScalarResponse(
     DiffractionEdge edge,
@@ -1015,15 +1015,11 @@ bool sampleDiffractionContinuation(
     // Concentrate samples near the boundary without a singular PDF. Evaluate
     // response/PDF explicitly because this sampler is only an approximation to
     // the four-term scalar response.
-    // Invert the integral of the regularized leading cone response,
-    // 1/sqrt(bend^2 + floor^2), to reduce continuation weight variation.
-    float scaled_range = valid_angle_measure / DIFFRACTION_ANGULAR_FLOOR;
-    float log_range = log(scaled_range + sqrt(1.0 + scaled_range * scaled_range));
-    float exponential = exp(randomFloat(random_state) * log_range);
-    float bend = 0.5 * DIFFRACTION_ANGULAR_FLOOR * (exponential - 1.0 / exponential);
+    float log_range = log(1.0 + valid_angle_measure / DIFFRACTION_ANGULAR_FLOOR);
+    float bend = DIFFRACTION_ANGULAR_FLOOR
+        * (exp(randomFloat(random_state) * log_range) - 1.0);
     float angle = angle_start < 0.0 ? -bend : bend;
-    float pdf = 1.0 / (sqrt(bend * bend
-        + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR) * log_range);
+    float pdf = 1.0 / ((bend + DIFFRACTION_ANGULAR_FLOOR) * log_range);
     vec3 sampled_perpendicular = normalizeOrZero(
         rotateAroundAxis(incoming_perpendicular, edge.edge_dir, angle)
     );
@@ -1052,4 +1048,5 @@ bool sampleDiffractionContinuation(
 // -----------------------------------------------------------------------------
 // Per-listener-path state machine
 // -----------------------------------------------------------------------------
+
 
