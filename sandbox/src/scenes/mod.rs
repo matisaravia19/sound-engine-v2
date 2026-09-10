@@ -2,6 +2,7 @@
 
 mod bell_box;
 mod bras;
+mod diffraction;
 mod geometry;
 
 use glam::{Mat4, Vec3, vec3};
@@ -43,6 +44,8 @@ pub(crate) struct Loaded {
     pub pairs: Vec<Pair>,
     /// Transformed triangles cached for rendering; no measurement audio is loaded.
     pub triangles: Vec<[Vec3; 3]>,
+    /// Number of load-time inferred edges, separate from authored benchmark geometry.
+    pub inferred_edges: usize,
 }
 
 /// Lists built-in controls and available BRAS fixtures beneath the output root.
@@ -150,7 +153,7 @@ impl Entry {
                 listener,
             }]
         };
-        let (description, pairs) = if let Some((scene, positions)) = &self.files {
+        let (mut description, pairs) = if let Some((scene, positions)) = &self.files {
             (read_fixture(scene)?, read_pairs(positions)?)
         } else {
             match self.id.as_str() {
@@ -233,10 +236,26 @@ impl Entry {
                 }
             }
         }
+        let inferred_edges =
+            if self.id.starts_with("CR") && description.diffraction_edges.is_empty() {
+                let air_points: Vec<_> = pairs
+                    .iter()
+                    .flat_map(|pair| [pair.source, pair.listener])
+                    .collect();
+                description.diffraction_edges = diffraction::infer(&triangles, &air_points);
+                SceneManager::new()
+                    .load(description.clone())
+                    .map_err(|e| e.to_string())?;
+                description.diffraction_edges.len()
+            } else {
+                0
+            };
+
         Ok(Loaded {
             description,
             pairs,
             triangles,
+            inferred_edges,
         })
     }
 }

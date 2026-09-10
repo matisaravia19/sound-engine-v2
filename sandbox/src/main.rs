@@ -282,9 +282,11 @@ fn main() -> SoundResult<()> {
                     .load()
                     .map_err(sound_engine::core::error::SoundError::external)?;
                 println!(
-                    "  {} triangles, {} pairs",
+                    "  {} triangles, {} pairs, {} diffraction edges ({} inferred)",
                     loaded.triangles.len(),
-                    loaded.pairs.len()
+                    loaded.pairs.len(),
+                    loaded.description.diffraction_edges.len(),
+                    loaded.inferred_edges,
                 );
             }
         }
@@ -646,6 +648,13 @@ fn select_scene(
     frame_selected_pair(state, camera);
     sync_source(engine, state);
     sync_red_sphere_listener(engine, state, "scene");
+    if let Some(scene) = &state.benchmark {
+        state.ui.status = format!(
+            "{} diffraction edges ({} inferred from room geometry)",
+            scene.description.diffraction_edges.len(),
+            scene.inferred_edges,
+        );
+    }
     Ok(())
 }
 
