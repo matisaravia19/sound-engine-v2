@@ -846,10 +846,11 @@ float diffractionScalarResponse(
         - outgoing_axial / outgoing_radius;
     vec4 angle_squared = angle * angle;
     vec4 taper = max(vec4(0.0), vec4(1.0) - angle_squared / (exterior * exterior));
-    // Match the numerator to the regularized denominator so the leading
-    // angular term does not vanish solely because bend tends to zero.
-    vec4 regularized_angle = sqrt(angle_squared + vec4(
-        DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR));
+    // Only the shadow-boundary term needs its numerator regularized.
+    // Keep the other three face terms unchanged away from that boundary.
+    vec4 regularized_angle = angle;
+    regularized_angle.x = sqrt(angle_squared.x
+        + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
     vec4 terms = regularized_angle * taper / (angle_squared + vec4(
         axial_mismatch * axial_mismatch
         + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR));
