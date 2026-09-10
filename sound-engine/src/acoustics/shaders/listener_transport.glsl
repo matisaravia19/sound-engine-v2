@@ -835,7 +835,7 @@ float diffractionScalarResponse(
     float far_angle = max(incident_angle, outgoing_angle);
     float bend = far_angle - near_angle - PI;
     float exterior = edge.edge_angle_radians;
-    if (bend <= 0.0 || far_angle > exterior + DIRECTION_EPSILON) {
+    if (bend < -4.0 * DIFFRACTION_ANGULAR_FLOOR || far_angle > exterior + DIRECTION_EPSILON) {
         return 0.0;
     }
     float face_a = near_angle;
@@ -854,6 +854,12 @@ float diffractionScalarResponse(
     vec4 terms = regularized_angle * taper / (angle_squared + vec4(
         axial_mismatch * axial_mismatch
         + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR));
+    // A ray-discovered edge supplies a signed, localized correction on the
+    // illuminated side. Every contribution still passes physical visibility.
+    if (bend <= 0.0) {
+        float window = smoothstep(-4.0 * DIFFRACTION_ANGULAR_FLOOR, 0.0, bend);
+        return -terms.x * window / TWO_PI;
+    }
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
 
@@ -897,13 +903,8 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    float outgoing_angle = atan(
-        dot(edge.edge_dir, cross(incoming_perpendicular, source_perpendicular)),
-        dot(incoming_perpendicular, source_perpendicular)
-    );
-    if (outgoing_angle < angle_start || outgoing_angle > angle_end) {
-        return false;
-    }
+    // The scalar response decides support, including its small signed
+    // illuminated-side transition; continuation remains shadow-only.
 
     // Only the exterior half-strip is sampled: the other half lies in the
     // wedge. Normalize over [0, radius], not the inaccessible symmetric strip.
@@ -921,7 +922,7 @@ bool diffractionSourceResponse(
     float geometry = incoming_distance * (incoming_distance + source_distance)
         / (projected_incidence * source_distance);
     response = radial_kernel * geometry * directional_shape;
-    return response > 0.0 && finiteFloat(response);
+    return response != 0.0 && finiteFloat(response);
 }
 
 // Performs next-event estimation for listener -> ... -> edge -> source.
