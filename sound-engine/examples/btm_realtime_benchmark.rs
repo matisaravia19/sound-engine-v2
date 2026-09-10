@@ -4,8 +4,12 @@
 //! pipeline. This standalone CPU calculation is only a mathematical comparison;
 //! it is not compiled into or dispatched by the runtime transport path.
 
+#[path = "support/timing.rs"]
+mod timing;
+use timing::{milliseconds, percentile};
+
 use std::f64::consts::PI;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const SAMPLE_COUNT: usize = 16_384;
@@ -117,13 +121,4 @@ fn complex_distance(a: Complex, b: Complex) -> f64 {
 
 fn magnitude(value: Complex) -> f64 {
     value.re.hypot(value.im)
-}
-
-fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
-    let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
-    sorted[index]
-}
-
-fn milliseconds(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
 }

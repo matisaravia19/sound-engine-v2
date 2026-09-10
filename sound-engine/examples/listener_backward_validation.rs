@@ -68,30 +68,51 @@ fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
 }
 
 fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
-    let source = Vec3::ZERO;
-    let listener = vec3(0.0, 0.7, 0.0);
-    let query = AcousticQuery {
-        query_id: 3,
-        source_position: source,
-        listener_position: listener,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
-        source_radiation: Default::default(),
-    };
-    let ir = trace(gpu, reflection_scene(), config(262_144, 1), query)?;
-    let image_source = vec3(4.0, 0.0, 0.0);
-    let expected_sample = (image_source.distance(listener) / 343.0 * SAMPLE_RATE as f32).round() as usize;
-    let start = expected_sample.saturating_sub(1);
-    let end = (expected_sample + 2).min(ir.samples.len());
-    let reflected_peak = ir.samples[start..end]
-        .iter()
-        .map(|sample| sample.left.abs())
-        .fold(0.0_f32, f32::max);
-    require(
-        reflected_peak > 1.0e-7,
-        "single-wall reflection must appear near the image-source delay",
-    )
+    // Unequal wall distances expose source-connection footprint aliasing.
+    // Swapping endpoints checks the same physical reflection independently.
+    let a = vec3(1.1, -0.3, 0.2);
+    let b = vec3(2.7, 0.8, -0.4);
+    for (source, listener) in [(a, b), (b, a)] {
+        for seed in [7, 8, 9] {
+            let mut scene = reflection_scene();
+            scene.objects[0].transform = Mat4::from_translation(-2.0 * Vec3::X);
+            scene.materials[0].roughness = 0.0;
+            let mut settings = config(65_536, 1);
+            settings.sound.ir_num_samples = 2_048;
+            settings.acoustics.maximum_path_length = 10.0;
+            settings.acoustics.sampling_seed = seed;
+            let query = AcousticQuery {
+                query_id: 3,
+                source_position: source,
+                listener_position: listener,
+                listener_forward: -Vec3::Z,
+                listener_up: Vec3::Y,
+                source_amplitude: 1.0,
+                source_radiation: Default::default(),
+            };
+            let ir = trace(gpu, scene, settings, query)?;
+            let reflected_distance = vec3(-source.x, source.y, source.z).distance(listener);
+            let expected_pressure = 0.75_f32.sqrt() / reflected_distance;
+            let measured_pressure = signed_channel_sum(&ir) - source.distance(listener).recip();
+            require_relative_close(measured_pressure, expected_pressure, 0.02,
+                "smooth reflection pressure must agree with the planar reference within 2%")?;
+            let cutoff = ((source.distance(listener) + reflected_distance) * 0.5
+                / 343.0 * SAMPLE_RATE as f32) as usize;
+            let mut mass = 0.0;
+            let mut moment = 0.0;
+            for (index, sample) in ir.samples.iter().enumerate().skip(cutoff) {
+                mass += sample.left;
+                moment += index as f32 * sample.left;
+            }
+            let centroid = moment / mass;
+            let expected_sample = reflected_distance / 343.0 * SAMPLE_RATE as f32;
+            require((centroid - expected_sample).abs() < 0.75,
+                "smooth reflection centroid must be within 0.75 samples of the planar reference")?;
+            println!("reflection seed={seed} source_x={} pressure={measured_pressure:.8} expected={expected_pressure:.8} delay_error_samples={:.4}",
+                source.x, centroid - expected_sample);
+        }
+    }
+    Ok(())
 }
 
 fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<()> {
@@ -223,8 +244,10 @@ fn diffraction_scene(radius: Option<f32>) -> SceneDescription {
             id: 1,
             start: vec3(0.0, -2.0, 0.0),
             end: vec3(0.0, 2.0, 0.0),
-            bisector_dir: Vec3::X,
-            edge_angle_radians: 1.5 * std::f32::consts::PI,
+            // The mesh is a zero-thickness screen extending toward -Z.
+            // Its exterior air angle is 360 degrees, opening toward +Z.
+            bisector_dir: Vec3::Z,
+            edge_angle_radians: std::f32::consts::TAU,
             diffraction_radius: radius,
             base_strength: 0.65,
         });
@@ -291,4 +314,205 @@ fn require(condition: bool, message: &str) -> SoundResult<()> {
 fn require_relative_close(a: f32, b: f32, tolerance: f32, message: &str) -> SoundResult<()> {
     let scale = a.abs().max(b.abs()).max(1.0e-9);
     require((a - b).abs() / scale <= tolerance, message)
+}
+
+#[cfg(test)]
+mod reflection_tests {
+    use super::*;
+
+    #[test]
+    fn diffraction_fixture_edge_matches_the_screen_mesh() {
+        let scene = diffraction_scene(Some(0.45));
+        let edge = &scene.diffraction_edges[0];
+        let vertices = &scene.meshes[0].vertices;
+        let wall_center = vertices.iter().copied().sum::<Vec3>() / vertices.len() as f32;
+        let edge_center = (edge.start + edge.end) * 0.5;
+        assert!((edge.edge_angle_radians - std::f32::consts::TAU).abs() < 1.0e-6,
+            "a single thin screen has a 360-degree exterior air wedge");
+        assert!((wall_center - edge_center).normalize().dot(edge.bisector_dir) < -0.999,
+            "the exterior bisector must point away from the physical screen");
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn smooth_reflection_pressure_and_reciprocity() -> SoundResult<()> {
+        validate_reflection(&VkBackend::new()?)
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn short_direct_smoke() -> SoundResult<()> {
+        let gpu = VkBackend::new()?;
+        let mut settings = config(64, 0);
+        settings.sound.ir_num_samples = 2_048;
+        settings.acoustics.maximum_path_length = 10.0;
+        let query = AcousticQuery {
+            query_id: 0,
+            source_position: Vec3::ZERO,
+            listener_position: Vec3::X,
+            listener_forward: -Vec3::Z,
+            listener_up: Vec3::Y,
+            source_amplitude: 1.0,
+            source_radiation: Default::default(),
+        };
+        let ir = trace(&gpu, empty_scene(), settings, query)?;
+        require(
+            (signed_channel_sum(&ir) - 1.0).abs() < 1.0e-5,
+            "short direct IR must preserve 1/d pressure",
+        )?;
+        require(
+            (signed_arrival_centroid(&ir) - SAMPLE_RATE as f32 / 343.0).abs() < 0.01,
+            "short direct IR must preserve fractional arrival time",
+        )
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn proxy_preserves_surface_paths_after_a_reflection() -> SoundResult<()> {
+        let gpu = VkBackend::new()?;
+        let mut vertices = Vec::new();
+        for (x, top) in [(0.0, 20.0), (6.0, 20.0), (3.0, 0.0)] {
+            vertices.extend([
+                vec3(x, -20.0, -20.0),
+                vec3(x, top, -20.0),
+                vec3(x, top, 20.0),
+                vec3(x, -20.0, -20.0),
+                vec3(x, top, 20.0),
+                vec3(x, -20.0, 20.0),
+            ]);
+        }
+        // A wider reflection lobe gives the small ray budget useful coverage
+        // of the second bounce; this test checks preservation, not its level.
+        let mut scene = wall_scene(vertices, 0.36, 0.15);
+        let mut settings = config(4_096, 2);
+        settings.sound.ir_num_samples = 2_048;
+        settings.acoustics.maximum_path_length = 12.0;
+        let query = AcousticQuery {
+            query_id: 0,
+            source_position: vec3(4.0, 1.0, 0.0),
+            listener_position: vec3(2.0, 1.0, 1.0),
+            listener_forward: -Vec3::X,
+            listener_up: Vec3::Y,
+            source_amplitude: 1.0,
+            source_radiation: Default::default(),
+        };
+        let reference = trace(&gpu, scene.clone(), settings, query)?;
+        scene.diffraction_edges.push(DiffractionEdge {
+            id: 1,
+            start: vec3(3.0, 0.0, -20.0),
+            end: vec3(3.0, 0.0, 20.0),
+            bisector_dir: Vec3::Y,
+            edge_angle_radians: std::f32::consts::TAU,
+            diffraction_radius: 1.25,
+            // Positive strength keeps proxy traversal active, while negligible
+            // diffraction lets the complete surface IR be compared separately.
+            base_strength: 1.0e-20,
+        });
+        let with_proxy = trace(&gpu, scene, settings, query)?;
+        let late_start = (9.0 * SAMPLE_RATE as f32 / 343.0) as usize;
+        require(
+            reference.samples[late_start..].iter().any(|s| s.left.abs() > 1.0e-5),
+            "fixture must contain a two-reflection arrival beyond the proxy",
+        )?;
+        for (a, b) in reference.samples.iter().zip(&with_proxy.samples) {
+            require(
+                (a.left - b.left).abs() < 1.0e-6 && (a.right - b.right).abs() < 1.0e-6,
+                "proxy must preserve the surface prefix, RNG and later reflections",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn edge_proxy_preserves_unobstructed_direct_and_reflected_pressure() -> SoundResult<()> {
+        let gpu = VkBackend::new()?;
+        // The screen is below y=0. The direct and x=0 mirror paths lie at y=1.
+        let mut scene = wall_scene(
+            vec![
+                vec3(0.0, -20.0, -20.0),
+                vec3(0.0, 20.0, -20.0),
+                vec3(0.0, 20.0, 20.0),
+                vec3(0.0, -20.0, -20.0),
+                vec3(0.0, 20.0, 20.0),
+                vec3(0.0, -20.0, 20.0),
+                vec3(1.0, -20.0, -20.0),
+                vec3(1.0, 0.0, -20.0),
+                vec3(1.0, 0.0, 20.0),
+                vec3(1.0, -20.0, -20.0),
+                vec3(1.0, 0.0, 20.0),
+                vec3(1.0, -20.0, 20.0),
+            ],
+            0.36,
+            0.0,
+        );
+        let query = AcousticQuery {
+            query_id: 0,
+            source_position: vec3(2.0, 1.0, 0.0),
+            listener_position: vec3(2.0, 1.0, 1.0),
+            listener_forward: -Vec3::X,
+            listener_up: Vec3::Y,
+            source_amplitude: 1.0,
+            source_radiation: Default::default(),
+        };
+        let reflected_distance = 17.0_f32.sqrt();
+        let reflected_sample = (reflected_distance * SAMPLE_RATE as f32 / 343.0).round() as usize;
+        let direct_sample = (SAMPLE_RATE as f32 / 343.0).round() as usize;
+        let pressure = |ir: &IrSnapshot, center: usize| -> [f32; 2] {
+            let mut result = [0.0; 2];
+            // Include binaural shifts and fractional-delay taps without mixing arrivals.
+            for s in &ir.samples[center - 48..=center + 48] {
+                result[0] += s.left;
+                result[1] += s.right;
+            }
+            result
+        };
+        for channels in [OutputChannels::Mono, OutputChannels::Stereo] {
+            scene.diffraction_edges.clear();
+            let mut settings = config(262_144, 1);
+            // Both arrivals fit in 43 ms; no long IR or playback queue is needed.
+            settings.sound.ir_num_samples = 2_048;
+            settings.acoustics.maximum_path_length = 10.0;
+            settings.sound.output_channels = channels;
+            let reference = trace(&gpu, scene.clone(), settings, query)?;
+            let direct = pressure(&reference, direct_sample);
+            let reflected = pressure(&reference, reflected_sample);
+            require(
+                (direct[0].hypot(direct[1]) - 1.0).abs() < 1e-4,
+                "direct pressure must equal 1/d",
+            )?;
+            require_relative_close(
+                reflected[0].hypot(reflected[1]),
+                0.8 / reflected_distance,
+                0.03,
+                "reflection pressure must equal sqrt(1-absorption)/image distance",
+            )?;
+            scene.diffraction_edges.push(DiffractionEdge {
+                id: 1,
+                start: vec3(1.0, 0.0, -20.0),
+                end: vec3(1.0, 0.0, 20.0),
+                bisector_dir: Vec3::Y,
+                edge_angle_radians: std::f32::consts::TAU,
+                diffraction_radius: 1.25,
+                base_strength: 0.85,
+            });
+            let with_proxy = trace(&gpu, scene.clone(), settings, query)?;
+            let next_direct = pressure(&with_proxy, direct_sample);
+            let next_reflected = pressure(&with_proxy, reflected_sample);
+            eprintln!(
+                "{channels:?}: direct {direct:?} -> {next_direct:?}, reflected {reflected:?} -> {next_reflected:?}"
+            );
+            for channel in 0..2 {
+                require(
+                    (direct[channel] - next_direct[channel]).abs() < 1e-5,
+                    "edge discovery must preserve unobstructed direct pressure",
+                )?;
+                require(
+                    (reflected[channel] - next_reflected[channel]).abs() < 1e-5,
+                    "edge discovery must preserve unobstructed reflected pressure",
+                )?;
+            }
+        }
+        Ok(())
+    }
 }

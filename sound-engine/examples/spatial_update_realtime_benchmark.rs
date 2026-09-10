@@ -4,6 +4,10 @@
 //! public `SoundEngine` path used by a game: invalidate a voice, resolve its IR
 //! cache entry, transform/register the IR, and render the next audio block.
 
+#[path = "support/timing.rs"]
+mod timing;
+use timing::percentile;
+
 use glam::{Vec3, vec3};
 use sound_engine::auralization::SoundAsset;
 use sound_engine::core::config::{
@@ -254,11 +258,6 @@ fn empty_scene() -> SceneDescription {
 
 fn milliseconds(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1_000.0
-}
-
-fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
-    let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
-    sorted[index]
 }
 
 fn duration_ms(duration: Duration) -> f64 {

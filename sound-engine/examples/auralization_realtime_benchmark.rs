@@ -6,6 +6,10 @@
 //! exists on both acoustic comparison branches so transport changes cannot alter
 //! the workload.
 
+#[path = "support/timing.rs"]
+mod timing;
+use timing::{milliseconds, percentile};
+
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
 use sound_engine::core::config::{
@@ -118,13 +122,4 @@ fn engine_config() -> EngineConfig {
         binaural: Default::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
-}
-
-fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
-    let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
-    sorted[index]
-}
-
-fn milliseconds(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
 }

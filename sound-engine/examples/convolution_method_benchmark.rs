@@ -5,6 +5,10 @@
 //! length runs in an isolated process so Vulkan/VkFFT allocator state cannot bias
 //! later rows.
 
+#[path = "support/timing.rs"]
+mod timing;
+use timing::{milliseconds, percentile};
+
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
 use sound_engine::core::config::{
@@ -14,7 +18,7 @@ use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_SIZE: usize = 1_024;
@@ -196,11 +200,7 @@ fn impulse_response(length: usize) -> Vec<f32> {
             let time = index as f32 / length.max(1) as f32;
             let carrier = (index as f32 * 0.754_877_7).sin();
             let sample = (-6.0 * time).exp() * carrier;
-            if index == 0 {
-                1.0
-            } else {
-                sample * 0.02
-            }
+            if index == 0 { 1.0 } else { sample * 0.02 }
         })
         .collect()
 }
@@ -233,13 +233,4 @@ fn engine_config(ir_length: usize) -> EngineConfig {
         binaural: Default::default(),
         auralization: AuralizationConfig { block_size: BLOCK_SIZE },
     }
-}
-
-fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
-    let index = ((sorted.len() - 1) as f64 * fraction).ceil() as usize;
-    sorted[index]
-}
-
-fn milliseconds(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
 }

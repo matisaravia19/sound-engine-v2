@@ -525,8 +525,10 @@ fn diffraction_edge(radius: f32, strength: f32) -> DiffractionEdge {
         id: 1,
         start: vec3(0.0, -2.0, 0.0),
         end: vec3(0.0, 2.0, 0.0),
-        bisector_dir: vec3(1.0, 0.0, 0.0),
-        edge_angle_radians: 1.5 * std::f32::consts::PI,
+        // The mesh is a zero-thickness screen extending toward -Z. A 270-degree
+        // wedge with bisector +X would incorrectly put the listener inside solid.
+        bisector_dir: Vec3::Z,
+        edge_angle_radians: std::f32::consts::TAU,
         diffraction_radius: radius,
         base_strength: strength,
     }
