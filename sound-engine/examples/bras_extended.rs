@@ -4,7 +4,7 @@
 mod geometry;
 
 use glam::{Mat4, Vec3, vec3};
-use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, SourceRadiation};
+use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
 use sound_engine::core::config::*;
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{
@@ -171,7 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 listener_forward: -Vec3::X,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
-                source_radiation: SourceRadiation::default(),
             };
             let mut times = Vec::new();
             let mut result = None;

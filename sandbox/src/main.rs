@@ -78,8 +78,6 @@ struct PlaygroundState {
     /// Visible scene chooser and its highlighted entry.
     scene_menu: bool,
     scene_choice: usize,
-    /// Registered source calibration retained when interactive source positions change.
-    source_radiation: sound_engine::acoustics::SourceRadiation,
     scene_config: SceneConfig,
     scene: PlaygroundScene,
     listener_index: usize,
@@ -113,7 +111,6 @@ impl PlaygroundState {
             pair_index: 0,
             scene_menu: false,
             scene_choice: 0,
-            source_radiation: Default::default(),
             scene_config,
             scene: build_scene(scene_config),
             listener_index: 0,
@@ -215,7 +212,6 @@ impl PlaygroundState {
         PointSource {
             position: to_glam(self.source_position()),
             amplitude: 1.0,
-            radiation: self.source_radiation,
         }
     }
 
@@ -245,6 +241,30 @@ impl PlaygroundState {
 
 fn main() -> SoundResult<()> {
     let args: Vec<_> = std::env::args().collect();
+
+    for arg in args.iter().skip(1) {
+        let known = matches!(arg.as_str(), "--list-scenes" | "--validate-scenes")
+            || [
+                "--benchmark-root=",
+                "--scene=",
+                "--diffraction-radius=",
+                "--diffraction-strength=",
+                "--volume=",
+                "--rays=",
+                "--bounces=",
+                "--camera-stress-seconds=",
+                "--frame-report=",
+            ]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix));
+
+        if !known {
+            return Err(sound_engine::core::error::SoundError::invalid_argument(
+                format!("unknown option: {arg}"),
+            ));
+        }
+    }
+
     let benchmark_root = args
         .iter()
         .find_map(|a| a.strip_prefix("--benchmark-root="))
@@ -318,22 +338,6 @@ fn main() -> SoundResult<()> {
             );
         }
     }
-    let source_profile_path = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--source-directivity="));
-    let source_yaw_degrees = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--source-yaw="))
-        .unwrap_or("0")
-        .parse::<f32>()
-        .map_err(|_| {
-            sound_engine::core::error::SoundError::invalid_argument("invalid --source-yaw")
-        })?;
-    if !source_yaw_degrees.is_finite() {
-        return Err(sound_engine::core::error::SoundError::invalid_argument(
-            "source yaw must be finite",
-        ));
-    }
     // Playback headroom is separate from calibrated ray pressure. The same
     // dry gain applies to every acoustic model and can be overridden for A/B runs.
     let playback_gain = args
@@ -347,26 +351,6 @@ fn main() -> SoundResult<()> {
             "--volume must be finite and non-negative",
         ));
     }
-    let utd_orders = args.iter().find_map(|a| a.strip_prefix("--utd-orders="));
-    let utd_bands = args.iter().find_map(|a| a.strip_prefix("--utd-bands="));
-    let surface_two_edge_paths = args.iter().any(|a| a == "--utd-surface-two-edges");
-    let band_count = utd_bands.unwrap_or("16").parse::<u32>().map_err(|_| {
-        sound_engine::core::error::SoundError::invalid_argument("invalid --utd-bands")
-    })?;
-    let utd = args.iter().any(|a| a == "--utd")
-        || utd_orders.is_some()
-        || utd_bands.is_some()
-        || surface_two_edge_paths;
-    let diffraction_orders = utd_orders
-        .unwrap_or(if surface_two_edge_paths {
-            "2"
-        } else {
-            "1"
-        })
-        .parse::<u32>()
-        .map_err(|_| {
-            sound_engine::core::error::SoundError::invalid_argument("invalid --utd-orders")
-        })?;
     let mut config = engine_config(sample_rate);
     if let Some(value) = args.iter().find_map(|a| a.strip_prefix("--rays=")) {
         config.acoustics.listener_ray_count = value.parse().map_err(|_| {
@@ -378,36 +362,14 @@ fn main() -> SoundResult<()> {
             sound_engine::core::error::SoundError::invalid_argument("invalid --bounces")
         })?;
     }
-    let model = if utd {
-        sound_engine::acoustics::AcousticModel::Utd {
-            cone_width: 0.04,
-            maximum_frequency_hz: 20000.0_f32.min(sample_rate as f32 * 0.45),
-            diffraction_orders,
-            band_count,
-            surface_two_edge_paths,
-        }
-    } else {
-        sound_engine::acoustics::AcousticModel::Cosine
-    };
-    let model_label = if utd {
-        format!("{model:?}")
-    } else {
-        "ScalarGeometry".to_owned()
-    };
     println!(
-        "Playground model={model_label}, sample_rate={sample_rate}, rays={}, IR samples={}, max_path={}, playback_gain={playback_gain}, source_directivity={source_profile_path:?}, source_yaw_degrees={source_yaw_degrees}, diffraction_radius={diffraction_radius}, diffraction_strength={diffraction_strength}, bounces={}",
+        "Playground model=ScalarGeometry, sample_rate={sample_rate}, rays={}, IR samples={}, max_path={}, playback_gain={playback_gain}, diffraction_radius={diffraction_radius}, diffraction_strength={diffraction_strength}, bounces={}",
         config.acoustics.listener_ray_count,
         config.sound.ir_num_samples,
         config.acoustics.maximum_path_length,
         config.acoustics.max_bounces
     );
-    let mut engine = SoundEngine::with_acoustic_model(config, model)?;
-    if let Some(path) = source_profile_path {
-        let profile = sound_engine::acoustics::SourceDirectivity::read(path)?;
-        state.source_radiation.profile = engine.register_source_directivity(&profile)?;
-        state.source_radiation.orientation =
-            glam::Quat::from_rotation_y(source_yaw_degrees.to_radians());
-    }
+    let mut engine = SoundEngine::new(config)?;
     engine.load_scene(
         state
             .benchmark
@@ -426,13 +388,7 @@ fn main() -> SoundResult<()> {
 
     let (mut rl, thread) = raylib::init()
         .size(1280, 720)
-        .title(if utd && diffraction_orders == 2 {
-            "sound-engine playground / UTD (experimental, two edges)"
-        } else if utd {
-            "sound-engine playground / UTD (experimental, single edge)"
-        } else {
-            "sound-engine playground / scalar diffraction"
-        })
+        .title("sound-engine playground / scalar diffraction")
         .resizable()
         .msaa_4x()
         .build();
@@ -797,14 +753,6 @@ fn handle_config_keys(
         state.toggle_listener_spin();
         sync_red_sphere_listener(engine, state, "red sphere spin");
     }
-    if rl.is_key_pressed(KeyboardKey::KEY_EIGHT) && state.source_radiation.profile != 0 {
-        state.source_radiation.orientation =
-            (glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)
-                * state.source_radiation.orientation)
-                .normalize();
-        sync_source(engine, state);
-    }
-
     if rl.is_key_pressed(KeyboardKey::KEY_L) {
         state.toggle_listener_mode();
         match state.listener_mode {
@@ -1241,12 +1189,6 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
     }
 
     draw_marker(d, state.source_position(), 0.38, Color::GREEN);
-    if state.source_radiation.profile != 0 {
-        let origin = to_glam(state.source_position());
-        let tip = origin + state.source_radiation.orientation * Vec3::X * 1.1;
-        draw_plane_line(d, origin, tip, Color::LIME);
-        d.draw_sphere(from_glam(tip), 0.11, Color::LIME);
-    }
     draw_listener(d, state.listener_position(), state.listener_forward());
     draw_diffraction_edges(d, &state.scene.diffraction_edges);
     if state.ui.show_bisector_planes {
@@ -1433,17 +1375,7 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
         18,
         Color::LIGHTGRAY,
     );
-    d.draw_text(
-        if state.source_radiation.profile != 0 {
-            "Directional source: green marker shows forward | 8: turn source"
-        } else {
-            "Source radiation: omnidirectional"
-        },
-        24,
-        234,
-        18,
-        Color::GRAY,
-    );
+    d.draw_text("Source: omnidirectional", 24, 234, 18, Color::GRAY);
     d.draw_text(&state.ui.status, 24, 258, 18, Color::RAYWHITE);
 }
 

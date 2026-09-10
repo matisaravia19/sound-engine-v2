@@ -30,7 +30,6 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
-        source_radiation: Default::default(),
     };
     let low = trace(gpu, empty_scene(), config(64, 0), query)?;
     let high = trace(gpu, empty_scene(), config(16_384, 0), query)?;
@@ -63,7 +62,6 @@ fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
-        source_radiation: Default::default(),
     };
     let ir = trace(gpu, occluding_wall_scene(), config(4_096, 0), query)?;
     require(
@@ -93,7 +91,6 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
                 listener_forward: -Vec3::Z,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
-                source_radiation: Default::default(),
             };
             let ir = trace(gpu, scene, settings, query)?;
             let reflected_distance = vec3(-source.x, source.y, source.z).distance(listener);
@@ -137,7 +134,6 @@ fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<(
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
-        source_radiation: Default::default(),
     };
     let baseline = trace(gpu, diffraction_scene(None), config(65_536, 1), query)?;
     require(
@@ -384,7 +380,6 @@ mod reflection_tests {
             listener_forward: -Vec3::Z,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
         };
         let ir = trace(&gpu, empty_scene(), settings, query)?;
         require(
@@ -425,7 +420,6 @@ mod reflection_tests {
             listener_forward: -Vec3::X,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
         };
         let reference = trace(&gpu, scene.clone(), settings, query)?;
         scene.diffraction_edges.push(DiffractionEdge {
@@ -486,7 +480,6 @@ mod reflection_tests {
             listener_forward: -Vec3::X,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
         };
         let reflected_distance = 17.0_f32.sqrt();
         let reflected_sample = (reflected_distance * SAMPLE_RATE as f32 / 343.0).round() as usize;

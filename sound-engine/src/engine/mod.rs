@@ -74,8 +74,6 @@ pub struct PointSource {
     pub position: Vec3,
     /// Reference pressure amplitude used when generating an impulse response.
     pub amplitude: f32,
-    /// Immutable source calibration and its local-to-world orientation.
-    pub radiation: crate::acoustics::SourceRadiation,
 }
 
 impl PointSource {
@@ -84,7 +82,6 @@ impl PointSource {
         Self {
             position,
             amplitude: 1.0,
-            radiation: Default::default(),
         }
     }
 }
@@ -127,35 +124,10 @@ enum EngineMode {
 }
 
 impl SoundEngine {
-    /// Registers immutable directional pressure data for later ray queries.
-    /// Call before starting playback: registration allocates/uploads GPU data.
-    /// Use the returned engine-local id in `PointSource::radiation`; updating a
-    /// tracked source's radiation refreshes its active voices through normal IR updates.
-    pub fn register_source_directivity(
-        &mut self,
-        profile: &crate::acoustics::SourceDirectivity,
-    ) -> SoundResult<crate::acoustics::SourceDirectivityId> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.register_source_directivity(profile),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(_) => Err(SoundError::invalid_state(
-                "register source directivity before starting playback",
-            )),
-        }
-    }
-    /// Creates an engine with an empty scene and sound bank.
+    /// Creates the scalar acoustic engine with an empty scene and sound bank.
     pub fn new(config: EngineConfig) -> SoundResult<Self> {
-        Self::with_acoustic_model(config, crate::acoustics::AcousticModel::Cosine)
-    }
-
-    /// Creates an engine with an explicitly selected ray-local diffraction model.
-    /// The selected model supplies both manual IR queries and moving-voice playback.
-    pub fn with_acoustic_model(
-        config: EngineConfig,
-        model: crate::acoustics::AcousticModel,
-    ) -> SoundResult<Self> {
         Ok(Self {
-            mode: Some(EngineMode::Direct(EngineCore::new(config, model)?)),
+            mode: Some(EngineMode::Direct(EngineCore::new(config)?)),
         })
     }
 
@@ -207,8 +179,8 @@ impl SoundEngine {
 
     /// Submits the latest listener pose without waiting for background rendering.
     /// During playback, poses are coalesced in a capacity-one mailbox and applied
-    /// before an audio block. Band-model IRs finish their coherent ray batches
-    /// over later blocks before entering the crossfade. Direct mode applies immediately. Use
+    /// before an audio block. Dirty voices refresh one at a time and crossfade
+    /// into their new IR. Direct mode applies immediately. Use
     /// `set_listener_pose` when subsequent synchronous requests must observe it.
     pub fn update_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
         match self.mode_mut()? {
@@ -227,7 +199,7 @@ impl SoundEngine {
         }
     }
 
-    /// Updates the position, amplitude and radiation of an existing tracked source.
+    /// Updates the position and amplitude of an existing tracked source.
     pub fn update_sound_source(
         &mut self,
         id: SoundSourceId,

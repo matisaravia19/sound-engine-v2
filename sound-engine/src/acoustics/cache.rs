@@ -44,8 +44,6 @@ pub struct IrCacheQuery {
     pub source_position: Vec3,
     /// Reference source pressure amplitude baked into the cached IR.
     pub source_amplitude: f32,
-    /// Immutable source asset and orientation captured by all ray batches.
-    pub source_radiation: super::SourceRadiation,
     /// Listener position in world meters.
     pub listener_position: Vec3,
     /// Listener forward direction in world space.
@@ -73,8 +71,6 @@ struct IrCacheEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct LocationCacheKey {
-    /// Exact radiation identity avoids reusing pressure for another source pattern.
-    source_radiation: [u32; 5],
     scene_version: SceneVersion,
     query_id: u32,
     source_cell: [i32; 3],
@@ -191,7 +187,6 @@ impl IrCache {
 
     fn can_reuse(&self, entry: &IrCacheEntry, query: IrCacheQuery) -> bool {
         entry.query.scene_version == query.scene_version
-            && entry.query.source_radiation.cache_key() == query.source_radiation.cache_key()
             && entry.query.source_position.distance(query.source_position)
                 <= self.cfg.reuse_distance_meters
             && (entry.query.source_amplitude - query.source_amplitude).abs() <= f32::EPSILON
@@ -216,7 +211,6 @@ impl IrCache {
 
     fn location_key(&self, query: IrCacheQuery) -> LocationCacheKey {
         LocationCacheKey {
-            source_radiation: query.source_radiation.cache_key(),
             scene_version: query.scene_version,
             query_id: query.query_id,
             source_cell: quantize_position(query.source_position, self.cfg.position_cell_meters),
@@ -316,29 +310,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn radiation_changes_invalidate_pressure_without_losing_lru_entries() {
-        let mut cache = IrCache::new(IrCacheConfig {
-            max_entries: 2,
-            ..Default::default()
-        });
-        let mut a = query(Vec3::X);
-        a.source_radiation.profile = 1;
-        cache.insert_ir(a, ir_snapshot(a));
-        let mut b = a;
-        b.source_radiation.orientation = glam::Quat::from_rotation_y(0.2);
-        assert!(cache.get_ir(b).is_none());
-        cache.insert_ir(b, ir_snapshot(b));
-        let mut c = b;
-        c.source_radiation.profile = 2;
-        assert!(cache.get_ir(c).is_none());
-        cache.insert_ir(c, ir_snapshot(c));
-        assert!(cache.get_ir(a).is_none());
-        assert!(cache.get_ir(b).is_some());
-        assert!(cache.get_ir(c).is_some());
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
     fn cache_respects_listener_direction() {
         let mut cache = IrCache::new(IrCacheConfig::default());
         let query = query(Vec3::X);
@@ -408,7 +379,6 @@ mod tests {
             query_id: 0,
             source_position: Vec3::ZERO,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
             listener_position: Vec3::Y,
             listener_forward,
             listener_up: Vec3::Y,

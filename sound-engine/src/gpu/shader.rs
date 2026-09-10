@@ -191,10 +191,10 @@ mod source_tests {
             "sound_engine_shader_guard_{}.glsl",
             std::process::id()
         ));
-        let expected = "layout(offset = 100) uint source_surface_paths;\n";
+        let expected = "layout(offset = 100) uint changed_layout;\n";
         fs::write(&path, expected).unwrap();
         assert!(verify_shader_source(&path, expected).is_ok());
-        fs::write(&path, "layout(offset = 104) uint source_surface_paths;\n").unwrap();
+        fs::write(&path, "layout(offset = 104) uint changed_layout;\n").unwrap();
         let error = verify_shader_source(&path, expected).unwrap_err();
         assert!(error.to_string().contains("Rebuild with cargo"));
         fs::remove_file(&path).unwrap();
@@ -211,11 +211,11 @@ mod source_tests {
         assert!(
             BUNDLED_SHADER_SOURCES
                 .iter()
-                .any(|(path, _)| path.ends_with("/utd_two_edges.glsl"))
+                .any(|(path, _)| path.ends_with("/diffraction.rint.glsl"))
         );
         validate_bundled_shader_sources(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/acoustics/shaders/listener_utd_two_edges.rgen.glsl"),
+                .join("src/acoustics/shaders/listener_backward.rgen.glsl"),
         )
         .unwrap();
     }

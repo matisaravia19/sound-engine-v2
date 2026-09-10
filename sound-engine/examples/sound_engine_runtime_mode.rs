@@ -35,7 +35,6 @@ fn main() -> SoundResult<()> {
         source: PointSource {
             position: vec3(-3.0, 0.5, 2.0),
             amplitude: 1_000.0,
-            radiation: Default::default(),
         },
         volume: 0.8,
     })?;
@@ -48,7 +47,6 @@ fn main() -> SoundResult<()> {
         source: PointSource {
             position: vec3(-2.5, -0.75, -3.0),
             amplitude: 1_000.0,
-            radiation: Default::default(),
         },
         volume: 0.6,
     })?;
@@ -61,7 +59,6 @@ fn main() -> SoundResult<()> {
         source: PointSource {
             position: vec3(3.5, 0.25, 4.0),
             amplitude: 2_500.0,
-            radiation: Default::default(),
         },
         volume: 1.0,
     })?;
@@ -74,7 +71,6 @@ fn main() -> SoundResult<()> {
         source: PointSource {
             position: vec3(3.5, 0.0, 0.0),
             amplitude: 10_000.0,
-            radiation: Default::default(),
         },
         volume: 1.0,
     })?;

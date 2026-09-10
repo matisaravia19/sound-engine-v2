@@ -128,14 +128,6 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 72) float minimum_throughput;
     layout(offset = 76) float head_radius_meters;
     layout(offset = 80) float max_ild_db;
-    layout(offset = 84) float cone_width;
-    layout(offset = 88) float maximum_frequency_hz;
-    layout(offset = 92) uint band_count;
-    layout(offset = 96) uint ray_offset;
-    layout(offset = 100) uint source_surface_paths;
-    layout(offset = 104) uint source_profile_enabled;
-    layout(offset = 108) uint source_pad;
-    layout(offset = 112) vec4 source_inverse_rotation;
 } pc;
 
 // -----------------------------------------------------------------------------
@@ -304,30 +296,11 @@ bool traceVisibility(vec3 origin, vec3 direction, float distance_to_source) {
 
 // Atomically deposits one ear contribution with a linear fractional delay.
 // Boundary clipping intentionally drops any portion outside the configured IR.
-// Spectral diffraction and time-domain surface rays share one allocation but
-// have disjoint ranges. Ordinary IR pipelines retain offset zero.
-uint timeDomainSampleCount() {
-#ifdef UTD_TIME_SURFACES
-    return 2u*(pc.sample_count-1u);
-#else
-    return pc.sample_count;
-#endif
-}
-uint timeDomainOffset() {
-#ifdef UTD_BANDS
-    return pc.band_count*(pc.output_channels == OUTPUT_CHANNELS_MONO ? 1u : 2u)*timeDomainSampleCount();
-#elif defined(UTD_TIME_SURFACES)
-    return pc.sample_count*(pc.output_channels == OUTPUT_CHANNELS_MONO ? 1u : 2u);
-#else
-    return 0u;
-#endif
-}
-
 void depositChannel(float sample_position, float amplitude, uint channel) {
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
         || sample_position <= -1.0
-        || sample_position >= float(timeDomainSampleCount())) {
+        || sample_position >= float(pc.sample_count)) {
         return;
     }
 
@@ -336,18 +309,18 @@ void depositChannel(float sample_position, float amplitude, uint channel) {
     float fraction = sample_position - float(base);
     // Linear fractional delay preserves the total signed pressure of an event:
     // the two weights always sum to one unless the IR boundary clips the tail.
-    if (base >= 0 && uint(base) < timeDomainSampleCount()) {
+    if (base >= 0 && uint(base) < pc.sample_count) {
         if (channel == 0u) {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(base)].left, amplitude * (1.0 - fraction));
+            atomicAdd(ir.samples[uint(base)].left, amplitude * (1.0 - fraction));
         } else {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(base)].right, amplitude * (1.0 - fraction));
+            atomicAdd(ir.samples[uint(base)].right, amplitude * (1.0 - fraction));
         }
     }
-    if (fraction > 0.0 && next >= 0 && uint(next) < timeDomainSampleCount()) {
+    if (fraction > 0.0 && next >= 0 && uint(next) < pc.sample_count) {
         if (channel == 0u) {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(next)].left, amplitude * fraction);
+            atomicAdd(ir.samples[uint(next)].left, amplitude * fraction);
         } else {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(next)].right, amplitude * fraction);
+            atomicAdd(ir.samples[uint(next)].right, amplitude * fraction);
         }
     }
 }
@@ -370,7 +343,7 @@ void depositStableChannel(float sample_position, float amplitude, uint channel, 
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
         || sample_position <= -1.0
-        || sample_position >= float(timeDomainSampleCount())) {
+        || sample_position >= float(pc.sample_count)) {
         return;
     }
 
@@ -387,14 +360,14 @@ void depositStableChannel(float sample_position, float amplitude, uint channel, 
             -0.5 * square + 0.5 * cube);
         for (int tap = 0; tap < 4; ++tap) {
             int sample_index = base + tap - 1;
-            if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
+            if (sample_index < 0 || uint(sample_index) >= pc.sample_count) {
                 continue;
             }
             float contribution = amplitude * weights[tap];
             if (channel == 0u) {
-                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
+                atomicAdd(ir.samples[uint(sample_index)].left, contribution);
             } else {
-                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].right, contribution);
+                atomicAdd(ir.samples[uint(sample_index)].right, contribution);
             }
         }
         return;
@@ -420,7 +393,7 @@ void depositStableChannel(float sample_position, float amplitude, uint channel, 
 
     for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
         int sample_index = base + offset;
-        if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
+        if (sample_index < 0 || uint(sample_index) >= pc.sample_count) {
             continue;
         }
         float distance = float(sample_index) - sample_position;
@@ -433,9 +406,9 @@ void depositStableChannel(float sample_position, float amplitude, uint channel, 
                 / (PI * distance / float(LANCZOS_RADIUS));
         float contribution = amplitude * sinc_value * window_value / weight_sum;
         if (channel == 0u) {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
+            atomicAdd(ir.samples[uint(sample_index)].left, contribution);
         } else {
-            atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].right, contribution);
+            atomicAdd(ir.samples[uint(sample_index)].right, contribution);
         }
     }
 }
@@ -447,11 +420,12 @@ void depositDirectChannel(float sample_position, float amplitude, uint channel) 
 
 // Applies listener-space spatialization with pressure-preserving interpolation.
 // Scalar edge arrivals select cubic interpolation; direct arrivals use Lanczos.
-#ifdef SPECTRAL_TRACE
-void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
-void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
-#else
-void depositStablePressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure, bool cubic_edge) {
+void depositStablePressure(
+    float total_path_length,
+    float amplitude,
+    vec3 listener_arrival_direction,
+    bool cubic_edge
+) {
     if (!finiteFloat(total_path_length)
         || !finiteFloat(amplitude)
         || total_path_length < 0.0
@@ -505,13 +479,21 @@ void depositStablePressure(float total_path_length, float amplitude, vec3 listen
 
 // The single geometric arrival retains its established 16-tap kernel.
 // Edge arrivals use the compact cubic path through depositStablePressure.
-void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
-    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, source_departure, false);
+void depositDirectPressure(
+    float total_path_length,
+    float amplitude,
+    vec3 listener_arrival_direction
+) {
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, false);
 }
 
 // Converts geometric length to a fractional sample position and applies the
 // output mode's listener-space spatialization before IR deposition.
-void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
+void depositPressure(
+    float total_path_length,
+    float amplitude,
+    vec3 listener_arrival_direction
+) {
     if (!finiteFloat(total_path_length)
         || !finiteFloat(amplitude)
         || total_path_length < 0.0
@@ -573,7 +555,6 @@ void depositPressure(float total_path_length, float amplitude, vec3 listener_arr
 }
 
 // Evaluates the deterministic zero-vertex path listener -> source.
-#endif
 
 void evaluateDirectPath() {
     vec3 to_source = pc.source_position - pc.listener_position;
@@ -594,7 +575,7 @@ void evaluateDirectPath() {
     // The direct path is evaluated exactly once by invocation zero and is not a
     // listener-sphere Monte Carlo sample, so it does not receive the 4*PI/N term.
     float spreading = 1.0 / max(distance_to_source, RAY_EPSILON);
-    depositDirectPressure(distance_to_source, pc.source_amplitude * spreading, source_direction, -source_direction);
+    depositDirectPressure(distance_to_source, pc.source_amplitude * spreading, source_direction);
 }
 
 // -----------------------------------------------------------------------------
@@ -704,7 +685,7 @@ void connectSurfaceToSource(
         * source_connection_jacobian
         * spreading
         * monte_carlo_normalization;
-    depositPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
+    depositPressure(total_path_length, amplitude, listener_arrival_direction);
 }
 
 // Samples exactly one of:
@@ -1011,11 +992,7 @@ void connectDiffractionToSource(
         * monte_carlo_normalization;
     // Cubic interpolation reduces phase-dependent cancellation error using
     // four atomics per channel and no per-connection trigonometric kernel.
-#ifdef SPECTRAL_TRACE
-    depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
-#else
-    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, true);
-#endif
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, true);
 }
 
 // Samples one continuous shadow diffraction direction. This is not a binary

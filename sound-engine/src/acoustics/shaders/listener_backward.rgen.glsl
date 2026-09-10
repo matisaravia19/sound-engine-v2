@@ -49,7 +49,7 @@ void traceSurfaceSuffix(
 }
 
 void main() {
-    uint ray_index = pc.ray_offset + gl_LaunchIDEXT.x;
+    uint ray_index = gl_LaunchIDEXT.x;
     // Direct sound is a deterministic visibility query, so exactly one
     // invocation performs it regardless of listener_ray_count.
     if (ray_index == 0u) {

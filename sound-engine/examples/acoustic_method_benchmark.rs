@@ -293,7 +293,6 @@ fn trace_case(
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: SOURCE_AMPLITUDE,
-        source_radiation: Default::default(),
     };
 
     let cold_start = Instant::now();

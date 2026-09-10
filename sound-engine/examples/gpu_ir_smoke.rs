@@ -27,7 +27,6 @@ fn main() -> SoundResult<()> {
             listener_forward: -Vec3::Z,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
         },
     )?;
 

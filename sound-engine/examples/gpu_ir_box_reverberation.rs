@@ -23,7 +23,6 @@ fn main() -> SoundResult<()> {
     let source = PointSource {
         position: source_position,
         amplitude: 10_000.0,
-        radiation: Default::default(),
     };
 
     let mut engine = SoundEngine::new(engine_config())?;

@@ -106,7 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 listener_forward: -Vec3::Z,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
-                source_radiation: Default::default(),
             };
             let start = Instant::now();
             let mut ir = pipeline.build_ir_gpu(&gpu, &mut scene, query)?;
@@ -178,7 +177,6 @@ mod tests {
             listener_forward: -Vec3::Z,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
-            source_radiation: Default::default(),
         };
         for variant in 0..3 {
             let mut description = bell_box::scene(true, true, 1.0, 0.05);
@@ -205,7 +203,13 @@ mod tests {
                     .iter()
                     .position(|sample| sample.left.abs() > 1e-8)
                     .unwrap();
-                assert!(first >= (1.6758_f32 / 343.0 * 48000.0).floor() as usize);
+                // The four-tap cubic delay starts one sample before floor(arrival).
+                // Earlier pressure would indicate a path shorter than the geometry.
+                let earliest = (1.6758_f32 / 343.0 * 48000.0).floor() as usize - 1;
+                assert!(
+                    first >= earliest,
+                    "arrival {first} precedes cubic support {earliest}"
+                );
                 assert!(ir.energy > 0.0);
             } else {
                 assert!(
@@ -285,7 +289,6 @@ mod tests {
                         listener_forward: Vec3::Z,
                         listener_up: Vec3::Y,
                         source_amplitude: amplitude,
-                        source_radiation: Default::default(),
                     },
                 )
                 .unwrap();
