@@ -1178,7 +1178,6 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
         }
         draw_marker(d, state.source_position(), 0.12, Color::GREEN);
         draw_listener(d, state.listener_position(), state.listener_forward());
-        draw_diffraction_edges(d, &scene.description.diffraction_edges);
         if state.ui.show_bisector_planes {
             draw_bisector_planes(d, &scene.description.diffraction_edges);
         }
@@ -1197,7 +1196,6 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
 
     draw_marker(d, state.source_position(), 0.38, Color::GREEN);
     draw_listener(d, state.listener_position(), state.listener_forward());
-    draw_diffraction_edges(d, &state.scene.diffraction_edges);
     if state.ui.show_bisector_planes {
         draw_bisector_planes(d, &state.scene.diffraction_edges);
     }
@@ -1286,19 +1284,6 @@ fn draw_listener(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, position: Vecto
     d.draw_sphere(from_glam(tip), 0.11, Color::new(255, 150, 150, 255));
 }
 
-fn draw_diffraction_edges(
-    d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>,
-    edges: &[DiffractionEdge],
-) {
-    for edge in edges {
-        let start = from_glam(edge.start);
-        let end = from_glam(edge.end);
-        d.draw_line_3D(start, end, Color::YELLOW);
-        d.draw_sphere(start, 0.08, Color::YELLOW);
-        d.draw_sphere(end, 0.08, Color::YELLOW);
-    }
-}
-
 fn draw_bisector_planes(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, edges: &[DiffractionEdge]) {
     for edge in edges {
         let start = edge.start;
@@ -1310,7 +1295,6 @@ fn draw_bisector_planes(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, edges: &
         draw_plane_line(d, start, far_start, Color::SKYBLUE);
         draw_plane_line(d, end, far_end, Color::SKYBLUE);
         draw_plane_line(d, far_start, far_end, Color::SKYBLUE);
-        draw_plane_line(d, start, end, Color::YELLOW);
 
         for fraction in [0.25, 0.5, 0.75] {
             let near = start.lerp(end, fraction);
