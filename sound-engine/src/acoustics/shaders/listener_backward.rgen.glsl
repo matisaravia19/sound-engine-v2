@@ -3,7 +3,6 @@
 #extension GL_EXT_shader_atomic_float : require
 #extension GL_GOOGLE_include_directive : require
 #include "listener_transport.glsl"
-#include "edge_relocation.glsl"
 
 // Two edges retain the double-edge benchmark paths while bounding the least
 // reliable higher-order approximation. Surface bounces keep their own budget.
@@ -78,8 +77,6 @@ void main() {
     float traveled_distance = 0.0;
     float monte_carlo_normalization = 4.0 * PI / float(pc.listener_ray_count);
     uint diffraction_events = 0u;
-    EdgeRelocationState relocation;
-    resetRelocationAnchor(relocation, 0u, path_vertex, 0.0, random_state);
 
     for (uint bounce = 0u; bounce < pc.max_bounces; ++bounce) {
         // This is deterministic truncation only. There is no Russian roulette;
@@ -127,8 +124,7 @@ void main() {
             }
 
             vec3 normal = normalizeOrZero(hit_payload.world_normal);
-            uint material_id = hit_payload.data_id;
-            SceneMaterial material = scene_materials.materials[material_id];
+            SceneMaterial material = scene_materials.materials[hit_payload.data_id];
             connectSurfaceToSource(
                 hit_position,
                 direction,
@@ -146,15 +142,16 @@ void main() {
             }
 
             vec3 continuation_direction;
-            SurfaceContinuationSample proposal;
-            if (!sampleSurfaceContinuationTracked(
-                material, direction, normal, random_state, path_throughput,
-                continuation_direction, proposal
+            if (!sampleSurfaceContinuation(
+                material,
+                direction,
+                normal,
+                random_state,
+                path_throughput,
+                continuation_direction
             )) {
                 break;
             }
-            recordSurfaceRelocation(relocation, proposal, hit_position, normal,
-                material_id, hit_path_distance, random_state);
             // Commit the new path state only after every sample and finite-state
             // check succeeds. Failed samples terminate without partial updates.
             origin = hit_position + continuation_direction * RAY_EPSILON;
@@ -173,17 +170,37 @@ void main() {
                 hit_payload = proxy_hit;
             }
             ++diffraction_events;
-            // Relocation includes the preceding continuous response and any
-            // intervening smooth surfaces, with visibility checked on moved legs.
-            uint edge_id = hit_payload.data_id;
-            DiffractionEdge edge = diffraction_edges.edges[edge_id];
+            // The proxy discovers an interaction; the ray bends at the physical
+            // edge. Re-trace the adjusted incoming leg so relocation cannot
+            // transport pressure through a blocker missed by the proxy ray.
+            DiffractionEdge edge = diffraction_edges.edges[hit_payload.data_id];
             float distance_to_edge = hit_payload.barycentrics.x;
-            vec3 edge_position = edge.start + hit_payload.barycentrics.y * edge.edge_dir;
-            float edge_path_distance;
-            if (!relocateEdgePrefix(relocation, hit_position, edge_position,
-                    path_throughput, direction, edge_path_distance, initial_direction)) break;
-            hit_position = edge_position;
+            float proxy_leg_length = length(hit_position - path_vertex);
+            hit_position = edge.start + hit_payload.barycentrics.y * edge.edge_dir;
+            vec3 edge_leg = hit_position - path_vertex;
+            float edge_leg_length = length(edge_leg);
+            if (edge_leg_length <= RAY_EPSILON) {
+                break;
+            }
+            direction = edge_leg / edge_leg_length;
+            float edge_path_distance = traveled_distance + edge_leg_length;
+            if (edge_path_distance > pc.maximum_path_length
+                || !traceVisibility(path_vertex, direction, edge_leg_length)) {
+                break;
+            }
+            // Projection changes the uniform listener-ray sampling density. On this
+            // plane dOmega/dA = |n dot (P-L)| / |P-L|^3; its numerator is
+            // unchanged by the in-plane relocation from proxy P to edge E.
+            // Apply only to the initial uniform launch: later surface/edge
+            // directional PDFs would also need their own relocation correction.
+            if (bounce == 0u) {
+                float density_ratio = proxy_leg_length / edge_leg_length;
+                path_throughput *= density_ratio * density_ratio * density_ratio;
+            }
             path_throughput *= edge.pressure_gain;
+            if (bounce == 0u) {
+                initial_direction = direction;
+            }
 
             connectDiffractionToSource(
                 edge,
@@ -208,8 +225,8 @@ void main() {
                 edge,
                 hit_position,
                 direction,
-                edge_path_distance,
-                0.0,
+                traveled_distance,
+                edge_leg_length,
                 random_state,
                 path_throughput,
                 continuation_origin,
@@ -218,10 +235,6 @@ void main() {
             )) {
                 break;
             }
-            resetRelocationAnchor(relocation, 2u, hit_position, edge_path_distance, random_state);
-            relocation.edge_id = edge_id;
-            relocation.edge_incoming = direction;
-            relocation.original_response = diffractionScalarResponse(edge, direction, continuation_direction);
             // Continue from the ray-traced interaction in the sampled shadow
             // diffraction direction.
             origin = continuation_origin;

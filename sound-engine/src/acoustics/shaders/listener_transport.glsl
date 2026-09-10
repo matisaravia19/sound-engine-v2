@@ -670,30 +670,19 @@ void connectSurfaceToSource(
     depositPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
 }
 
-// Retained proposal information permits reevaluation when an edge capture
-// changes the endpoint of a sampled surface segment.
-struct SurfaceContinuationSample {
-    uint branch;
-    vec3 axis;
-    float exponent;
-    float directional_pdf;
-    bool delta;
-};
-
 // Samples exactly one of:
 //   branch 0: specular reflection
 //   branch 1: rough reflection
 //   branch 2: straight transmission
 // On success, path_throughput is updated with the unbiased discrete/continuous
 // importance weight and continuation_direction lies on the required hemisphere.
-bool sampleSurfaceContinuationTracked(
+bool sampleSurfaceContinuation(
     SceneMaterial material,
     vec3 incoming_direction,
     vec3 normal,
     inout uint random_state,
     inout float path_throughput,
-    out vec3 continuation_direction,
-    out SurfaceContinuationSample proposal
+    out vec3 continuation_direction
 ) {
     // Branch selection operates in the pressure domain. Choosing one branch,
     // rather than emitting all three, keeps one continuation ray per invocation.
@@ -718,12 +707,7 @@ bool sampleSurfaceContinuationTracked(
     // A smooth material has a delta continuation. The finite source-connection
     // lobe regularizes point-source sampling; it must not scatter the ray again
     // at every smooth bounce. Only the discrete branch probability remains.
-    proposal.branch = branch;
-    proposal.axis = axis;
-    proposal.delta = branch != 1u && material.roughness <= 0.0;
-    proposal.exponent = 0.0;
-    proposal.directional_pdf = 1.0;
-    if (proposal.delta) {
+    if (branch != 1u && material.roughness <= 0.0) {
         continuation_direction = axis;
         path_throughput *= weights[branch] / branch_probability;
         return finiteFloat(path_throughput) && finiteVector(continuation_direction);
@@ -750,22 +734,9 @@ bool sampleSurfaceContinuationTracked(
     if (direction_pdf <= 0.0 || !finiteFloat(direction_pdf)) {
         return false;
     }
-    proposal.exponent = exponent;
-    proposal.directional_pdf = direction_pdf;
     float response = weights[branch] * direction_pdf;
     path_throughput *= response / (branch_probability * direction_pdf);
     return finiteFloat(path_throughput) && finiteVector(continuation_direction);
-}
-
-// Callers that never relocate their sampled segment need no proposal state.
-bool sampleSurfaceContinuation(
-    SceneMaterial material, vec3 incoming_direction, vec3 normal,
-    inout uint random_state, inout float path_throughput,
-    out vec3 continuation_direction
-) {
-    SurfaceContinuationSample proposal;
-    return sampleSurfaceContinuationTracked(material, incoming_direction, normal,
-        random_state, path_throughput, continuation_direction, proposal);
 }
 
 // -----------------------------------------------------------------------------
@@ -1000,8 +971,8 @@ void connectDiffractionToSource(
 
 // Samples one continuous shadow diffraction direction. This is not a binary
 // straight/diffracted branch: zero bend is simply one point in the distribution.
-// Both azimuth and axial slope have continuous support. A cone-only proposal
-// cannot be reweighted after projection onto a subsequent physical edge.
+// The sampler preserves the component along the edge, rejects the solid wedge,
+// and covers the entire valid shadow, including bends beyond 90 degrees.
 bool sampleDiffractionContinuation(
     DiffractionEdge edge,
     vec3 plane_hit_position,
@@ -1048,24 +1019,15 @@ bool sampleDiffractionContinuation(
         return false;
     }
 
-    // K contains rational terms in axial-slope mismatch. A Cauchy proposal
-    // matches those tails and covers off-cone directions without a hard cutoff.
-    float incoming_slope = dot(incoming_direction, edge.edge_dir) / perpendicular_length;
-    float slope_width = sqrt(bend * bend + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
-    float unit_slope = clamp(randomFloat(random_state), 1.0e-7, 1.0 - 1.0e-7);
-    float slope_delta = slope_width * tan(PI * (unit_slope - 0.5));
-    float outgoing_slope = incoming_slope + slope_delta;
-    float outgoing_radial = inversesqrt(1.0 + outgoing_slope * outgoing_slope);
-    continuation_direction = outgoing_radial * (sampled_perpendicular + outgoing_slope * edge.edge_dir);
-    // dOmega = d(azimuth) d(axial cosine), and d(slope)/d(cosine)=radial^-3.
-    float slope_pdf = slope_width / (PI * (slope_width * slope_width + slope_delta * slope_delta));
-    pdf *= slope_pdf / (outgoing_radial * outgoing_radial * outgoing_radial);
+    continuation_direction = normalizeOrZero(
+        parallel_component + sampled_perpendicular * perpendicular_length
+    );
     if (!finiteVector(continuation_direction)) {
         return false;
     }
 
-    // Edge strength was already applied on arrival. Both connection and
-    // continuation now evaluate the same scalar response over solid angle.
+    // Edge strength was already applied on arrival. The continuation remains
+    // on the Keller cone; source connections additionally evaluate axial spread.
     path_throughput *= diffractionScalarResponse(edge, incoming_direction, continuation_direction) / pdf;
     continuation_origin = plane_hit_position + continuation_direction * RAY_EPSILON;
     continuation_path_distance = incoming_path_distance + hit_distance;
