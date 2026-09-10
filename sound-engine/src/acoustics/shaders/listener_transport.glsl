@@ -365,7 +365,7 @@ float foldedPowerCosinePdf(vec3 direction, vec3 axis, vec3 normal, float exponen
 // The deterministic direct arrival dominates perceived level in a visible
 // region, so its fractional delay must not inherit the two-tap interpolator's
 // 3 dB phase-dependent energy ripple. A normalized Lanczos kernel preserves
-// signed pressure while keeping the extra atomics limited to one event per IR.
+// signed pressure for geometric and signed diffracted arrivals.
 void depositDirectChannel(float sample_position, float amplitude, uint channel) {
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
@@ -376,36 +376,45 @@ void depositDirectChannel(float sample_position, float amplitude, uint channel) 
 
     const int LANCZOS_RADIUS = 8;
     int base = int(floor(sample_position));
+    float fraction = sample_position - float(base);
+    if (fraction == 0.0) {
+        depositChannel(sample_position, amplitude, channel);
+        return;
+    }
+
+    // The sinc numerator alternates sign at integer offsets; its common
+    // factor cancels in normalization. Advance the window sine by recurrence
+    // and retain weights so each accepted ray needs only two transcendental ops.
+    const float WINDOW_SINE_STEP = 0.3826834323650898;
+    const float WINDOW_COSINE_STEP = 0.9238795325112867;
+    float window_phase = PI / float(LANCZOS_RADIUS)
+        * (float(-LANCZOS_RADIUS + 1) - fraction);
+    float window_sine = sin(window_phase);
+    float window_cosine = cos(window_phase);
+    float parity = -1.0;
+    float weights[2 * LANCZOS_RADIUS];
     float weight_sum = 0.0;
-    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
-        float distance = float(base + offset) - sample_position;
-        float sinc_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance) / (PI * distance);
-        float window_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance / float(LANCZOS_RADIUS))
-                / (PI * distance / float(LANCZOS_RADIUS));
-        weight_sum += sinc_value * window_value;
+    for (int tap = 0; tap < 2 * LANCZOS_RADIUS; ++tap) {
+        float distance = float(tap - LANCZOS_RADIUS + 1) - fraction;
+        float weight = parity * window_sine / (distance * distance);
+        weights[tap] = weight;
+        weight_sum += weight;
+        float next_sine = window_sine * WINDOW_COSINE_STEP
+            + window_cosine * WINDOW_SINE_STEP;
+        window_cosine = window_cosine * WINDOW_COSINE_STEP
+            - window_sine * WINDOW_SINE_STEP;
+        window_sine = next_sine;
+        parity = -parity;
     }
     if (!finiteFloat(weight_sum) || abs(weight_sum) <= 1.0e-6) {
         return;
     }
-
-    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
-        int sample_index = base + offset;
+    for (int tap = 0; tap < 2 * LANCZOS_RADIUS; ++tap) {
+        int sample_index = base + tap - LANCZOS_RADIUS + 1;
         if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
             continue;
         }
-        float distance = float(sample_index) - sample_position;
-        float sinc_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance) / (PI * distance);
-        float window_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance / float(LANCZOS_RADIUS))
-                / (PI * distance / float(LANCZOS_RADIUS));
-        float contribution = amplitude * sinc_value * window_value / weight_sum;
+        float contribution = amplitude * weights[tap] / weight_sum;
         if (channel == 0u) {
             atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
         } else {
@@ -803,9 +812,9 @@ bool diffractionShadowDomain(
 // Broadband scalar approximation, not an exact BTM or frequency-domain UTD
 // coefficient. The four rational terms include both wedge-face distances;
 // axial mismatch narrows the response near the incident shadow boundary.
-// A 0.04-radian floor bounds variance at that boundary. See the derivation and
+// A 0.02-radian floor bounds variance at that boundary. See the derivation and
 // limitations in references/scalar-diffraction-validation.md.
-const float DIFFRACTION_ANGULAR_FLOOR = 0.04;
+const float DIFFRACTION_ANGULAR_FLOOR = 0.02;
 
 float diffractionScalarResponse(
     DiffractionEdge edge,
@@ -1048,5 +1057,4 @@ bool sampleDiffractionContinuation(
 // -----------------------------------------------------------------------------
 // Per-listener-path state machine
 // -----------------------------------------------------------------------------
-
 
