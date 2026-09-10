@@ -374,6 +374,32 @@ void depositBandlimitedChannel(float sample_position, float amplitude, uint chan
         return;
     }
 
+    // The four-tap edge kernel preserves signed pressure without per-ray
+    // trigonometry. Geometric direct arrivals retain their existing Lanczos.
+    if (kernel_radius == 2) {
+        int base = int(floor(sample_position));
+        float fraction = sample_position - float(base);
+        float square = fraction * fraction;
+        float cube = square * fraction;
+        vec4 weights = vec4(-0.5 * fraction + square - 0.5 * cube,
+            1.0 - 2.5 * square + 1.5 * cube,
+            0.5 * fraction + 2.0 * square - 1.5 * cube,
+            -0.5 * square + 0.5 * cube);
+        for (int tap = 0; tap < 4; ++tap) {
+            int sample_index = base + tap - 1;
+            if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
+                continue;
+            }
+            float contribution = amplitude * weights[tap];
+            if (channel == 0u) {
+                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
+            } else {
+                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].right, contribution);
+            }
+        }
+        return;
+    }
+
     int base = int(floor(sample_position));
     float weight_sum = 0.0;
     for (int offset = -kernel_radius + 1; offset <= kernel_radius; ++offset) {
@@ -987,7 +1013,7 @@ void connectDiffractionToSource(
 #ifdef SPECTRAL_TRACE
     depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
 #else
-    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 4);
+    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 2);
 #endif
 }
 
