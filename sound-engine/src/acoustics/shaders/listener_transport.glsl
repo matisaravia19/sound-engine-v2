@@ -972,7 +972,9 @@ void connectDiffractionToSource(
         * local_response
         * spreading
         * monte_carlo_normalization;
-    depositPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
+    // Signed boundary paths must use the same fractional-delay kernel as
+    // the geometric arrival they reinforce or cancel.
+    depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
 }
 
 // Samples one continuous shadow diffraction direction. This is not a binary
