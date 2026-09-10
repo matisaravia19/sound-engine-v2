@@ -365,8 +365,8 @@ float foldedPowerCosinePdf(vec3 direction, vec3 axis, vec3 normal, float exponen
 // The deterministic direct arrival dominates perceived level in a visible
 // region, so its fractional delay must not inherit the two-tap interpolator's
 // 3 dB phase-dependent energy ripple. A normalized Lanczos kernel preserves
-// signed pressure for geometric and signed diffracted arrivals.
-void depositDirectChannel(float sample_position, float amplitude, uint channel) {
+// signed pressure; the caller selects the constant support size.
+void depositBandlimitedChannel(float sample_position, float amplitude, uint channel, int kernel_radius) {
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
         || sample_position <= -1.0
@@ -374,47 +374,37 @@ void depositDirectChannel(float sample_position, float amplitude, uint channel) 
         return;
     }
 
-    const int LANCZOS_RADIUS = 8;
     int base = int(floor(sample_position));
-    float fraction = sample_position - float(base);
-    if (fraction == 0.0) {
-        depositChannel(sample_position, amplitude, channel);
-        return;
-    }
-
-    // The sinc numerator alternates sign at integer offsets; its common
-    // factor cancels in normalization. Advance the window sine by recurrence
-    // and retain weights so each accepted ray needs only two transcendental ops.
-    const float WINDOW_SINE_STEP = 0.3826834323650898;
-    const float WINDOW_COSINE_STEP = 0.9238795325112867;
-    float window_phase = PI / float(LANCZOS_RADIUS)
-        * (float(-LANCZOS_RADIUS + 1) - fraction);
-    float window_sine = sin(window_phase);
-    float window_cosine = cos(window_phase);
-    float parity = -1.0;
-    float weights[2 * LANCZOS_RADIUS];
     float weight_sum = 0.0;
-    for (int tap = 0; tap < 2 * LANCZOS_RADIUS; ++tap) {
-        float distance = float(tap - LANCZOS_RADIUS + 1) - fraction;
-        float weight = parity * window_sine / (distance * distance);
-        weights[tap] = weight;
-        weight_sum += weight;
-        float next_sine = window_sine * WINDOW_COSINE_STEP
-            + window_cosine * WINDOW_SINE_STEP;
-        window_cosine = window_cosine * WINDOW_COSINE_STEP
-            - window_sine * WINDOW_SINE_STEP;
-        window_sine = next_sine;
-        parity = -parity;
+    for (int offset = -kernel_radius + 1; offset <= kernel_radius; ++offset) {
+        float distance = float(base + offset) - sample_position;
+        float sinc_value = abs(distance) < 1.0e-6
+            ? 1.0
+            : sin(PI * distance) / (PI * distance);
+        float window_value = abs(distance) < 1.0e-6
+            ? 1.0
+            : sin(PI * distance / float(kernel_radius))
+                / (PI * distance / float(kernel_radius));
+        weight_sum += sinc_value * window_value;
     }
     if (!finiteFloat(weight_sum) || abs(weight_sum) <= 1.0e-6) {
         return;
     }
-    for (int tap = 0; tap < 2 * LANCZOS_RADIUS; ++tap) {
-        int sample_index = base + tap - LANCZOS_RADIUS + 1;
+
+    for (int offset = -kernel_radius + 1; offset <= kernel_radius; ++offset) {
+        int sample_index = base + offset;
         if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
             continue;
         }
-        float contribution = amplitude * weights[tap] / weight_sum;
+        float distance = float(sample_index) - sample_position;
+        float sinc_value = abs(distance) < 1.0e-6
+            ? 1.0
+            : sin(PI * distance) / (PI * distance);
+        float window_value = abs(distance) < 1.0e-6
+            ? 1.0
+            : sin(PI * distance / float(kernel_radius))
+                / (PI * distance / float(kernel_radius));
+        float contribution = amplitude * sinc_value * window_value / weight_sum;
         if (channel == 0u) {
             atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
         } else {
@@ -423,13 +413,18 @@ void depositDirectChannel(float sample_position, float amplitude, uint channel) 
     }
 }
 
+// Keep the established interpolation for the single geometric direct arrival.
+void depositDirectChannel(float sample_position, float amplitude, uint channel) {
+    depositBandlimitedChannel(sample_position, amplitude, channel, 8);
+}
+
 // Applies the same listener-space spatialization as depositPressure, but uses
 // the stable direct-arrival fractional delay above.
 #ifdef SPECTRAL_TRACE
 void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 #else
-void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
+void depositBandlimitedPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure, int kernel_radius) {
     if (!finiteFloat(total_path_length)
         || !finiteFloat(amplitude)
         || total_path_length < 0.0
@@ -444,7 +439,7 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
     }
 
     if (pc.output_channels == OUTPUT_CHANNELS_MONO) {
-        depositDirectChannel(center_sample_position, amplitude, 0u);
+        depositBandlimitedChannel(center_sample_position, amplitude, 0u, kernel_radius);
         return;
     }
 
@@ -456,8 +451,8 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
     if (pc.output_channels == OUTPUT_CHANNELS_STEREO) {
         float left_factor = sqrt(0.5 * (1.0 - lateral));
         float right_factor = sqrt(0.5 * (1.0 + lateral));
-        depositDirectChannel(center_sample_position, amplitude * left_factor, 0u);
-        depositDirectChannel(center_sample_position, amplitude * right_factor, 1u);
+        depositBandlimitedChannel(center_sample_position, amplitude * left_factor, 0u, kernel_radius);
+        depositBandlimitedChannel(center_sample_position, amplitude * right_factor, 1u, kernel_radius);
         return;
     }
 
@@ -477,8 +472,14 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
         right_factor = near_factor;
     }
 
-    depositDirectChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u);
-    depositDirectChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u);
+    depositBandlimitedChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u, kernel_radius);
+    depositBandlimitedChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u, kernel_radius);
+}
+
+// Geometric arrival retains its 16-tap kernel; edge connections choose a
+// smaller constant kernel to bound atomics per sampled path.
+void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
+    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, source_departure, 8);
 }
 
 // Converts geometric length to a fractional sample position and applies the
@@ -981,9 +982,13 @@ void connectDiffractionToSource(
         * local_response
         * spreading
         * monte_carlo_normalization;
-    // Signed boundary paths must use the same fractional-delay kernel as
-    // the geometric arrival they reinforce or cancel.
+    // A short bandlimited kernel reduces phase-dependent cancellation error
+    // while bounding work per accepted edge connection.
+#ifdef SPECTRAL_TRACE
     depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
+#else
+    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 2);
+#endif
 }
 
 // Samples one continuous shadow diffraction direction. This is not a binary
