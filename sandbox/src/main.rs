@@ -47,6 +47,8 @@ struct UiState {
     show_bisector_planes: bool,
     /// Wire view exposes sources and receivers inside closed benchmark rooms.
     benchmark_wireframe: bool,
+    /// Full geometry when enabled; an empty acoustic scene supplies the distance-only comparison.
+    full_acoustics: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -127,6 +129,7 @@ impl PlaygroundState {
                 last_voice: None,
                 show_bisector_planes: false,
                 benchmark_wireframe: true,
+                full_acoustics: true,
             },
         }
     }
@@ -372,13 +375,7 @@ fn main() -> SoundResult<()> {
         config.acoustics.max_bounces
     );
     let mut engine = SoundEngine::new(config)?;
-    engine.load_scene(
-        state
-            .benchmark
-            .as_ref()
-            .map(|b| b.description.clone())
-            .unwrap_or_else(|| scene_description(&state.scene)),
-    )?;
+    engine.load_scene(playback_scene(&state))?;
     engine.set_listener_pose(state.red_sphere_listener_pose())?;
     let sound_source_id = engine.create_sound_source(state.point_source())?;
     state.sound_source_id = Some(sound_source_id);
@@ -632,10 +629,14 @@ fn select_scene(
     } else {
         Some(entry.load()?)
     };
-    let description = benchmark
-        .as_ref()
-        .map(|b| b.description.clone())
-        .unwrap_or_else(|| scene_description(&state.scene));
+    let description = if state.ui.full_acoustics {
+        benchmark
+            .as_ref()
+            .map(|b| b.description.clone())
+            .unwrap_or_else(|| scene_description(&state.scene))
+    } else {
+        empty_acoustic_scene()
+    };
     engine.load_scene(description).map_err(|e| e.to_string())?;
     state.benchmark = benchmark;
     state.scene_index = index;
@@ -713,6 +714,23 @@ fn handle_config_keys(
     state: &mut PlaygroundState,
     camera: &Camera3D,
 ) {
+    let mouse = rl.get_mouse_position();
+    let audio_button = mouse.x >= 278.0 && mouse.x <= 588.0 && mouse.y >= 70.0 && mouse.y <= 104.0;
+    if rl.is_key_pressed(KeyboardKey::KEY_T)
+        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && audio_button)
+    {
+        state.ui.full_acoustics = !state.ui.full_acoustics;
+        match engine.load_scene(playback_scene(state)) {
+            Ok(_) => {
+                state.ui.status = format!("Playback: {}", playback_label(state));
+            }
+            Err(error) => {
+                state.ui.full_acoustics = !state.ui.full_acoustics;
+                state.ui.status = format!("Playback switch failed: {error}");
+            }
+        }
+    }
+
     if rl.is_key_pressed(KeyboardKey::KEY_V) {
         state.ui.benchmark_wireframe = !state.ui.benchmark_wireframe;
     }
@@ -801,7 +819,7 @@ fn sync_source(engine: &mut SoundEngine, state: &mut PlaygroundState) {
 
 fn reload_scene(engine: &mut SoundEngine, state: &mut PlaygroundState, label: &str) {
     state.rebuild_scene();
-    match engine.load_scene(scene_description(&state.scene)) {
+    match engine.load_scene(playback_scene(state)) {
         Ok(version) => {
             state.ui.status = format!("{label} changed; scene version {version}");
         }
@@ -1143,6 +1161,38 @@ fn scene_description(scene: &PlaygroundScene) -> SceneDescription {
     }
 }
 
+fn playback_label(state: &PlaygroundState) -> &'static str {
+    if state.ui.full_acoustics {
+        "Full simulation"
+    } else {
+        "Distance only"
+    }
+}
+
+fn empty_acoustic_scene() -> SceneDescription {
+    SceneDescription {
+        meshes: Vec::new(),
+        materials: Vec::new(),
+        objects: Vec::new(),
+        diffraction_edges: Vec::new(),
+    }
+}
+
+fn playback_scene(state: &PlaygroundState) -> SceneDescription {
+    // Keep the visible scene and playback cursor intact. Empty acoustic geometry
+    // retains the same 1/r pressure, propagation delay and listener spatialization,
+    // while scene invalidation refreshes active voices through their usual crossfade.
+    if state.ui.full_acoustics {
+        state
+            .benchmark
+            .as_ref()
+            .map(|scene| scene.description.clone())
+            .unwrap_or_else(|| scene_description(&state.scene))
+    } else {
+        empty_acoustic_scene()
+    }
+}
+
 fn start_sound_requested(rl: &RaylibHandle) -> bool {
     rl.is_key_pressed(KeyboardKey::KEY_SPACE)
         || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && mouse_in_start_button(rl))
@@ -1331,6 +1381,21 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
     d.draw_rectangle(24, 70, 230, 34, toggle_color);
     d.draw_rectangle_lines(24, 70, 230, 34, Color::new(160, 205, 225, 255));
     d.draw_text("Bisector Planes", 42, 78, 17, Color::RAYWHITE);
+
+    let audio_color = if state.ui.full_acoustics {
+        Color::new(35, 118, 150, 255)
+    } else {
+        Color::new(115, 82, 35, 255)
+    };
+    d.draw_rectangle(278, 70, 310, 34, audio_color);
+    d.draw_rectangle_lines(278, 70, 310, 34, Color::new(160, 205, 225, 255));
+    d.draw_text(
+        &format!("T: {}", playback_label(state)),
+        292,
+        78,
+        17,
+        Color::RAYWHITE,
+    );
 
     d.draw_text(
         "F1: scenes | Space: sound | B: planes | L: listener",
