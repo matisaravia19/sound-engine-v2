@@ -6,15 +6,25 @@ use std::time::SystemTimeError;
 /// Stable error categories for sound-engine failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
+    /// An input violates the API contract.
     InvalidArgument,
+    /// The requested operation is invalid in the current state.
     InvalidState,
+    /// A requested handle or resource does not exist.
     NotFound,
+    /// A required device, driver, or backend is unavailable.
     BackendUnavailable,
+    /// The backend does not support a requested feature.
     UnsupportedFeature,
+    /// A host or device resource could not be allocated.
     ResourceAllocationFailed,
+    /// Shader compilation or validation failed.
     ShaderCompileFailed,
+    /// File or stream input/output failed.
     Io,
+    /// A dependency reported an error.
     External,
+    /// A synchronization lock was poisoned by a panic.
     PoisonedLock,
 }
 
@@ -30,6 +40,7 @@ pub struct SoundError {
 pub type SoundResult<T> = Result<T, SoundError>;
 
 impl SoundError {
+    /// Creates an error without an underlying cause.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -38,6 +49,7 @@ impl SoundError {
         }
     }
 
+    /// Owns a thread-safe underlying cause alongside the engine error.
     pub fn with_source(
         code: ErrorCode,
         message: impl Into<String>,
@@ -50,46 +62,57 @@ impl SoundError {
         }
     }
 
+    /// Returns the stable category for programmatic handling.
     pub fn code(&self) -> ErrorCode {
         self.code
     }
 
+    /// Reports an input-contract violation.
     pub fn invalid_argument(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidArgument, message)
     }
 
+    /// Reports an operation incompatible with current state.
     pub fn invalid_state(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidState, message)
     }
 
+    /// Reports a missing handle or resource.
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFound, message)
     }
 
+    /// Reports an unavailable backend or device.
     pub fn backend_unavailable(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::BackendUnavailable, message)
     }
 
+    /// Reports an unsupported backend capability.
     pub fn unsupported_feature(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::UnsupportedFeature, message)
     }
 
+    /// Reports a failed host or device allocation.
     pub fn resource_allocation_failed(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::ResourceAllocationFailed, message)
     }
 
+    /// Reports a failed shader compilation.
     pub fn shader_compile_failed(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::ShaderCompileFailed, message)
     }
 
+    /// Reports file or stream input/output failure.
     pub fn io(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Io, message)
     }
 
+    /// Wraps a dependency error message.
     pub fn external(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::External, message)
     }
 
+    /// Reports a lock poisoned by a prior panic.
     pub fn poisoned_lock(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::PoisonedLock, message)
     }
@@ -137,6 +160,8 @@ impl From<ash::vk::Result> for SoundError {
     }
 }
 
+/// Returns a categorized error when validation fails in debug builds.
+/// Release builds do not evaluate the condition or message arguments.
 #[macro_export]
 macro_rules! debug_validate {
     ($condition:expr, $code:expr, $($message:tt)+) => {{

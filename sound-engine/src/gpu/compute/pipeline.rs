@@ -114,8 +114,8 @@ impl ComputeContext {
                 handle: pipeline,
                 layout,
                 descriptor_set_layout,
-                descriptor_bindings: descriptor_bindings,
-                push_constant_ranges: push_constant_ranges,
+                #[cfg(debug_assertions)]
+                push_constant_ranges,
                 pool_sizes_template: pool_sizes_template,
                 descriptor_pools: Vec::new(),
             },

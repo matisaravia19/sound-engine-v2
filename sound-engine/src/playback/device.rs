@@ -1,4 +1,6 @@
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+#[cfg(debug_assertions)]
+use crate::core::error::ErrorCode;
+use crate::core::error::{SoundError, SoundResult};
 use crate::playback::queue::SampleQueue;
 use crate::playback::state::PlaybackState;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -147,6 +149,7 @@ fn write_output<T>(
 ) where
     T: cpal::Sample + cpal::FromSample<f32>,
 {
+    #[cfg(debug_assertions)]
     if let Err(error) = validate_callback_sample_shape(data.len(), device_channels, output_channels) {
         eprintln!("Audio callback shape error: {error}");
         let _ = state.request_stop();
@@ -177,6 +180,7 @@ fn write_output<T>(
         }
     };
 
+    #[cfg(debug_assertions)]
     if let Err(error) = validate_drained_sample_shape(drained, output_channels) {
         eprintln!("Audio queue shape error: {error}");
         let _ = state.request_stop();
@@ -221,6 +225,7 @@ fn write_output<T>(
     }
 }
 
+#[cfg(debug_assertions)]
 fn validate_callback_sample_shape(data_len: usize, device_channels: usize, output_channels: usize) -> SoundResult<()> {
     crate::debug_validate!(
         device_channels > 0,
@@ -243,6 +248,7 @@ fn validate_callback_sample_shape(data_len: usize, device_channels: usize, outpu
     Ok(())
 }
 
+#[cfg(debug_assertions)]
 fn validate_drained_sample_shape(drained: usize, output_channels: usize) -> SoundResult<()> {
     crate::debug_validate!(
         drained % output_channels == 0,

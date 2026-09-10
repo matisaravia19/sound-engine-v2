@@ -4,7 +4,9 @@ use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
 use crate::auralization::voice::{Voice, VoiceState};
 use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
 use crate::core::config::EngineConfig;
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+#[cfg(any(debug_assertions, test))]
+use crate::core::error::ErrorCode;
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use std::collections::HashMap;
 use std::path::Path;
@@ -220,6 +222,7 @@ impl AuralizationEngine {
     /// audio from all active voices into it. For multichannel output (e.g. stereo),
     /// samples are written interleaved (e.g. L,R,L,R...).
     pub fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
+        #[cfg(debug_assertions)]
         let output_channels = self.config.sound.output_channels.count();
         crate::debug_validate!(
             output_block.len() == self.config.auralization.block_size * output_channels,

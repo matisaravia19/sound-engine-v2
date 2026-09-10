@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(debug_assertions)]
+use crate::core::error::ErrorCode;
 use crate::{
-    core::error::{ErrorCode, SoundError, SoundResult},
+    core::error::{SoundError, SoundResult},
     gpu::compute::MemoryBarrierSpec,
 };
 
@@ -199,6 +201,7 @@ impl RtContext {
     }
 }
 
+#[cfg(debug_assertions)]
 fn push_constants_fit_pipeline(spec: &RtTraceSpec, pipeline: &RayTracingPipeline) -> bool {
     if spec.push_constants.is_empty() {
         return true;

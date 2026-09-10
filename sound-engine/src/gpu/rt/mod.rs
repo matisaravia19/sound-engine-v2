@@ -46,6 +46,7 @@ struct RayTracingPipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    #[cfg(debug_assertions)]
     push_constant_ranges: Vec<vk::PushConstantRange>,
     pool_sizes_template: Vec<vk::DescriptorPoolSize>,
     descriptor_pools: Vec<vk::DescriptorPool>,

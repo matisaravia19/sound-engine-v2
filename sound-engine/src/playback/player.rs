@@ -1,4 +1,6 @@
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+#[cfg(debug_assertions)]
+use crate::core::error::ErrorCode;
+use crate::core::error::{SoundError, SoundResult};
 use crate::playback::device::{build_output_stream, default_output_sample_rate};
 use crate::playback::queue::SampleQueue;
 use crate::playback::state::PlaybackState;
@@ -34,6 +36,7 @@ pub struct SoundPlayer {
     state: Arc<PlaybackState>,
     queue: Arc<SampleQueue>,
     stream: cpal::Stream,
+    #[cfg(debug_assertions)]
     block_samples: usize,
     /// Initial queue occupancy required before device consumption begins.
     prefill_samples: usize,
@@ -73,6 +76,7 @@ impl SoundPlayer {
             state,
             queue,
             stream,
+            #[cfg(debug_assertions)]
             block_samples,
             prefill_samples: config.prefill_blocks * block_samples,
         })

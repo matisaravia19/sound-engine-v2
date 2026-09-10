@@ -33,11 +33,20 @@ pub struct RtShaderStageSpec {
 #[derive(Debug, Clone, Copy)]
 pub enum RtShaderGroupSpec {
     /// Ray-generation group referencing a general shader stage index.
-    Raygen { shader: u32 },
+    Raygen {
+        /// Ray-generation stage index in the pipeline shader list.
+        shader: u32,
+    },
     /// Miss group referencing a general shader stage index.
-    Miss { shader: u32 },
+    Miss {
+        /// Miss stage index in the pipeline shader list.
+        shader: u32,
+    },
     /// Triangle hit group referencing a closest-hit shader stage index.
-    TrianglesHit { closest_hit_shader: u32 },
+    TrianglesHit {
+        /// Closest-hit stage index in the pipeline shader list.
+        closest_hit_shader: u32,
+    },
     /// Procedural hit group referencing closest-hit and intersection shader stage indices.
     ProceduralHit {
         /// Closest-hit shader stage index.
@@ -46,7 +55,10 @@ pub enum RtShaderGroupSpec {
         intersection_shader: u32,
     },
     /// Callable group referencing a general shader stage index.
-    Callable { shader: u32 },
+    Callable {
+        /// Callable stage index in the pipeline shader list.
+        shader: u32,
+    },
 }
 
 /// Descriptor binding kinds supported by RT pipelines.
@@ -193,6 +205,7 @@ impl RtContext {
                 handle,
                 layout,
                 descriptor_set_layout,
+                #[cfg(debug_assertions)]
                 push_constant_ranges,
                 pool_sizes_template: aggregate_pool_sizes(&descriptor_bindings),
                 descriptor_pools: Vec::new(),

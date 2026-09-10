@@ -1,4 +1,6 @@
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+#[cfg(debug_assertions)]
+use crate::core::error::ErrorCode;
+use crate::core::error::{SoundError, SoundResult};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};

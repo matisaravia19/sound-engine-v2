@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(debug_assertions)]
 use crate::core::error::ErrorCode;
 
 /// One compute dispatch recorded into a command buffer.
@@ -38,12 +39,6 @@ impl DescriptorWrite {
             buffer,
             offset: 0,
             range: vk::WHOLE_SIZE,
-        }
-    }
-
-    fn binding(&self) -> u32 {
-        match self {
-            DescriptorWrite::StorageBuffer { binding, .. } => *binding,
         }
     }
 }
@@ -119,6 +114,7 @@ impl ComputeContext {
     }
 }
 
+#[cfg(debug_assertions)]
 fn push_constants_fit_pipeline(spec: &DispatchSpec, pipeline: &ComputePipeline) -> bool {
     if spec.push_constants.is_empty() {
         return true;

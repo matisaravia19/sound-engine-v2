@@ -3,7 +3,9 @@ use crate::auralization::IR_TRANSITION_BLOCKS;
 use crate::auralization::voice::{Voice, VoiceConvolutionState};
 use crate::core::config::EngineConfig;
 use crate::core::config::OutputChannels;
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+#[cfg(any(debug_assertions, test))]
+use crate::core::error::ErrorCode;
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
     BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, PipelineId,
@@ -174,6 +176,7 @@ impl PartitionedConvolver {
 
     /// Processes one mono input block for a voice into the configured output layout.
     pub fn process_block(&self, voice: &mut Voice, input_block: &[f32], output_block: &mut [f32]) -> SoundResult<()> {
+        #[cfg(debug_assertions)]
         self.validate_block_lengths(input_block, output_block)?;
         self.start_pending_transition(voice);
 
@@ -320,6 +323,7 @@ impl PartitionedConvolver {
     }
 
     /// Validates that input and output block sizes match expected channel layout and FFT capacity.
+    #[cfg(debug_assertions)]
     fn validate_block_lengths(&self, input_block: &[f32], output_block: &[f32]) -> SoundResult<()> {
         crate::debug_validate!(
             input_block.len() == self.config.auralization.block_size,
@@ -556,18 +560,18 @@ fn blend_ir_transition(
     }
 }
 
-fn validate_gpu_ir_snapshot(snapshot: &GpuIrSnapshot, fft_size: usize) -> SoundResult<()> {
+fn validate_gpu_ir_snapshot(snapshot: &GpuIrSnapshot, _fft_size: usize) -> SoundResult<()> {
     crate::debug_validate!(
         snapshot.sample_count > 0,
         ErrorCode::InvalidArgument,
         "GPU impulse response must not be empty"
     );
     crate::debug_validate!(
-        snapshot.sample_count as usize <= fft_size,
+        snapshot.sample_count as usize <= _fft_size,
         ErrorCode::InvalidArgument,
         "GPU impulse response length {} exceeds FFT size {}",
         snapshot.sample_count,
-        fft_size
+        _fft_size
     );
     if snapshot.buffer.is_none() {
         return Err(SoundError::invalid_argument("GPU IR snapshot has no buffer"));

@@ -3,7 +3,7 @@ use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -49,22 +49,9 @@ pub enum ShaderStage {
 struct ShaderRecord {
     module: vk::ShaderModule,
     stage: ShaderStage,
-    source_path: PathBuf,
 }
 
 impl ShaderStage {
-    fn to_vk(self) -> vk::ShaderStageFlags {
-        match self {
-            ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
-            ShaderStage::RayGeneration => vk::ShaderStageFlags::RAYGEN_KHR,
-            ShaderStage::RayMiss => vk::ShaderStageFlags::MISS_KHR,
-            ShaderStage::RayClosestHit => vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            ShaderStage::RayAnyHit => vk::ShaderStageFlags::ANY_HIT_KHR,
-            ShaderStage::RayIntersection => vk::ShaderStageFlags::INTERSECTION_KHR,
-            ShaderStage::RayCallable => vk::ShaderStageFlags::CALLABLE_KHR,
-        }
-    }
-
     fn glslang_suffix(self) -> &'static str {
         match self {
             ShaderStage::Compute => "comp",
@@ -79,6 +66,7 @@ impl ShaderStage {
 }
 
 impl ShaderLibrary {
+    /// Shares device ownership; compiled modules live until this library is dropped.
     pub(super) fn new(device_context: Arc<VkDeviceContext>) -> Self {
         Self {
             device_context,
@@ -103,11 +91,7 @@ impl ShaderLibrary {
 
         let spirv_words = compile_glsl_file_to_spirv_words(&source_path, stage, SHADER_ENTRY_POINT)?;
         let module = create_shader_module(&self.device_context.device, &spirv_words)?;
-        let record = ShaderRecord {
-            module,
-            stage,
-            source_path,
-        };
+        let record = ShaderRecord { module, stage };
 
         let mut shaders = self
             .shaders

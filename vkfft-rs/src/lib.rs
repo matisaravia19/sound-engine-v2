@@ -1,17 +1,4 @@
+//! Vulkan FFT plans with explicit external resource lifetimes.
 mod ffi;
+/// Plan configuration, ownership, and command recording.
 pub mod plan;
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}

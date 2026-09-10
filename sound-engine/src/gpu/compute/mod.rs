@@ -59,13 +59,14 @@ struct ComputePipeline {
     handle: vk::Pipeline,
     layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    descriptor_bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
+    #[cfg(debug_assertions)]
     push_constant_ranges: Vec<vk::PushConstantRange>,
     pool_sizes_template: Vec<vk::DescriptorPoolSize>,
     descriptor_pools: Vec<vk::DescriptorPool>,
 }
 
 impl ComputeContext {
+    /// Shares device ownership and allocates buffers from the supplied command pool.
     pub(super) fn new(
         device_context: Arc<VkDeviceContext>,
         shaders: Arc<ShaderLibrary>,

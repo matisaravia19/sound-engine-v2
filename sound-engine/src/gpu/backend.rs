@@ -54,9 +54,7 @@ pub struct RayTracingProperties {
 pub(super) struct QueueSet {
     /// Vulkan queue used for submissions.
     pub handle: vk::Queue,
-    /// Queue family index used to create the queue and command pool.
-    pub queue_family: u32,
-    /// Command pool tied to `queue_family`.
+    /// Command pool created for the queue family of `handle`.
     pub command_pool: vk::CommandPool,
 }
 
@@ -233,7 +231,6 @@ impl VkBackend {
             device,
             compute_queue: QueueSet {
                 handle: compute_queue,
-                queue_family: compute_family,
                 command_pool: compute_command_pool,
             },
         })
