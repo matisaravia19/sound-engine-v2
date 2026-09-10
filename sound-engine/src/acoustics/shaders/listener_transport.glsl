@@ -364,13 +364,39 @@ float foldedPowerCosinePdf(vec3 direction, vec3 axis, vec3 normal, float exponen
 
 // The deterministic direct arrival dominates perceived level in a visible
 // region, so its fractional delay must not inherit the two-tap interpolator's
-// 3 dB phase-dependent energy ripple. A normalized Lanczos kernel preserves
-// signed pressure while keeping the extra atomics limited to one event per IR.
-void depositDirectChannel(float sample_position, float amplitude, uint channel) {
+// 3 dB phase-dependent energy ripple. Use its normalized Lanczos kernel,
+// or a compact pressure-preserving cubic kernel for numerous edge arrivals.
+void depositStableChannel(float sample_position, float amplitude, uint channel, bool cubic_edge) {
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
         || sample_position <= -1.0
         || sample_position >= float(timeDomainSampleCount())) {
+        return;
+    }
+
+    // The four-tap edge kernel preserves signed pressure without per-ray
+    // trigonometry. Geometric direct arrivals retain their existing Lanczos.
+    if (cubic_edge) {
+        int base = int(floor(sample_position));
+        float fraction = sample_position - float(base);
+        float square = fraction * fraction;
+        float cube = square * fraction;
+        vec4 weights = vec4(-0.5 * fraction + square - 0.5 * cube,
+            1.0 - 2.5 * square + 1.5 * cube,
+            0.5 * fraction + 2.0 * square - 1.5 * cube,
+            -0.5 * square + 0.5 * cube);
+        for (int tap = 0; tap < 4; ++tap) {
+            int sample_index = base + tap - 1;
+            if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
+                continue;
+            }
+            float contribution = amplitude * weights[tap];
+            if (channel == 0u) {
+                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
+            } else {
+                atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].right, contribution);
+            }
+        }
         return;
     }
 
@@ -414,13 +440,18 @@ void depositDirectChannel(float sample_position, float amplitude, uint channel) 
     }
 }
 
-// Applies the same listener-space spatialization as depositPressure, but uses
-// the stable direct-arrival fractional delay above.
+// Keep the established interpolation for the single geometric direct arrival.
+void depositDirectChannel(float sample_position, float amplitude, uint channel) {
+    depositStableChannel(sample_position, amplitude, channel, false);
+}
+
+// Applies listener-space spatialization with pressure-preserving interpolation.
+// Scalar edge arrivals select cubic interpolation; direct arrivals use Lanczos.
 #ifdef SPECTRAL_TRACE
 void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 #else
-void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
+void depositStablePressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure, bool cubic_edge) {
     if (!finiteFloat(total_path_length)
         || !finiteFloat(amplitude)
         || total_path_length < 0.0
@@ -435,7 +466,7 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
     }
 
     if (pc.output_channels == OUTPUT_CHANNELS_MONO) {
-        depositDirectChannel(center_sample_position, amplitude, 0u);
+        depositStableChannel(center_sample_position, amplitude, 0u, cubic_edge);
         return;
     }
 
@@ -447,8 +478,8 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
     if (pc.output_channels == OUTPUT_CHANNELS_STEREO) {
         float left_factor = sqrt(0.5 * (1.0 - lateral));
         float right_factor = sqrt(0.5 * (1.0 + lateral));
-        depositDirectChannel(center_sample_position, amplitude * left_factor, 0u);
-        depositDirectChannel(center_sample_position, amplitude * right_factor, 1u);
+        depositStableChannel(center_sample_position, amplitude * left_factor, 0u, cubic_edge);
+        depositStableChannel(center_sample_position, amplitude * right_factor, 1u, cubic_edge);
         return;
     }
 
@@ -468,8 +499,14 @@ void depositDirectPressure(float total_path_length, float amplitude, vec3 listen
         right_factor = near_factor;
     }
 
-    depositDirectChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u);
-    depositDirectChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u);
+    depositStableChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u, cubic_edge);
+    depositStableChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u, cubic_edge);
+}
+
+// The single geometric arrival retains its established 16-tap kernel.
+// Edge arrivals use the compact cubic path through depositStablePressure.
+void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, source_departure, false);
 }
 
 // Converts geometric length to a fractional sample position and applies the
@@ -835,7 +872,7 @@ float diffractionScalarResponse(
     float far_angle = max(incident_angle, outgoing_angle);
     float bend = far_angle - near_angle - PI;
     float exterior = edge.edge_angle_radians;
-    if (bend <= 0.0 || far_angle > exterior + DIRECTION_EPSILON) {
+    if (bend < -4.0 * DIFFRACTION_ANGULAR_FLOOR || far_angle > exterior + DIRECTION_EPSILON) {
         return 0.0;
     }
     float face_a = near_angle;
@@ -846,15 +883,26 @@ float diffractionScalarResponse(
         - outgoing_axial / outgoing_radius;
     vec4 angle_squared = angle * angle;
     vec4 taper = max(vec4(0.0), vec4(1.0) - angle_squared / (exterior * exterior));
-    vec4 terms = angle * taper / (angle_squared + vec4(
+    // Only the shadow-boundary term needs its numerator regularized.
+    // Keep the other three face terms unchanged away from that boundary.
+    vec4 regularized_angle = angle;
+    regularized_angle.x = sqrt(angle_squared.x
+        + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
+    vec4 terms = regularized_angle * taper / (angle_squared + vec4(
         axial_mismatch * axial_mismatch
         + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR));
+    // A ray-discovered edge supplies a signed, localized correction on the
+    // illuminated side. Every contribution still passes physical visibility.
+    if (bend <= 0.0) {
+        float window = smoothstep(-4.0 * DIFFRACTION_ANGULAR_FLOOR, 0.0, bend);
+        return -terms.x * window / TWO_PI;
+    }
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
 
-// Evaluates whether the edge-to-source connection belongs to the same angular
-// domain available to a sampled continuation and, if so, returns its pressure
-// response including radial normalization and angular density.
+// Evaluates the edge-to-source pressure, including radial normalization and
+// angular density. Connections include a signed near-lit transition; sampled
+// continuation remains restricted to the shadow domain.
 bool diffractionSourceResponse(
     DiffractionEdge edge,
     vec3 incoming_direction,
@@ -883,7 +931,7 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    // Connection and continuation share the same complete shadow interval.
+    // Source connections must stay outside the solid wedge.
     vec3 source_perpendicular = source_direction
         - dot(source_direction, edge.edge_dir) * edge.edge_dir;
     source_perpendicular = normalizeOrZero(source_perpendicular);
@@ -892,13 +940,8 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    float outgoing_angle = atan(
-        dot(edge.edge_dir, cross(incoming_perpendicular, source_perpendicular)),
-        dot(incoming_perpendicular, source_perpendicular)
-    );
-    if (outgoing_angle < angle_start || outgoing_angle > angle_end) {
-        return false;
-    }
+    // The scalar response decides support, including its small signed
+    // illuminated-side transition; continuation remains shadow-only.
 
     // Only the exterior half-strip is sampled: the other half lies in the
     // wedge. Normalize over [0, radius], not the inaccessible symmetric strip.
@@ -916,7 +959,7 @@ bool diffractionSourceResponse(
     float geometry = incoming_distance * (incoming_distance + source_distance)
         / (projected_incidence * source_distance);
     response = radial_kernel * geometry * directional_shape;
-    return response > 0.0 && finiteFloat(response);
+    return response != 0.0 && finiteFloat(response);
 }
 
 // Performs next-event estimation for listener -> ... -> edge -> source.
@@ -966,7 +1009,13 @@ void connectDiffractionToSource(
         * local_response
         * spreading
         * monte_carlo_normalization;
-    depositPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
+    // Cubic interpolation reduces phase-dependent cancellation error using
+    // four atomics per channel and no per-connection trigonometric kernel.
+#ifdef SPECTRAL_TRACE
+    depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
+#else
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, true);
+#endif
 }
 
 // Samples one continuous shadow diffraction direction. This is not a binary
