@@ -218,6 +218,17 @@ void main() {
                 break;
             }
 
+            // Experimental capture-density compensation: a wider proxy must
+            // not give a continued edge path more pressure solely by catching
+            // more launch rays. The local length keeps this factor dimensionless.
+            float projected_incidence = abs(dot(direction, edge.positive_plane_normal));
+            if (projected_incidence <= DIRECTION_EPSILON) {
+                break;
+            }
+            float capture_kernel = 2.0 * clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
+                / edge.diffraction_radius;
+            path_throughput *= capture_kernel * edge_leg_length / projected_incidence;
+
             vec3 continuation_origin;
             vec3 continuation_direction;
             float continuation_path_distance;
