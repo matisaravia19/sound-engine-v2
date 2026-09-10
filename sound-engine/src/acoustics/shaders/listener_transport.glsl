@@ -858,8 +858,7 @@ float diffractionScalarResponse(
     // illuminated side. Every contribution still passes physical visibility.
     if (bend <= 0.0) {
         float window = smoothstep(-4.0 * DIFFRACTION_ANGULAR_FLOOR, 0.0, bend);
-        // The nonsingular face terms must not vanish abruptly at zero bend.
-        return (dot(terms.yzw, vec3(1.0)) - terms.x) * window / TWO_PI;
+        return -terms.x * window / TWO_PI;
     }
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
@@ -1016,11 +1015,15 @@ bool sampleDiffractionContinuation(
     // Concentrate samples near the boundary without a singular PDF. Evaluate
     // response/PDF explicitly because this sampler is only an approximation to
     // the four-term scalar response.
-    float log_range = log(1.0 + valid_angle_measure / DIFFRACTION_ANGULAR_FLOOR);
-    float bend = DIFFRACTION_ANGULAR_FLOOR
-        * (exp(randomFloat(random_state) * log_range) - 1.0);
+    // Invert the integral of the regularized leading cone response,
+    // 1/sqrt(bend^2 + floor^2), to reduce continuation weight variation.
+    float scaled_range = valid_angle_measure / DIFFRACTION_ANGULAR_FLOOR;
+    float log_range = log(scaled_range + sqrt(1.0 + scaled_range * scaled_range));
+    float exponential = exp(randomFloat(random_state) * log_range);
+    float bend = 0.5 * DIFFRACTION_ANGULAR_FLOOR * (exponential - 1.0 / exponential);
     float angle = angle_start < 0.0 ? -bend : bend;
-    float pdf = 1.0 / ((bend + DIFFRACTION_ANGULAR_FLOOR) * log_range);
+    float pdf = 1.0 / (sqrt(bend * bend
+        + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR) * log_range);
     vec3 sampled_perpendicular = normalizeOrZero(
         rotateAroundAxis(incoming_perpendicular, edge.edge_dir, angle)
     );
