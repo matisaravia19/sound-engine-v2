@@ -85,7 +85,14 @@ mod tests {
             assert!(count > 0 && next + count <= total);
             next += count;
             stages += 1;
-            budget.observe(count, if stages % 2 == 0 { 1.0 } else { 50.0 });
+            budget.observe(
+                count,
+                if stages % 2 == 0 {
+                    1.0
+                } else {
+                    50.0
+                },
+            );
         }
         assert_eq!(next, total);
         assert!(stages <= 16);

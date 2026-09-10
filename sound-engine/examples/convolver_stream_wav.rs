@@ -19,7 +19,9 @@ const PREFILL_BLOCKS: usize = 8;
 const MAX_QUEUED_BLOCKS: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let input_path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_INPUT.to_string());
+    let input_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_INPUT.to_string());
 
     let (input_samples, sample_rate) = read_mono_wav_as_f32(&input_path)?;
     if input_samples.is_empty() {
@@ -54,12 +56,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let producer_queue = queue.clone();
     let producer_done_flag = producer_done.clone();
-    let producer = thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let result = run_convolver_producer(input_samples, sample_rate, producer_queue.clone());
-        producer_done_flag.store(true, Ordering::Release);
-        producer_queue.notify_all();
-        result
-    });
+    let producer = thread::spawn(
+        move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let result = run_convolver_producer(input_samples, sample_rate, producer_queue.clone());
+            producer_done_flag.store(true, Ordering::Release);
+            producer_queue.notify_all();
+            result
+        },
+    );
 
     queue.wait_until_len_or_done(PREFILL_BLOCKS * BLOCK_SIZE * 2, &producer_done);
     if producer_done.load(Ordering::Acquire) && queue.is_empty() {
@@ -118,7 +122,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None,
         )?,
         other => {
-            return Err(std::io::Error::other(format!("Unsupported output sample format: {other:?}")).into());
+            return Err(std::io::Error::other(format!(
+                "Unsupported output sample format: {other:?}"
+            ))
+            .into());
         }
     };
 
@@ -147,10 +154,22 @@ fn run_convolver_producer(
     let backend = Arc::new(VkBackend::new()?);
     let convolver = PartitionedConvolver::new(
         backend,
-        engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Stereo),
+        engine_config(
+            sample_rate,
+            BLOCK_SIZE,
+            ir.len() as u32,
+            OutputChannels::Stereo,
+        ),
     )?;
     let impulse_response = convolver.create_impulse_response(&ir)?;
-    let mut voice = Voice::new(1, 0, 1.0, impulse_response, convolver.tail_size(), convolver.fft_size());
+    let mut voice = Voice::new(
+        1,
+        0,
+        1.0,
+        impulse_response,
+        convolver.tail_size(),
+        convolver.fft_size(),
+    );
 
     let block_size = BLOCK_SIZE;
     let mut input_block = vec![0.0f32; block_size];
@@ -269,11 +288,16 @@ impl SampleQueue {
     }
 
     fn is_empty(&self) -> bool {
-        self.samples.lock().expect("sample queue lock poisoned").is_empty()
+        self.samples
+            .lock()
+            .expect("sample queue lock poisoned")
+            .is_empty()
     }
 }
 
-fn read_mono_wav_as_f32(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error + Send + Sync>> {
+fn read_mono_wav_as_f32(
+    path: &str,
+) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error + Send + Sync>> {
     let mut reader = WavReader::open(path)?;
     let spec = reader.spec();
     if spec.channels != 1 {
@@ -420,6 +444,8 @@ fn engine_config(
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size },
+        auralization: AuralizationConfig {
+            block_size,
+        },
     }
 }

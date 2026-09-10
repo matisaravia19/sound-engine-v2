@@ -16,7 +16,10 @@ pub fn empty_scene() -> SceneDescription {
 /// Builds an X=0 reflector extending 80 m in each tangential direction.
 pub fn single_plane_scene(absorption: f32) -> SceneDescription {
     let extent = 80.0;
-    scene_from_walls(vec![quad_x(0.0, -extent, extent, -extent, extent)], absorption)
+    scene_from_walls(
+        vec![quad_x(0.0, -extent, extent, -extent, extent)],
+        absorption,
+    )
 }
 
 /// Builds two parallel X planes for image-source reflection checks.
@@ -120,17 +123,32 @@ pub fn scene_from_walls(walls: Vec<Vec<Vec3>>, absorption: f32) -> SceneDescript
 
 /// Triangulates an axis-aligned rectangle at constant X.
 pub fn quad_x(x: f32, y0: f32, y1: f32, z0: f32, z1: f32) -> Vec<Vec3> {
-    quad(vec3(x, y0, z0), vec3(x, y1, z0), vec3(x, y1, z1), vec3(x, y0, z1))
+    quad(
+        vec3(x, y0, z0),
+        vec3(x, y1, z0),
+        vec3(x, y1, z1),
+        vec3(x, y0, z1),
+    )
 }
 
 /// Triangulates an axis-aligned rectangle at constant Y.
 pub fn quad_y(y: f32, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<Vec3> {
-    quad(vec3(x0, y, z0), vec3(x1, y, z0), vec3(x1, y, z1), vec3(x0, y, z1))
+    quad(
+        vec3(x0, y, z0),
+        vec3(x1, y, z0),
+        vec3(x1, y, z1),
+        vec3(x0, y, z1),
+    )
 }
 
 /// Triangulates an axis-aligned rectangle at constant Z.
 pub fn quad_z(z: f32, x0: f32, x1: f32, y0: f32, y1: f32) -> Vec<Vec3> {
-    quad(vec3(x0, y0, z), vec3(x1, y0, z), vec3(x1, y1, z), vec3(x0, y1, z))
+    quad(
+        vec3(x0, y0, z),
+        vec3(x1, y0, z),
+        vec3(x1, y1, z),
+        vec3(x0, y1, z),
+    )
 }
 
 /// Triangulates an ordered quadrilateral with a shared diagonal.

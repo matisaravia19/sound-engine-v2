@@ -79,7 +79,11 @@ impl ShaderLibrary {
     /// The returned ID remains valid until the shader library is dropped.
     /// Bundled engine shaders must match the sources used to build this host
     /// executable; rebuild after editing GLSL, including shared include files.
-    pub fn load_glsl_file<P: AsRef<Path>>(&self, stage: ShaderStage, path: P) -> SoundResult<ShaderId> {
+    pub fn load_glsl_file<P: AsRef<Path>>(
+        &self,
+        stage: ShaderStage,
+        path: P,
+    ) -> SoundResult<ShaderId> {
         let source_path = path.as_ref().to_path_buf();
         validate_bundled_shader_sources(&source_path)?;
         if !source_path.exists() {
@@ -89,9 +93,13 @@ impl ShaderLibrary {
             )));
         }
 
-        let spirv_words = compile_glsl_file_to_spirv_words(&source_path, stage, SHADER_ENTRY_POINT)?;
+        let spirv_words =
+            compile_glsl_file_to_spirv_words(&source_path, stage, SHADER_ENTRY_POINT)?;
         let module = create_shader_module(&self.device_context.device, &spirv_words)?;
-        let record = ShaderRecord { module, stage };
+        let record = ShaderRecord {
+            module,
+            stage,
+        };
 
         let mut shaders = self
             .shaders
@@ -140,9 +148,11 @@ fn validate_bundled_shader_sources(source_path: &Path) -> SoundResult<()> {
     let bundled = BUNDLED_SHADER_SOURCES.iter().any(|(relative, _)| {
         let expected = root.join(relative);
         source_path == expected
-            || requested
-                .as_ref()
-                .is_some_and(|path| expected.canonicalize().is_ok_and(|canonical| path == &canonical))
+            || requested.as_ref().is_some_and(|path| {
+                expected
+                    .canonicalize()
+                    .is_ok_and(|canonical| path == &canonical)
+            })
     });
     if bundled {
         // Validate includes as well as entry points. This is setup I/O, outside
@@ -177,7 +187,10 @@ mod source_tests {
 
     #[test]
     fn edited_or_missing_shader_is_rejected_before_compilation() {
-        let path = std::env::temp_dir().join(format!("sound_engine_shader_guard_{}.glsl", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "sound_engine_shader_guard_{}.glsl",
+            std::process::id()
+        ));
         let expected = "layout(offset = 100) uint source_surface_paths;\n";
         fs::write(&path, expected).unwrap();
         assert!(verify_shader_source(&path, expected).is_ok());
@@ -201,7 +214,8 @@ mod source_tests {
                 .any(|(path, _)| path.ends_with("/utd_two_edges.glsl"))
         );
         validate_bundled_shader_sources(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/acoustics/shaders/listener_utd_two_edges.rgen.glsl"),
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/acoustics/shaders/listener_utd_two_edges.rgen.glsl"),
         )
         .unwrap();
     }
@@ -216,13 +230,18 @@ impl Drop for ShaderLibrary {
 
         unsafe {
             for (_, shader) in shaders.drain() {
-                self.device_context.device.destroy_shader_module(shader.module, None);
+                self.device_context
+                    .device
+                    .destroy_shader_module(shader.module, None);
             }
         }
     }
 }
 
-fn create_shader_module(device: &ash::Device, spirv_words: &[u32]) -> SoundResult<vk::ShaderModule> {
+fn create_shader_module(
+    device: &ash::Device,
+    spirv_words: &[u32],
+) -> SoundResult<vk::ShaderModule> {
     if spirv_words.is_empty() {
         return Err(SoundError::shader_compile_failed("SPIR-V module is empty"));
     }
@@ -232,7 +251,11 @@ fn create_shader_module(device: &ash::Device, spirv_words: &[u32]) -> SoundResul
     Ok(module)
 }
 
-fn compile_glsl_file_to_spirv_words(source_path: &Path, stage: ShaderStage, entry: &str) -> SoundResult<Vec<u32>> {
+fn compile_glsl_file_to_spirv_words(
+    source_path: &Path,
+    stage: ShaderStage,
+    entry: &str,
+) -> SoundResult<Vec<u32>> {
     let temp_dir = std::env::temp_dir();
     let unique_tag = format!(
         "{}_{}",

@@ -43,7 +43,10 @@ fn main() -> SoundResult<()> {
 
     for (sample_idx, sample) in ir.samples.iter().enumerate() {
         if sample.left != 0.0 || sample.right != 0.0 {
-            println!("  sample {}: left={}, right={}", sample_idx, sample.left, sample.right);
+            println!(
+                "  sample {}: left={}, right={}",
+                sample_idx, sample.left, sample.right
+            );
         }
     }
 
@@ -54,7 +57,12 @@ fn main() -> SoundResult<()> {
     Ok(())
 }
 
-fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
+fn engine_config(
+    sample_rate: u32,
+    ir_num_samples: u32,
+    listener_ray_count: u32,
+    max_bounces: u32,
+) -> EngineConfig {
     EngineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Stereo,
@@ -70,7 +78,9 @@ fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32,
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     }
 }
 
@@ -78,7 +88,11 @@ fn smoke_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: vec![vec3(-0.5, -0.5, -1.0), vec3(0.5, -0.5, -1.0), vec3(0.0, 0.5, -1.0)],
+            vertices: vec![
+                vec3(-0.5, -0.5, -1.0),
+                vec3(0.5, -0.5, -1.0),
+                vec3(0.0, 0.5, -1.0),
+            ],
             indices: Vec::new(),
             opaque: true,
         }],

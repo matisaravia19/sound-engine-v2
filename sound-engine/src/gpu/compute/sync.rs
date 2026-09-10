@@ -194,7 +194,11 @@ impl BufferBarrierSpec {
 
 impl ComputeContext {
     /// Records a memory barrier into an already recording compute command buffer.
-    pub fn record_memory_barrier(&self, command_buffer: vk::CommandBuffer, spec: &MemoryBarrierSpec) {
+    pub fn record_memory_barrier(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        spec: &MemoryBarrierSpec,
+    ) {
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(spec.src_access)
             .dst_access_mask(spec.dst_access);
@@ -213,7 +217,11 @@ impl ComputeContext {
     }
 
     /// Records a buffer barrier into an already recording compute command buffer.
-    pub fn record_buffer_barrier(&self, command_buffer: vk::CommandBuffer, spec: &BufferBarrierSpec) {
+    pub fn record_buffer_barrier(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        spec: &BufferBarrierSpec,
+    ) {
         let barrier = vk::BufferMemoryBarrier::default()
             .src_access_mask(spec.src_access)
             .dst_access_mask(spec.dst_access)

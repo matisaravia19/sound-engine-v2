@@ -30,7 +30,8 @@ pub struct ComputeContext {
     in_flight: Mutex<HashMap<u64, InFlightSubmission>>,
     queue: RwLock<QueueSet>,
     available_command_buffers: Mutex<Vec<vk::CommandBuffer>>,
-    descriptor_sets_by_command_buffer: Mutex<HashMap<vk::CommandBuffer, Vec<DescriptorSetAllocation>>>,
+    descriptor_sets_by_command_buffer:
+        Mutex<HashMap<vk::CommandBuffer, Vec<DescriptorSetAllocation>>>,
     pipelines: Mutex<HashMap<PipelineId, ComputePipeline>>,
 }
 
@@ -76,7 +77,11 @@ impl ComputeContext {
             .command_pool(compute_queue.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(COMMAND_BUFFER_POOL_SIZE);
-        let preallocated_command_buffers = unsafe { device_context.device.allocate_command_buffers(&alloc_info)? };
+        let preallocated_command_buffers = unsafe {
+            device_context
+                .device
+                .allocate_command_buffers(&alloc_info)?
+        };
 
         Ok(Self {
             device_context,
@@ -124,7 +129,10 @@ impl ComputeContext {
 
         if let Ok(queue) = self.queue.write() {
             unsafe {
-                self.device_context.device.queue_wait_idle(queue.handle).ok();
+                self.device_context
+                    .device
+                    .queue_wait_idle(queue.handle)
+                    .ok();
                 self.device_context
                     .device
                     .destroy_command_pool(queue.command_pool, None);
@@ -139,10 +147,14 @@ impl ComputeContext {
             unsafe {
                 for (_, pipeline) in pipelines.drain() {
                     for pool in &pipeline.descriptor_pools {
-                        self.device_context.device.destroy_descriptor_pool(*pool, None);
+                        self.device_context
+                            .device
+                            .destroy_descriptor_pool(*pool, None);
                     }
 
-                    self.device_context.device.destroy_pipeline(pipeline.handle, None);
+                    self.device_context
+                        .device
+                        .destroy_pipeline(pipeline.handle, None);
                     self.device_context
                         .device
                         .destroy_pipeline_layout(pipeline.layout, None);
@@ -195,7 +207,9 @@ impl Drop for ComputeContext {
         self.wait_for_all()
             .expect("Failed to wait for compute context to be idle during drop");
 
-        self.drop_pipelines().expect("Failed to drop compute pipelines");
-        self.drop_command_pool().expect("Failed to drop compute command pool");
+        self.drop_pipelines()
+            .expect("Failed to drop compute pipelines");
+        self.drop_command_pool()
+            .expect("Failed to drop compute command pool");
     }
 }

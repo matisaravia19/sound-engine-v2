@@ -52,7 +52,10 @@ pub struct PushConstantSpec {
 impl PushConstantSpec {
     /// Creates a push-constant range.
     pub fn new(offset: u32, size: u32) -> Self {
-        Self { offset, size }
+        Self {
+            offset,
+            size,
+        }
     }
 }
 
@@ -71,7 +74,8 @@ impl ComputeContext {
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
 
         // Pipeline layout is built from exactly one descriptor set layout for now.
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
+        let descriptor_set_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
         let descriptor_set_layout = unsafe {
             self.device_context
                 .device
@@ -81,7 +85,11 @@ impl ComputeContext {
         let layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&descriptor_set_layout))
             .push_constant_ranges(&push_constant_ranges);
-        let layout = unsafe { self.device_context.device.create_pipeline_layout(&layout_info, None)? };
+        let layout = unsafe {
+            self.device_context
+                .device
+                .create_pipeline_layout(&layout_info, None)?
+        };
 
         let entry = CString::new(SHADER_ENTRY_POINT)?;
         let stage_info = vk::PipelineShaderStageCreateInfo::default()
@@ -96,7 +104,11 @@ impl ComputeContext {
         let pipeline = unsafe {
             self.device_context
                 .device
-                .create_compute_pipelines(vk::PipelineCache::null(), std::slice::from_ref(&compute_info), None)
+                .create_compute_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&compute_info),
+                    None,
+                )
                 .map_err(|(_, err)| err)?[0]
         };
 
@@ -125,10 +137,15 @@ impl ComputeContext {
 }
 
 /// Aggregates descriptor counts by type for descriptor-pool creation.
-pub(super) fn aggregate_pool_sizes(bindings: &[vk::DescriptorSetLayoutBinding<'_>]) -> Vec<vk::DescriptorPoolSize> {
+pub(super) fn aggregate_pool_sizes(
+    bindings: &[vk::DescriptorSetLayoutBinding<'_>],
+) -> Vec<vk::DescriptorPoolSize> {
     let mut pool_sizes = Vec::<vk::DescriptorPoolSize>::new();
     for binding in bindings {
-        if let Some(existing) = pool_sizes.iter_mut().find(|entry| entry.ty == binding.descriptor_type) {
+        if let Some(existing) = pool_sizes
+            .iter_mut()
+            .find(|entry| entry.ty == binding.descriptor_type)
+        {
             existing.descriptor_count += binding.descriptor_count;
         } else {
             pool_sizes.push(
@@ -141,7 +158,9 @@ pub(super) fn aggregate_pool_sizes(bindings: &[vk::DescriptorSetLayoutBinding<'_
     pool_sizes
 }
 
-fn build_vk_descriptor_bindings(specs: &[DescriptorBindingSpec]) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+fn build_vk_descriptor_bindings(
+    specs: &[DescriptorBindingSpec],
+) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     let mut bindings = Vec::with_capacity(specs.len());
     for spec in specs {
         match spec {

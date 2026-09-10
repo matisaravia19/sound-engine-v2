@@ -98,7 +98,9 @@ pub struct RtPushConstantSpec {
 impl RtShaderStageSpec {
     /// Creates a shader stage spec from an existing shader ID.
     pub fn new(shader_id: ShaderId) -> Self {
-        Self { shader_id }
+        Self {
+            shader_id,
+        }
     }
 }
 
@@ -137,7 +139,9 @@ impl RtContext {
     /// Creates a ray tracing pipeline and its shader binding table.
     pub fn create_pipeline(&self, spec: RtPipelineSpec) -> SoundResult<RtPipelineId> {
         if spec.shaders.is_empty() {
-            return Err(SoundError::invalid_argument("RT pipeline requires at least one shader"));
+            return Err(SoundError::invalid_argument(
+                "RT pipeline requires at least one shader",
+            ));
         }
 
         if spec.groups.is_empty() {
@@ -154,12 +158,17 @@ impl RtContext {
             .collect::<SoundResult<Vec<_>>>()?;
         validate_groups(&stages, &spec.groups)?;
 
-        let groups = spec.groups.iter().map(build_shader_group).collect::<Vec<_>>();
+        let groups = spec
+            .groups
+            .iter()
+            .map(build_shader_group)
+            .collect::<Vec<_>>();
         let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
 
         // RT pipelines use one descriptor set layout for now, matching compute.
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
+        let descriptor_set_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
         let descriptor_set_layout = unsafe {
             self.device_context
                 .device
@@ -169,7 +178,11 @@ impl RtContext {
         let layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&descriptor_set_layout))
             .push_constant_ranges(&push_constant_ranges);
-        let layout = unsafe { self.device_context.device.create_pipeline_layout(&layout_info, None)? };
+        let layout = unsafe {
+            self.device_context
+                .device
+                .create_pipeline_layout(&layout_info, None)?
+        };
 
         let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::default()
             .stages(&stages)
@@ -254,12 +267,14 @@ impl RtContext {
         let total_size = region_size * groups.len();
 
         let handles = unsafe {
-            device.ray_tracing_pipeline.get_ray_tracing_shader_group_handles(
-                pipeline,
-                0,
-                group_count,
-                handle_size * groups.len(),
-            )?
+            device
+                .ray_tracing_pipeline
+                .get_ray_tracing_shader_group_handles(
+                    pipeline,
+                    0,
+                    group_count,
+                    handle_size * groups.len(),
+                )?
         };
 
         // Each group handle is copied into a base-aligned record slot.
@@ -308,7 +323,10 @@ fn region_for(
     let Some(start) = start else {
         return vk::StridedDeviceAddressRegionKHR::default();
     };
-    let count = groups[start..].iter().take_while(|group| group.kind() == kind).count();
+    let count = groups[start..]
+        .iter()
+        .take_while(|group| group.kind() == kind)
+        .count();
 
     vk::StridedDeviceAddressRegionKHR {
         device_address: base_address + (start * region_size) as vk::DeviceAddress,
@@ -320,26 +338,44 @@ fn region_for(
 impl RtShaderGroupSpec {
     fn kind(self) -> RtGroupKind {
         match self {
-            Self::Raygen { .. } => RtGroupKind::Raygen,
-            Self::Miss { .. } => RtGroupKind::Miss,
-            Self::TrianglesHit { .. } => RtGroupKind::Hit,
-            Self::ProceduralHit { .. } => RtGroupKind::Hit,
-            Self::Callable { .. } => RtGroupKind::Callable,
+            Self::Raygen {
+                ..
+            } => RtGroupKind::Raygen,
+            Self::Miss {
+                ..
+            } => RtGroupKind::Miss,
+            Self::TrianglesHit {
+                ..
+            } => RtGroupKind::Hit,
+            Self::ProceduralHit {
+                ..
+            } => RtGroupKind::Hit,
+            Self::Callable {
+                ..
+            } => RtGroupKind::Callable,
         }
     }
 }
 
 fn build_shader_group(spec: &RtShaderGroupSpec) -> vk::RayTracingShaderGroupCreateInfoKHR<'static> {
     match *spec {
-        RtShaderGroupSpec::Raygen { shader: general_shader }
-        | RtShaderGroupSpec::Miss { shader: general_shader }
-        | RtShaderGroupSpec::Callable { shader: general_shader } => vk::RayTracingShaderGroupCreateInfoKHR::default()
+        RtShaderGroupSpec::Raygen {
+            shader: general_shader,
+        }
+        | RtShaderGroupSpec::Miss {
+            shader: general_shader,
+        }
+        | RtShaderGroupSpec::Callable {
+            shader: general_shader,
+        } => vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
             .general_shader(general_shader)
             .closest_hit_shader(vk::SHADER_UNUSED_KHR)
             .any_hit_shader(vk::SHADER_UNUSED_KHR)
             .intersection_shader(vk::SHADER_UNUSED_KHR),
-        RtShaderGroupSpec::TrianglesHit { closest_hit_shader } => vk::RayTracingShaderGroupCreateInfoKHR::default()
+        RtShaderGroupSpec::TrianglesHit {
+            closest_hit_shader,
+        } => vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
             .general_shader(vk::SHADER_UNUSED_KHR)
             .closest_hit_shader(closest_hit_shader)
@@ -357,7 +393,9 @@ fn build_shader_group(spec: &RtShaderGroupSpec) -> vk::RayTracingShaderGroupCrea
     }
 }
 
-fn build_vk_descriptor_bindings(specs: &[RtDescriptorBindingSpec]) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+fn build_vk_descriptor_bindings(
+    specs: &[RtDescriptorBindingSpec],
+) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     specs
         .iter()
         .map(|spec| match *spec {
@@ -395,25 +433,42 @@ fn build_vk_push_constant_ranges(specs: &[RtPushConstantSpec]) -> Vec<vk::PushCo
         .collect()
 }
 
-fn validate_groups(stages: &[vk::PipelineShaderStageCreateInfo<'_>], groups: &[RtShaderGroupSpec]) -> SoundResult<()> {
+fn validate_groups(
+    stages: &[vk::PipelineShaderStageCreateInfo<'_>],
+    groups: &[RtShaderGroupSpec],
+) -> SoundResult<()> {
     for group in groups {
         match *group {
-            RtShaderGroupSpec::Raygen { shader } => {
-                validate_group_stage(stages, shader, vk::ShaderStageFlags::RAYGEN_KHR)?
-            }
-            RtShaderGroupSpec::Miss { shader } => validate_group_stage(stages, shader, vk::ShaderStageFlags::MISS_KHR)?,
-            RtShaderGroupSpec::Callable { shader } => {
-                validate_group_stage(stages, shader, vk::ShaderStageFlags::CALLABLE_KHR)?
-            }
-            RtShaderGroupSpec::TrianglesHit { closest_hit_shader } => {
-                validate_group_stage(stages, closest_hit_shader, vk::ShaderStageFlags::CLOSEST_HIT_KHR)?
-            }
+            RtShaderGroupSpec::Raygen {
+                shader,
+            } => validate_group_stage(stages, shader, vk::ShaderStageFlags::RAYGEN_KHR)?,
+            RtShaderGroupSpec::Miss {
+                shader,
+            } => validate_group_stage(stages, shader, vk::ShaderStageFlags::MISS_KHR)?,
+            RtShaderGroupSpec::Callable {
+                shader,
+            } => validate_group_stage(stages, shader, vk::ShaderStageFlags::CALLABLE_KHR)?,
+            RtShaderGroupSpec::TrianglesHit {
+                closest_hit_shader,
+            } => validate_group_stage(
+                stages,
+                closest_hit_shader,
+                vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            )?,
             RtShaderGroupSpec::ProceduralHit {
                 closest_hit_shader,
                 intersection_shader,
             } => {
-                validate_group_stage(stages, closest_hit_shader, vk::ShaderStageFlags::CLOSEST_HIT_KHR)?;
-                validate_group_stage(stages, intersection_shader, vk::ShaderStageFlags::INTERSECTION_KHR)?;
+                validate_group_stage(
+                    stages,
+                    closest_hit_shader,
+                    vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                )?;
+                validate_group_stage(
+                    stages,
+                    intersection_shader,
+                    vk::ShaderStageFlags::INTERSECTION_KHR,
+                )?;
             }
         }
     }
@@ -426,7 +481,9 @@ fn validate_group_stage(
     expected: vk::ShaderStageFlags,
 ) -> SoundResult<()> {
     let stage = stages.get(index as usize).ok_or_else(|| {
-        SoundError::invalid_argument(format!("RT shader group references invalid shader index {index}"))
+        SoundError::invalid_argument(format!(
+            "RT shader group references invalid shader index {index}"
+        ))
     })?;
     if stage.stage != expected {
         return Err(SoundError::invalid_argument(format!(

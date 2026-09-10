@@ -45,7 +45,9 @@ fn main() -> SoundResult<()> {
         synced.instance_count()
     );
     if synced.instance_count() != 1 {
-        return Err(SoundError::invalid_state("Expected one active instance after removal"));
+        return Err(SoundError::invalid_state(
+            "Expected one active instance after removal",
+        ));
     }
 
     Ok(())
@@ -55,7 +57,11 @@ fn two_triangle_scene() -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: vec![vec3(-0.5, -0.5, 0.0), vec3(0.5, -0.5, 0.0), vec3(0.0, 0.5, 0.0)],
+            vertices: vec![
+                vec3(-0.5, -0.5, 0.0),
+                vec3(0.5, -0.5, 0.0),
+                vec3(0.0, 0.5, 0.0),
+            ],
             indices: Vec::new(),
             opaque: true,
         }],

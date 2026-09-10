@@ -1,6 +1,6 @@
 use crate::acoustics::{
-    AcousticPipeline, AcousticQuery, ExperimentalUtdPipeline, GpuIrSnapshot, IrCache, IrCacheConfig, IrCacheQuery,
-    IrSnapshot,
+    AcousticPipeline, AcousticQuery, ExperimentalUtdPipeline, GpuIrSnapshot, IrCache,
+    IrCacheConfig, IrCacheQuery, IrSnapshot,
 };
 use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
 use crate::core::error::{SoundError, SoundResult};
@@ -55,7 +55,11 @@ impl Pipeline {
     }
 
     /// Downloads an already synthesized snapshot without tracing again.
-    fn download_gpu_ir(&self, gpu: &VkBackend, snapshot: &GpuIrSnapshot) -> SoundResult<IrSnapshot> {
+    fn download_gpu_ir(
+        &self,
+        gpu: &VkBackend,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<IrSnapshot> {
         match self {
             Self::Cosine(p) => p.download_gpu_ir(gpu, snapshot),
             Self::Utd(p) => p.download_gpu_ir(gpu, snapshot),
@@ -132,7 +136,11 @@ impl AcousticsEngine {
     }
 
     /// Creates an engine whose cache and playback snapshots use the chosen model.
-    pub fn with_model(gpu: &VkBackend, config: EngineConfig, model: AcousticModel) -> SoundResult<Self> {
+    pub fn with_model(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        model: AcousticModel,
+    ) -> SoundResult<Self> {
         let pipeline = match model {
             AcousticModel::Cosine => Pipeline::Cosine(AcousticPipeline::new(gpu, config)?),
             AcousticModel::Utd {
@@ -142,7 +150,9 @@ impl AcousticsEngine {
                 band_count,
                 surface_two_edge_paths,
             } => {
-                if surface_two_edge_paths && (diffraction_orders != 2 || config.acoustics.max_bounces < 3) {
+                if surface_two_edge_paths
+                    && (diffraction_orders != 2 || config.acoustics.max_bounces < 3)
+                {
                     return Err(crate::core::error::SoundError::invalid_argument(
                         "surface/two-edge paths require two edge orders and at least three interactions",
                     ));
@@ -207,7 +217,9 @@ impl AcousticsEngine {
         loop {
             match progress {
                 GpuIrProgress::Ready(snapshot) => return Ok(snapshot),
-                GpuIrProgress::Pending(pending) => progress = self.advance_impulse_response_gpu(gpu, pending)?,
+                GpuIrProgress::Pending(pending) => {
+                    progress = self.advance_impulse_response_gpu(gpu, pending)?
+                }
             }
         }
     }
@@ -266,7 +278,9 @@ impl AcousticsEngine {
             ));
         }
         let Pipeline::Utd(pipeline) = &mut self.pipeline else {
-            return Err(SoundError::invalid_state("pending bands require the UTD pipeline"));
+            return Err(SoundError::invalid_state(
+                "pending bands require the UTD pipeline",
+            ));
         };
         let query = AcousticQuery {
             query_id: pending.query.query_id,
@@ -292,7 +306,11 @@ impl AcousticsEngine {
 }
 
 /// Builds the impulse-response cache key for the current acoustic endpoints.
-fn cache_query(scene_version: SceneVersion, source: PointSource, listener: ListenerPose) -> IrCacheQuery {
+fn cache_query(
+    scene_version: SceneVersion,
+    source: PointSource,
+    listener: ListenerPose,
+) -> IrCacheQuery {
     IrCacheQuery {
         scene_version,
         query_id: 0,
@@ -314,7 +332,9 @@ pub(crate) fn validate_source(source: PointSource) -> SoundResult<()> {
         ));
     }
     if !source.position.is_finite() {
-        return Err(SoundError::invalid_argument("source position must be finite"));
+        return Err(SoundError::invalid_argument(
+            "source position must be finite",
+        ));
     }
     Ok(())
 }
@@ -322,7 +342,9 @@ pub(crate) fn validate_source(source: PointSource) -> SoundResult<()> {
 /// Validates and orthonormalizes listener parameters before acoustic queries.
 pub(crate) fn canonicalize_listener(listener: ListenerPose) -> SoundResult<ListenerPose> {
     if !listener.position.is_finite() {
-        return Err(SoundError::invalid_argument("listener position must be finite"));
+        return Err(SoundError::invalid_argument(
+            "listener position must be finite",
+        ));
     }
     if !listener.forward.is_finite() || !listener.up.is_finite() {
         return Err(SoundError::invalid_argument(

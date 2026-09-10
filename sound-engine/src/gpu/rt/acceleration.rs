@@ -54,11 +54,11 @@ impl RtContext {
             .max_vertex(spec.mesh.vertex_count.saturating_sub(1));
 
         let primitive_count = if let Some(index_buffer) = &spec.mesh.index_buffer {
-            triangles = triangles
-                .index_type(vk::IndexType::UINT32)
-                .index_data(vk::DeviceOrHostAddressConstKHR {
+            triangles = triangles.index_type(vk::IndexType::UINT32).index_data(
+                vk::DeviceOrHostAddressConstKHR {
                     device_address: self.memory.buffer_device_address(index_buffer),
-                });
+                },
+            );
             spec.mesh.index_count / 3
         } else {
             triangles = triangles.index_type(vk::IndexType::NONE_KHR);
@@ -74,12 +74,15 @@ impl RtContext {
         // BLAS v1 supports triangle geometry only.
         let mut geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-            .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                triangles,
+            });
         if spec.mesh.opaque {
             geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
         }
 
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
+        let range =
+            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
         let handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             spec.flags,
@@ -117,13 +120,16 @@ impl RtContext {
 
         let mut geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::AABBS)
-            .geometry(vk::AccelerationStructureGeometryDataKHR { aabbs });
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                aabbs,
+            });
         if spec.aabbs.opaque {
             geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
         }
 
         let primitive_count = spec.aabbs.primitive_count;
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
+        let range =
+            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
         let handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             spec.flags,
@@ -160,8 +166,10 @@ impl RtContext {
             std::mem::size_of_val(instances.as_slice()) as vk::DeviceSize,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         )?;
-        self.memory
-            .write_mapped_bytes(&instance_buffer, acceleration_instances_as_bytes(instances.as_slice()))?;
+        self.memory.write_mapped_bytes(
+            &instance_buffer,
+            acceleration_instances_as_bytes(instances.as_slice()),
+        )?;
         let instance_address = self.memory.buffer_device_address(&instance_buffer);
 
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::default()
@@ -175,7 +183,8 @@ impl RtContext {
                 instances: instances_data,
             });
         let primitive_count = instances.len() as u32;
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
+        let range =
+            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
 
         let handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
@@ -194,9 +203,9 @@ impl RtContext {
         // collide when removals leave gaps.
         let mut raw_id = 0_u32;
         while tlas.contains_key(&TlasId(raw_id)) {
-            raw_id = raw_id
-                .checked_add(1)
-                .ok_or_else(|| SoundError::resource_allocation_failed("RT TLAS id space exhausted"))?;
+            raw_id = raw_id.checked_add(1).ok_or_else(|| {
+                SoundError::resource_allocation_failed("RT TLAS id space exhausted")
+            })?;
         }
         let id = TlasId(raw_id);
         tlas.insert(id, handle);
@@ -246,11 +255,11 @@ impl RtContext {
                 );
         }
 
-        let scratch_alignment = self
-            .device_context
-            .rt_properties
-            .acceleration_structure
-            .min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize;
+        let scratch_alignment =
+            self.device_context
+                .rt_properties
+                .acceleration_structure
+                .min_acceleration_structure_scratch_offset_alignment as vk::DeviceSize;
         if scratch_alignment == 0 || !scratch_alignment.is_power_of_two() {
             return Err(SoundError::invalid_state(format!(
                 "Invalid acceleration-structure scratch alignment {scratch_alignment}"
@@ -259,7 +268,9 @@ impl RtContext {
         let scratch_allocation_size = size_info
             .build_scratch_size
             .checked_add(scratch_alignment - 1)
-            .ok_or_else(|| SoundError::resource_allocation_failed("RT scratch buffer size overflow"))?;
+            .ok_or_else(|| {
+                SoundError::resource_allocation_failed("RT scratch buffer size overflow")
+            })?;
 
         // The AS object is backed by a buffer owned by the returned handle.
         let storage = self.memory.create_device_address_buffer(
@@ -271,11 +282,17 @@ impl RtContext {
         // stricter acceleration-structure scratch alignment. Reserve padding
         // and point Vulkan at an aligned address inside the allocation.
         // Scratch is temporary; the synchronous build below finishes before it drops.
-        let scratch = self
-            .memory
-            .create_device_address_buffer(scratch_allocation_size, vk::BufferUsageFlags::STORAGE_BUFFER)?;
-        let scratch_address = align_device_address(self.memory.buffer_device_address(&scratch), scratch_alignment)
-            .ok_or_else(|| SoundError::invalid_state("Acceleration-structure scratch address overflow"))?;
+        let scratch = self.memory.create_device_address_buffer(
+            scratch_allocation_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?;
+        let scratch_address = align_device_address(
+            self.memory.buffer_device_address(&scratch),
+            scratch_alignment,
+        )
+        .ok_or_else(|| {
+            SoundError::invalid_state("Acceleration-structure scratch address overflow")
+        })?;
 
         let create_info = vk::AccelerationStructureCreateInfoKHR::default()
             .buffer(storage.buffer)
@@ -286,19 +303,26 @@ impl RtContext {
                 .acceleration_structure
                 .create_acceleration_structure(&create_info, None)?
         };
-        let build_info = build_info
-            .dst_acceleration_structure(handle)
-            .scratch_data(vk::DeviceOrHostAddressKHR {
+        let build_info = build_info.dst_acceleration_structure(handle).scratch_data(
+            vk::DeviceOrHostAddressKHR {
                 device_address: scratch_address,
-            });
+            },
+        );
 
-        if let Err(error) = self.compute.submit_compute_and_wait(|command_buffer| unsafe {
-            self.device_context
-                .acceleration_structure
-                .cmd_build_acceleration_structures(command_buffer, std::slice::from_ref(&build_info), &[ranges]);
+        if let Err(error) = self
+            .compute
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                self.device_context
+                    .acceleration_structure
+                    .cmd_build_acceleration_structures(
+                        command_buffer,
+                        std::slice::from_ref(&build_info),
+                        &[ranges],
+                    );
 
-            Ok(())
-        }) {
+                Ok(())
+            })
+        {
             unsafe {
                 self.device_context
                     .acceleration_structure
@@ -307,7 +331,8 @@ impl RtContext {
             return Err(error);
         }
 
-        let address_info = vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle);
+        let address_info =
+            vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle);
         let device_address = unsafe {
             self.device_context
                 .acceleration_structure
@@ -322,7 +347,10 @@ impl RtContext {
         })
     }
 
-    fn resolve_instances(&self, specs: &[RtInstanceSpec]) -> SoundResult<Vec<vk::AccelerationStructureInstanceKHR>> {
+    fn resolve_instances(
+        &self,
+        specs: &[RtInstanceSpec],
+    ) -> SoundResult<Vec<vk::AccelerationStructureInstanceKHR>> {
         let blas = self
             .blas
             .lock()
@@ -331,15 +359,18 @@ impl RtContext {
         specs
             .iter()
             .map(|instance| {
-                let blas_handle = blas
-                    .get(&instance.blas_id)
-                    .ok_or_else(|| SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0)))?;
+                let blas_handle = blas.get(&instance.blas_id).ok_or_else(|| {
+                    SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0))
+                })?;
 
                 Ok(vk::AccelerationStructureInstanceKHR {
                     transform: vk::TransformMatrixKHR {
                         matrix: matrix_to_tlas_transform(instance.transform),
                     },
-                    instance_custom_index_and_mask: vk::Packed24_8::new(instance.custom_index, instance.mask),
+                    instance_custom_index_and_mask: vk::Packed24_8::new(
+                        instance.custom_index,
+                        instance.mask,
+                    ),
                     instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                         instance.sbt_record_offset,
                         0,
@@ -353,11 +384,16 @@ impl RtContext {
     }
 }
 
-fn align_device_address(address: vk::DeviceAddress, alignment: vk::DeviceSize) -> Option<vk::DeviceAddress> {
+fn align_device_address(
+    address: vk::DeviceAddress,
+    alignment: vk::DeviceSize,
+) -> Option<vk::DeviceAddress> {
     if alignment == 0 || !alignment.is_power_of_two() {
         return None;
     }
-    address.checked_add(alignment - 1).map(|value| value & !(alignment - 1))
+    address
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
 }
 
 fn acceleration_instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
@@ -366,7 +402,12 @@ fn acceleration_instances_as_bytes(instances: &[vk::AccelerationStructureInstanc
     //   consumed for TLAS instance builds.
     // - ash represents it as a repr(C)-compatible Vulkan FFI type.
     // - The returned byte slice is only used immediately for copying into mapped memory.
-    unsafe { std::slice::from_raw_parts(instances.as_ptr().cast::<u8>(), std::mem::size_of_val(instances)) }
+    unsafe {
+        std::slice::from_raw_parts(
+            instances.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(instances),
+        )
+    }
 }
 
 // Converts a 4x4 column-major matrix to the 3x4 row-major format required for TLAS instance transforms.

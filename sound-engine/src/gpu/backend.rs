@@ -75,9 +75,12 @@ impl VkBackend {
         // Pick a single compute-capable queue family that can also run RT work.
         let (physical_device, compute_family, rt_properties) =
             Self::select_physical_device_and_compute_family(&instance)?;
-        let device_creation_result = Self::create_device_and_queues(&instance, physical_device, compute_family)?;
-        let acceleration_structure =
-            ash::khr::acceleration_structure::Device::new(&instance, &device_creation_result.device);
+        let device_creation_result =
+            Self::create_device_and_queues(&instance, physical_device, compute_family)?;
+        let acceleration_structure = ash::khr::acceleration_structure::Device::new(
+            &instance,
+            &device_creation_result.device,
+        );
         let ray_tracing_pipeline =
             ash::khr::ray_tracing_pipeline::Device::new(&instance, &device_creation_result.device);
 
@@ -164,13 +167,17 @@ impl VkBackend {
         physical_devices
             .into_iter()
             .filter_map(|physical_device| {
-                let compute_family = Self::find_queue_family(instance, physical_device, vk::QueueFlags::COMPUTE)?;
-                let rt_properties = Self::query_ray_tracing_support(instance, physical_device).ok()?;
+                let compute_family =
+                    Self::find_queue_family(instance, physical_device, vk::QueueFlags::COMPUTE)?;
+                let rt_properties =
+                    Self::query_ray_tracing_support(instance, physical_device).ok()?;
                 let score = Self::score_physical_device(instance, physical_device);
                 Some((score, physical_device, compute_family, rt_properties))
             })
             .max_by_key(|(score, _, _, _)| *score)
-            .map(|(_, physical_device, compute_family, rt_properties)| (physical_device, compute_family, rt_properties))
+            .map(|(_, physical_device, compute_family, rt_properties)| {
+                (physical_device, compute_family, rt_properties)
+            })
             .ok_or_else(|| {
                 SoundError::backend_unavailable(
                     "No Vulkan physical device with compute and KHR ray tracing support was found",
@@ -201,11 +208,13 @@ impl VkBackend {
         let mut buffer_device_address_features =
             vk::PhysicalDeviceBufferDeviceAddressFeatures::default().buffer_device_address(true);
         let mut acceleration_structure_features =
-            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+                .acceleration_structure(true);
         let mut ray_tracing_pipeline_features =
             vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default().ray_tracing_pipeline(true);
         let mut shader_atomic_float_features =
-            vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default().shader_buffer_float32_atomic_add(true);
+            vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+                .shader_buffer_float32_atomic_add(true);
         // Surface hit shaders dereference 64-bit buffer device addresses. The
         // corresponding core feature must be enabled in addition to BDA.
         let core_features = vk::PhysicalDeviceFeatures::default().shader_int64(true);
@@ -241,7 +250,8 @@ impl VkBackend {
         physical_device: vk::PhysicalDevice,
         flags: vk::QueueFlags,
     ) -> Option<u32> {
-        let families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         families
             .iter()
             .enumerate()
@@ -261,7 +271,8 @@ impl VkBackend {
         };
 
         let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-        let device_local_memory_bytes = mem_props.memory_heaps[..mem_props.memory_heap_count as usize]
+        let device_local_memory_bytes = mem_props.memory_heaps
+            [..mem_props.memory_heap_count as usize]
             .iter()
             .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
             .map(|heap| heap.size)
@@ -276,10 +287,14 @@ impl VkBackend {
     ) -> SoundResult<RayTracingProperties> {
         Self::require_device_extensions(instance, physical_device)?;
 
-        let mut buffer_device_address_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
-        let mut acceleration_structure_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
-        let mut ray_tracing_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
-        let mut shader_atomic_float_features = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default();
+        let mut buffer_device_address_features =
+            vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
+        let mut acceleration_structure_features =
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
+        let mut ray_tracing_pipeline_features =
+            vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
+        let mut shader_atomic_float_features =
+            vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default();
         // Query the boolean feature chain separately from property limits.
         let mut features = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut buffer_device_address_features)
@@ -305,8 +320,10 @@ impl VkBackend {
             ));
         }
 
-        let mut acceleration_structure_properties = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
-        let mut ray_tracing_pipeline_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        let mut acceleration_structure_properties =
+            vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+        let mut ray_tracing_pipeline_properties =
+            vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
         // SBT construction later depends on these alignment properties.
         let mut properties = vk::PhysicalDeviceProperties2::default()
             .push_next(&mut acceleration_structure_properties)
@@ -322,8 +339,12 @@ impl VkBackend {
         })
     }
 
-    fn require_device_extensions(instance: &Instance, physical_device: vk::PhysicalDevice) -> SoundResult<()> {
-        let extensions = unsafe { instance.enumerate_device_extension_properties(physical_device)? };
+    fn require_device_extensions(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> SoundResult<()> {
+        let extensions =
+            unsafe { instance.enumerate_device_extension_properties(physical_device)? };
         let required = [
             vk::KHR_ACCELERATION_STRUCTURE_NAME,
             vk::KHR_RAY_TRACING_PIPELINE_NAME,

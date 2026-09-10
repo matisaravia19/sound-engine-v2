@@ -82,7 +82,9 @@ impl RtContext {
     /// The returned buffers are suitable as BLAS build inputs.
     pub fn upload_mesh(&self, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
         if spec.vertices.is_empty() {
-            return Err(SoundError::invalid_argument("RT mesh must contain at least one vertex"));
+            return Err(SoundError::invalid_argument(
+                "RT mesh must contain at least one vertex",
+            ));
         }
 
         let vertex_buffer = self.memory.create_device_address_buffer(
@@ -94,7 +96,9 @@ impl RtContext {
 
         let index_buffer = if let Some(indices) = spec.indices {
             if indices.is_empty() {
-                return Err(SoundError::invalid_argument("RT mesh index slice must not be empty"));
+                return Err(SoundError::invalid_argument(
+                    "RT mesh index slice must not be empty",
+                ));
             }
 
             let buffer = self.memory.create_device_address_buffer(
@@ -122,7 +126,9 @@ impl RtContext {
     /// The returned buffer is suitable as AABB BLAS build input.
     pub fn upload_aabbs(&self, specs: &[RtAabbSpec]) -> SoundResult<RtAabbBuffers> {
         if specs.is_empty() {
-            return Err(SoundError::invalid_argument("RT AABB build input must not be empty"));
+            return Err(SoundError::invalid_argument(
+                "RT AABB build input must not be empty",
+            ));
         }
 
         let opaque = specs[0].opaque;

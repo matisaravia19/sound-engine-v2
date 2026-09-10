@@ -121,7 +121,8 @@ impl PlaybackState {
         *self
             .queue
             .lock()
-            .map_err(|_| SoundError::poisoned_lock("playback state lock poisoned"))? = Some(queue.clone());
+            .map_err(|_| SoundError::poisoned_lock("playback state lock poisoned"))? =
+            Some(queue.clone());
         Ok(queue)
     }
 
@@ -165,14 +166,23 @@ impl PlaybackState {
         {
             // Read the clock only on starvation. The callback still performs
             // no allocation, lock acquisition, or diagnostic file I/O.
-            let elapsed = self.created_at.elapsed().as_nanos().min(u64::MAX as u128 - 1) as u64;
-            let _ = self
-                .first_underrun_ns
-                .compare_exchange(u64::MAX, elapsed, Ordering::Relaxed, Ordering::Relaxed);
+            let elapsed = self
+                .created_at
+                .elapsed()
+                .as_nanos()
+                .min(u64::MAX as u128 - 1) as u64;
+            let _ = self.first_underrun_ns.compare_exchange(
+                u64::MAX,
+                elapsed,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
             self.last_underrun_ns.store(elapsed, Ordering::Relaxed);
             self.underruns.fetch_add(1, Ordering::Relaxed);
-            self.missing_frames
-                .fetch_add((requested_frames - received_frames) as u64, Ordering::Relaxed);
+            self.missing_frames.fetch_add(
+                (requested_frames - received_frames) as u64,
+                Ordering::Relaxed,
+            );
         }
     }
 

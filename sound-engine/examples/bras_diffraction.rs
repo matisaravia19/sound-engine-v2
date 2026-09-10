@@ -19,7 +19,9 @@ use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, ExperimentalUtdPi
 use sound_engine::core::config::*;
 use sound_engine::core::debug::export_ir;
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{
+    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
+};
 use std::{
     fs,
     io::{BufWriter, Write},
@@ -128,19 +130,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &source_profile_path {
         fs::copy(path, output.join("source-directivity.dir1"))?;
         if path.with_extension("json").exists() {
-            fs::copy(path.with_extension("json"), output.join("source-directivity.json"))?;
+            fs::copy(
+                path.with_extension("json"),
+                output.join("source-directivity.json"),
+            )?;
         }
         fs::write(
             output.join("source-directivity-orientation.txt"),
             "BRAS source orientation from RS5_RIR.png and RS6_RIR.png: local +X forward, +Y up. RS5 LS4 tilted up 34.6 degrees (rotation around engine +Z); all other RS5 and RS6 sources face +X. Angular response is relative to on-axis calibration, which must be applied once separately.\n",
         )?;
     }
-    let mut runs = BufWriter::new(fs::File::create(output.join(format!("{scene_name}-runs.csv")))?);
+    let mut runs = BufWriter::new(fs::File::create(
+        output.join(format!("{scene_name}-runs.csv")),
+    )?);
     writeln!(
         runs,
         "case,seed,rays,bounces,radius,diffraction,utd,cone_width,max_frequency_hz,sample_rate,cold_ms,p50_ms,p95_ms,p99_ms,max_ms,repeats,warmups,revision,utd_bands,edge_strength,utd_orders,reverse,source_surface_paths,source_directivity,surface_two_edge_paths,two_edge_seed_scheme"
     )?;
-    let mut raw_times = BufWriter::new(fs::File::create(output.join(format!("{scene_name}-latencies.csv")))?);
+    let mut raw_times = BufWriter::new(fs::File::create(
+        output.join(format!("{scene_name}-latencies.csv")),
+    )?);
     writeln!(
         raw_times,
         "case,seed,repeat,listener_y,trace_readback_ms,synthesis_ms,total_ms"
@@ -158,7 +167,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sound: SoundConfig {
                 output_channels: OutputChannels::Mono,
                 sample_rate: 44_100,
-                ir_num_samples: if utd { 8192 } else { 11_025 },
+                ir_num_samples: if utd {
+                    8192
+                } else {
+                    11_025
+                },
             },
             acoustics: AcousticsConfig {
                 listener_ray_count: rays,
@@ -169,7 +182,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         let mut pipeline = if utd {
             None
@@ -200,7 +215,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             spectral.set_surface_two_edge_paths(surface_two_edge_paths);
         }
         let source_profile_id = if let Some(profile) = &source_profile {
-            spectral.as_mut().unwrap().register_source_directivity(&gpu, profile)?
+            spectral
+                .as_mut()
+                .unwrap()
+                .register_source_directivity(&gpu, profile)?
         } else {
             0
         };
@@ -209,10 +227,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if fields.len() != 7 {
                 return Err("positions.csv must have seven columns".into());
             }
-            if selected_case.as_deref().is_some_and(|name| name != fields[0]) {
+            if selected_case
+                .as_deref()
+                .is_some_and(|name| name != fields[0])
+            {
                 continue;
             }
-            let p: Vec<f32> = fields[1..].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
+            let p: Vec<f32> = fields[1..]
+                .iter()
+                .map(|s| s.parse())
+                .collect::<Result<_, _>>()?;
             let mut query = AcousticQuery {
                 query_id: index as u32,
                 source_position: vec3(p[0], p[1], p[2]),
@@ -243,8 +267,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for repetition in 0..1 + warmups + repeats {
                 let mut traced_query = query;
                 let step = repetition.saturating_sub(1 + warmups);
-                traced_query.listener_position.y +=
-                    motion_height * (std::f32::consts::TAU * step as f32 / repeats.max(2) as f32).sin();
+                traced_query.listener_position.y += motion_height
+                    * (std::f32::consts::TAU * step as f32 / repeats.max(2) as f32).sin();
                 let start = Instant::now();
                 let trace_readback_ms;
                 if let Some(spectral) = &mut spectral {
@@ -258,7 +282,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::hint::black_box(spectral.synthesize_ir(&transfer)?);
                     }
                 } else {
-                    last_ir = Some(pipeline.as_mut().unwrap().build_ir(&gpu, &mut scene, traced_query)?);
+                    last_ir = Some(pipeline.as_mut().unwrap().build_ir(
+                        &gpu,
+                        &mut scene,
+                        traced_query,
+                    )?);
                     trace_readback_ms = start.elapsed().as_secs_f64() * 1000.0;
                 }
                 let total_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -292,7 +320,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         transfer = spectral.build_transfer(&gpu, &mut scene, query)?;
                     }
                 } else {
-                    last_ir = Some(pipeline.as_mut().unwrap().build_ir(&gpu, &mut scene, query)?);
+                    last_ir = Some(
+                        pipeline
+                            .as_mut()
+                            .unwrap()
+                            .build_ir(&gpu, &mut scene, query)?,
+                    );
                 }
             }
             let mut times: Vec<_> = timings.iter().map(|t| t.2).collect();
@@ -303,7 +336,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )?);
                 writeln!(file, "frequency_hz,real,imaginary")?;
                 for (bin, value) in transfer.iter().enumerate() {
-                    writeln!(file, "{},{},{}", bin as f64 * 44100.0 / 8192.0, value[0], value[1])?;
+                    writeln!(
+                        file,
+                        "{},{},{}",
+                        bin as f64 * 44100.0 / 8192.0,
+                        value[0],
+                        value[1]
+                    )?;
                 }
                 file.flush()?;
             } else {
@@ -331,7 +370,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> SceneDescription {
     // BRAS uses Z up. Positions.csv explicitly maps (X,Y,Z) to engine (X,Z,Y).
-    let mut scene = geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
+    let mut scene =
+        geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
     let (walls, edges) = if name == "RS5" {
         // Thin-screen approximation of the 25 mm partition, at its mid-plane.
         // Height and span come from RS5_RIR.png; no RIR was used to adjust them.
@@ -473,7 +513,14 @@ fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> SceneDescripti
     scene
 }
 
-fn edge(id: u32, start: Vec3, end: Vec3, bisector_dir: Vec3, angle: f32, radius: f32) -> DiffractionEdge {
+fn edge(
+    id: u32,
+    start: Vec3,
+    end: Vec3,
+    bisector_dir: Vec3,
+    angle: f32,
+    radius: f32,
+) -> DiffractionEdge {
     DiffractionEdge {
         id,
         start,
@@ -497,7 +544,9 @@ mod tests {
     #[test]
     #[ignore = "requires Vulkan ray tracing and glslangValidator"]
     fn utd_two_edge_reciprocity_and_visibility() {
-        let _guard = GPU_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let gpu = VkBackend::new().unwrap();
         let config = EngineConfig {
             sound: SoundConfig {
@@ -514,7 +563,9 @@ mod tests {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         // Absorbing faces isolate the edge pressure. The two exposed top edges
         // are the only route between endpoints below opposite sides of the box.
@@ -556,15 +607,20 @@ mod tests {
             source_amplitude: 1.0,
             source_radiation: Default::default(),
         };
-        let mut pipeline = ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.02, 20000.0, 16, 2).unwrap();
+        let mut pipeline =
+            ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.02, 20000.0, 16, 2).unwrap();
         let source_profile = sound_engine::acoustics::SourceDirectivity::new(
             1,
             19,
             vec![20.0, 20000.0],
-            (0..19).flat_map(|t| [[1.0 - 0.5 * t as f32 / 18.0, 0.0]; 2]).collect(),
+            (0..19)
+                .flat_map(|t| [[1.0 - 0.5 * t as f32 / 18.0, 0.0]; 2])
+                .collect(),
         )
         .unwrap();
-        let source_profile_id = pipeline.register_source_directivity(&gpu, &source_profile).unwrap();
+        let source_profile_id = pipeline
+            .register_source_directivity(&gpu, &source_profile)
+            .unwrap();
         let mut run = |scene: &mut SceneManager, query| {
             let snapshot = pipeline.build_ir_gpu(&gpu, scene, query).unwrap();
             pipeline.download_gpu_ir(&gpu, &snapshot).unwrap()
@@ -577,7 +633,8 @@ mod tests {
         let mut alternate_config = config;
         alternate_config.acoustics.sampling_seed = 8;
         let mut alternate =
-            ExperimentalUtdPipeline::with_band_orders(&gpu, alternate_config, 0.02, 20000.0, 16, 2).unwrap();
+            ExperimentalUtdPipeline::with_band_orders(&gpu, alternate_config, 0.02, 20000.0, 16, 2)
+                .unwrap();
         let alternate_raw = alternate.build_ir_gpu(&gpu, &mut scene, query).unwrap();
         let alternate_ir = alternate.download_gpu_ir(&gpu, &alternate_raw).unwrap();
         let seed_difference = (alternate_ir
@@ -605,10 +662,16 @@ mod tests {
             (163, [-0.03284891, 0.01404044]),
         ] {
             let actual = spectrum[bin];
-            let relative = ((actual.re - expected[0]).powi(2) + (actual.im - expected[1]).powi(2)).sqrt()
+            let relative = ((actual.re - expected[0]).powi(2) + (actual.im - expected[1]).powi(2))
+                .sqrt()
                 / expected[0].hypot(expected[1]);
-            eprintln!("two-edge bin={bin}: {actual:?}, reference={expected:?}, relative={relative}");
-            assert!(relative < 0.08, "two-edge stationary normalization mismatch");
+            eprintln!(
+                "two-edge bin={bin}: {actual:?}, reference={expected:?}, relative={relative}"
+            );
+            assert!(
+                relative < 0.08,
+                "two-edge stationary normalization mismatch"
+            );
         }
         let mut directional_query = query;
         directional_query.source_radiation.profile = source_profile_id;
@@ -622,7 +685,9 @@ mod tests {
             .sum::<f32>()
             / forward.energy)
             .sqrt();
-        eprintln!("two-edge source direction error={direction_error}, expected gain={expected_gain}");
+        eprintln!(
+            "two-edge source direction error={direction_error}, expected gain={expected_gain}"
+        );
         assert!(
             direction_error < 0.01,
             "two-edge ray used listener arrival instead of source departure"
@@ -648,7 +713,10 @@ mod tests {
             reverse.energy / forward.energy
         );
         // Finite ray counts and cone width prevent exact samplewise equality.
-        assert!(residual.sqrt() < 0.04, "two-edge reciprocal pressure mismatch");
+        assert!(
+            residual.sqrt() < 0.04,
+            "two-edge reciprocal pressure mismatch"
+        );
         let half = run(
             &mut scene,
             AcousticQuery {
@@ -661,7 +729,11 @@ mod tests {
             let mut disabled = description.clone();
             disabled.diffraction_edges[index].base_strength = 0.0;
             scene.load(disabled).unwrap();
-            assert_eq!(run(&mut scene, query).energy, 0.0, "pressure bypassed edge {index}");
+            assert_eq!(
+                run(&mut scene, query).energy,
+                0.0,
+                "pressure bypassed edge {index}"
+            );
         }
         // An opaque wall across the physical middle segment must remove the IR.
         let mut blocked = description.clone();
@@ -701,7 +773,9 @@ mod tests {
         engine.load_scene(description).unwrap();
         let source = PointSource::new(query.source_position);
         let listener = ListenerPose::new(query.listener_position, -Vec3::Z, Vec3::Y);
-        let stereo = engine.build_impulse_response(&gpu, source, listener).unwrap();
+        let stereo = engine
+            .build_impulse_response(&gpu, source, listener)
+            .unwrap();
         assert!(stereo.energy > 1e-8);
         let rotated = engine
             .build_impulse_response(
@@ -743,7 +817,9 @@ mod tests {
     #[test]
     #[ignore = "requires Vulkan ray tracing and glslangValidator"]
     fn utd_engine_stereo_tracks_listener_orientation_and_position() {
-        let _guard = GPU_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         use sound_engine::acoustics::{AcousticModel, AcousticsEngine};
         use sound_engine::{ListenerPose, PointSource};
         let gpu = VkBackend::new().unwrap();
@@ -762,7 +838,9 @@ mod tests {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         let mut engine = AcousticsEngine::with_model(
             &gpu,
@@ -778,17 +856,25 @@ mod tests {
         .unwrap();
         let source = PointSource::new(vec3(-3.0, 1.0, 0.0));
         let listener = ListenerPose::new(vec3(3.0, 1.0, 0.0), -Vec3::Z, Vec3::Y);
-        let left = engine.build_impulse_response(&gpu, source, listener).unwrap();
+        let left = engine
+            .build_impulse_response(&gpu, source, listener)
+            .unwrap();
         assert_eq!(left.samples.len(), 4096);
         assert!(left.samples.iter().any(|s| s.left.abs() > 0.01));
         assert!(left.samples.iter().map(|s| s.right * s.right).sum::<f32>() / left.energy < 1e-6);
         let rotated = ListenerPose::new(listener.position, Vec3::Z, Vec3::Y);
-        let right = engine.build_impulse_response(&gpu, source, rotated).unwrap();
+        let right = engine
+            .build_impulse_response(&gpu, source, rotated)
+            .unwrap();
         for (a, b) in left.samples.iter().zip(&right.samples) {
             assert!((a.left - b.right).abs() < 1e-6 && (a.right - b.left).abs() < 1e-6);
         }
         let moved = engine
-            .build_impulse_response(&gpu, source, ListenerPose::new(vec3(2.0, 1.0, 0.0), -Vec3::Z, Vec3::Y))
+            .build_impulse_response(
+                &gpu,
+                source,
+                ListenerPose::new(vec3(2.0, 1.0, 0.0), -Vec3::Z, Vec3::Y),
+            )
             .unwrap();
         let peak = |ir: &sound_engine::acoustics::IrSnapshot| {
             ir.samples
@@ -800,7 +886,8 @@ mod tests {
         };
         assert!((peak(&left) as f32 - 6.0 / 343.0 * 44100.0).abs() < 1.0);
         assert!((peak(&moved) as f32 - 5.0 / 343.0 * 44100.0).abs() < 1.0);
-        let mut scene = geometry::scene_from_walls(vec![geometry::quad_x(0.0, -20.0, 2.0, -20.0, 20.0)], 1.0);
+        let mut scene =
+            geometry::scene_from_walls(vec![geometry::quad_x(0.0, -20.0, 2.0, -20.0, 20.0)], 1.0);
         scene.diffraction_edges.push(edge(
             1,
             vec3(0.0, 2.0, -20.0),
@@ -810,7 +897,9 @@ mod tests {
             0.2,
         ));
         engine.load_scene(scene.clone()).unwrap();
-        let diffracted = engine.build_impulse_response(&gpu, source, listener).unwrap();
+        let diffracted = engine
+            .build_impulse_response(&gpu, source, listener)
+            .unwrap();
         assert!(
             diffracted
                 .samples
@@ -818,7 +907,9 @@ mod tests {
                 .all(|s| s.left.is_finite() && s.right.is_finite())
         );
         assert!(diffracted.energy > 1e-6);
-        let swapped = engine.build_impulse_response(&gpu, source, rotated).unwrap();
+        let swapped = engine
+            .build_impulse_response(&gpu, source, rotated)
+            .unwrap();
         let residual: f32 = diffracted
             .samples
             .iter()
@@ -828,14 +919,21 @@ mod tests {
         assert!(residual / diffracted.energy < 1e-6);
         scene.diffraction_edges.clear();
         engine.load_scene(scene).unwrap();
-        let blocked = engine.build_impulse_response(&gpu, source, listener).unwrap();
-        assert_eq!(blocked.energy, 0.0, "blocked pressure bypassed ray visibility");
+        let blocked = engine
+            .build_impulse_response(&gpu, source, listener)
+            .unwrap();
+        assert_eq!(
+            blocked.energy, 0.0,
+            "blocked pressure bypassed ray visibility"
+        );
     }
 
     #[test]
     #[ignore = "requires Vulkan ray tracing and glslangValidator"]
     fn utd_pressure_obeys_visibility_source_gain_and_direct_phase() {
-        let _guard = GPU_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let gpu = VkBackend::new().unwrap();
         let config = EngineConfig {
             sound: SoundConfig {
@@ -852,7 +950,9 @@ mod tests {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         let mut pipeline = ExperimentalUtdPipeline::new(&gpu, config, 0.04).unwrap();
         let mut query = AcousticQuery {
@@ -896,7 +996,10 @@ mod tests {
         }
         let mut reference = Vec::new();
         for variant in 0..5 {
-            let mut description = geometry::scene_from_walls(vec![geometry::quad_x(0.0, -20.0, 2.0, -20.0, 20.0)], 1.0);
+            let mut description = geometry::scene_from_walls(
+                vec![geometry::quad_x(0.0, -20.0, 2.0, -20.0, 20.0)],
+                1.0,
+            );
             description.diffraction_edges.push(edge(
                 1,
                 vec3(0.0, 2.0, -20.0),
@@ -935,7 +1038,9 @@ mod tests {
                     (163, [-0.018164788, -0.002462949]),
                 ] {
                     let actual = data[bin];
-                    let residual = ((actual[0] - expected[0]).powi(2) + (actual[1] - expected[1]).powi(2)).sqrt();
+                    let residual = ((actual[0] - expected[0]).powi(2)
+                        + (actual[1] - expected[1]).powi(2))
+                    .sqrt();
                     let norm = (expected[0].powi(2) + expected[1].powi(2)).sqrt();
                     assert!(
                         residual / norm < 0.05,
@@ -945,7 +1050,8 @@ mod tests {
                 let mut previous_error = f64::INFINITY;
                 for bands in [4, 16, 32] {
                     let mut band_pipeline =
-                        ExperimentalUtdPipeline::with_bands(&gpu, config, 0.04, 2000.0, bands).unwrap();
+                        ExperimentalUtdPipeline::with_bands(&gpu, config, 0.04, 2000.0, bands)
+                            .unwrap();
                     let snapshot = band_pipeline.build_ir_gpu(&gpu, &mut scene, query).unwrap();
                     let reconstructed = band_pipeline.download_gpu_ir(&gpu, &snapshot).unwrap();
                     let mut wave: Vec<_> = reconstructed.samples.iter().map(|s| s.left).collect();
@@ -954,12 +1060,18 @@ mod tests {
                     let residual: f64 = response
                         .iter()
                         .zip(&data)
-                        .map(|(a, b)| (a.re as f64 - b[0] as f64).powi(2) + (a.im as f64 - b[1] as f64).powi(2))
+                        .map(|(a, b)| {
+                            (a.re as f64 - b[0] as f64).powi(2)
+                                + (a.im as f64 - b[1] as f64).powi(2)
+                        })
                         .sum();
                     let norm: f64 = data.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
                     let error = (residual / norm).sqrt();
                     eprintln!("UTD {bands}-band complex reconstruction relative L2: {error}");
-                    assert!(error <= previous_error + 0.001, "band interpolation did not converge");
+                    assert!(
+                        error <= previous_error + 0.001,
+                        "band interpolation did not converge"
+                    );
                     if bands >= 16 {
                         assert!(error < 0.02, "band synthesis changed ray pressure: {error}");
                     }
@@ -973,7 +1085,11 @@ mod tests {
                     .zip(reference.iter().flatten())
                     .map(|(&a, &b)| (a as f64 - 0.5 * b as f64).powi(2))
                     .sum();
-                let norm: f64 = reference.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
+                let norm: f64 = reference
+                    .iter()
+                    .flatten()
+                    .map(|v| (*v as f64).powi(2))
+                    .sum();
                 assert!((error / norm).sqrt() < 1e-4);
             } else {
                 assert!(

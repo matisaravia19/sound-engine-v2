@@ -52,7 +52,9 @@ impl SoundPlayer {
     ) -> SoundResult<Self> {
         validate_config(config)?;
         if output_channels == 0 {
-            return Err(SoundError::invalid_argument("output channel count must be > 0"));
+            return Err(SoundError::invalid_argument(
+                "output channel count must be > 0",
+            ));
         }
         if block_size == 0 {
             return Err(SoundError::invalid_argument("block_size must be > 0"));
@@ -65,7 +67,8 @@ impl SoundPlayer {
         }
         let max_queued_blocks = max_queued_blocks(config, sample_rate, block_size);
         let queue = state.prepare_queue(max_queued_blocks * block_samples)?;
-        let stream = build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
+        let stream =
+            build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
 
         stream
             .play()
@@ -125,7 +128,10 @@ impl SoundPlayer {
         );
 
         let accepted = self.queue.push_block(block, self.state.stop_requested())?;
-        if accepted && !self.state.ready_to_play() && self.queue.queued_samples()? >= self.prefill_samples {
+        if accepted
+            && !self.state.ready_to_play()
+            && self.queue.queued_samples()? >= self.prefill_samples
+        {
             self.state.release_prebuffer();
         }
         Ok(accepted)
@@ -163,7 +169,9 @@ impl Drop for SoundPlayer {
 
 fn validate_config(config: PlaybackConfig) -> SoundResult<()> {
     if !config.max_queue_seconds.is_finite() || config.max_queue_seconds <= 0.0 {
-        return Err(SoundError::invalid_argument("max_queue_seconds must be finite and > 0"));
+        return Err(SoundError::invalid_argument(
+            "max_queue_seconds must be finite and > 0",
+        ));
     }
     Ok(())
 }

@@ -6,13 +6,19 @@ impl ComputeContext {
         pipeline: &mut ComputePipeline,
     ) -> SoundResult<DescriptorSetAllocation> {
         for pool in pipeline.descriptor_pools.iter().rev() {
-            if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout) {
-                return Ok(DescriptorSetAllocation { pool: *pool, set });
+            if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout)
+            {
+                return Ok(DescriptorSetAllocation {
+                    pool: *pool,
+                    set,
+                });
             }
         }
 
-        let descriptor_pool = self.create_descriptor_pool(pipeline.pool_sizes_template.as_slice())?;
-        let descriptor_set = self.try_allocate_descriptor_set(descriptor_pool, pipeline.descriptor_set_layout)?;
+        let descriptor_pool =
+            self.create_descriptor_pool(pipeline.pool_sizes_template.as_slice())?;
+        let descriptor_set =
+            self.try_allocate_descriptor_set(descriptor_pool, pipeline.descriptor_set_layout)?;
         pipeline.descriptor_pools.push(descriptor_pool);
         Ok(DescriptorSetAllocation {
             pool: descriptor_pool,
@@ -38,7 +44,11 @@ impl ComputeContext {
             .max_sets(DESCRIPTOR_SETS_PER_POOL)
             .pool_sizes(&pool_sizes);
 
-        let descriptor_pool = unsafe { self.device_context.device.create_descriptor_pool(&pool_info, None)? };
+        let descriptor_pool = unsafe {
+            self.device_context
+                .device
+                .create_descriptor_pool(&pool_info, None)?
+        };
         Ok(descriptor_pool)
     }
 
@@ -51,7 +61,11 @@ impl ComputeContext {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
-        let descriptor_set = unsafe { self.device_context.device.allocate_descriptor_sets(&alloc_info)?[0] };
+        let descriptor_set = unsafe {
+            self.device_context
+                .device
+                .allocate_descriptor_sets(&alloc_info)?[0]
+        };
         Ok(descriptor_set)
     }
 }

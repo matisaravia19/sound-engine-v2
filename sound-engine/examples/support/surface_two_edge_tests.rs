@@ -10,7 +10,10 @@ fn fixture(floor_absorption: f32) -> SceneDescription {
         ],
         1.0,
     );
-    let mut floor = geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], floor_absorption);
+    let mut floor = geometry::scene_from_walls(
+        vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)],
+        floor_absorption,
+    );
     floor.meshes[0].id = 2;
     floor.materials[0].id = 2;
     floor.objects[0].id = 2;
@@ -82,7 +85,9 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
             minimum_throughput: 0.0,
             sampling_seed: 7,
         },
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
         cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
     };
@@ -95,7 +100,8 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
         source_amplitude: 1.0,
         source_radiation: Default::default(),
     };
-    let mut pipeline = ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
+    let mut pipeline =
+        ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
     let mut scene = SceneManager::new();
     scene.load(fixture(0.0)).unwrap();
     let forward = added(&mut pipeline, &gpu, &mut scene, query);
@@ -116,7 +122,9 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
         let actual = spectrum[bin];
         let error = ((actual.re - expected[0]).powi(2) + (actual.im - expected[1]).powi(2)).sqrt()
             / (expected[0] * expected[0] + expected[1] * expected[1]).sqrt();
-        eprintln!("surface-two-edge bin={bin}, actual={actual:?}, expected={expected:?}, relative={error}");
+        eprintln!(
+            "surface-two-edge bin={bin}, actual={actual:?}, expected={expected:?}, relative={error}"
+        );
         worst_error = worst_error.max(error);
     }
     assert!(
@@ -133,7 +141,10 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
         / norm)
         .sqrt();
     eprintln!("surface-two-edge floor pressure scaling error={scaling}");
-    assert!(scaling < 1e-4, "surface pressure was not carried into diffraction");
+    assert!(
+        scaling < 1e-4,
+        "surface pressure was not carried into diffraction"
+    );
     scene.load(fixture(1.0)).unwrap();
     let absorbed = added(&mut pipeline, &gpu, &mut scene, query);
     assert!(
@@ -151,13 +162,23 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
             ..query
         },
     );
-    let reciprocity = (reversed.iter().zip(&forward).map(|(a, b)| (a - b).powi(2)).sum::<f32>() / norm).sqrt();
+    let reciprocity = (reversed
+        .iter()
+        .zip(&forward)
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f32>()
+        / norm)
+        .sqrt();
     eprintln!("surface-two-edge reciprocity relative L2={reciprocity}");
-    assert!(reciprocity < 0.15, "paired reflection orders lost reciprocity");
+    assert!(
+        reciprocity < 0.15,
+        "paired reflection orders lost reciprocity"
+    );
     let mut alternate_config = config;
     alternate_config.acoustics.sampling_seed = 8;
     let mut alternate =
-        ExperimentalUtdPipeline::with_band_orders(&gpu, alternate_config, 0.04, 20000.0, 16, 2).unwrap();
+        ExperimentalUtdPipeline::with_band_orders(&gpu, alternate_config, 0.04, 20000.0, 16, 2)
+            .unwrap();
     let alternate_wave = added(&mut alternate, &gpu, &mut scene, query);
     let seed_difference = (alternate_wave
         .iter()
@@ -180,7 +201,9 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
             .collect(),
     )
     .unwrap();
-    let profile_id = pipeline.register_source_directivity(&gpu, &profile).unwrap();
+    let profile_id = pipeline
+        .register_source_directivity(&gpu, &profile)
+        .unwrap();
     let directional = added(
         &mut pipeline,
         &gpu,
@@ -193,7 +216,8 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
             ..query
         },
     );
-    fft.process(&mut directional.clone(), &mut spectrum).unwrap();
+    fft.process(&mut directional.clone(), &mut spectrum)
+        .unwrap();
     let gain = |angle: f32| {
         realfft::num_complex::Complex32::new(
             1.0 - 0.5 * angle / std::f32::consts::PI,
@@ -204,14 +228,25 @@ fn surface_two_edges_match_planar_pressure_and_absorption() {
     let edge_gain = gain(0.8_f32.atan2(2.64));
     for (bin, rdd, ddr) in [
         (23, [-0.047629070, 0.077419649], [0.065939580, 0.023220881]),
-        (93, [-0.041528259, -0.000581467], [-0.023672435, 0.017645089]),
-        (163, [-0.009103822, -0.025925930], [0.002480711, -0.019150632]),
+        (
+            93,
+            [-0.041528259, -0.000581467],
+            [-0.023672435, 0.017645089],
+        ),
+        (
+            163,
+            [-0.009103822, -0.025925930],
+            [0.002480711, -0.019150632],
+        ),
     ] {
         let expected = floor_gain * realfft::num_complex::Complex32::new(rdd[0], rdd[1])
             + edge_gain * realfft::num_complex::Complex32::new(ddr[0], ddr[1]);
         let error = (spectrum[bin] - expected).norm() / expected.norm();
         eprintln!("surface-two-edge source departure bin={bin}, relative={error}");
-        assert!(error < 0.12, "mixed path used the wrong source departure or phase");
+        assert!(
+            error < 0.12,
+            "mixed path used the wrong source departure or phase"
+        );
     }
 
     // A positive proposal weight must not imply visibility. This proxy lies

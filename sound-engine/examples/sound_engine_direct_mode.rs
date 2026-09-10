@@ -69,7 +69,9 @@ fn engine_config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
 
@@ -123,7 +125,9 @@ fn box_room_vertices(half_extent: Vec3) -> Vec<Vec3> {
 
     let mut vertices = Vec::with_capacity(faces.len() * 6);
     for [a, b, c, d] in faces {
-        vertices.extend_from_slice(&[corners[a], corners[b], corners[c], corners[a], corners[c], corners[d]]);
+        vertices.extend_from_slice(&[
+            corners[a], corners[b], corners[c], corners[a], corners[c], corners[d],
+        ]);
     }
     vertices
 }
@@ -147,7 +151,12 @@ fn fade_envelope(frame: usize, frames: usize) -> f32 {
     fade_in.min(fade_out)
 }
 
-fn write_wav(path: impl AsRef<Path>, sample_rate: u32, channels: u16, samples: &[f32]) -> SoundResult<()> {
+fn write_wav(
+    path: impl AsRef<Path>,
+    sample_rate: u32,
+    channels: u16,
+    samples: &[f32],
+) -> SoundResult<()> {
     if let Some(parent) = path.as_ref().parent() {
         fs::create_dir_all(parent).map_err(|source| {
             sound_engine::core::error::SoundError::with_source(

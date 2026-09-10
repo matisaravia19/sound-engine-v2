@@ -161,11 +161,18 @@ impl FFTPlan {
     }
 
     /// Records an inverse FFT; the caller synchronizes buffer access and completion.
-    pub fn append_inverse(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
+    pub fn append_inverse(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+    ) -> Result<(), VkFFTResult> {
         self.append_internal(command_buffer, 1)
     }
 
-    fn append_internal(&self, command_buffer: ash::vk::CommandBuffer, inverse: i32) -> Result<(), VkFFTResult> {
+    fn append_internal(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        inverse: i32,
+    ) -> Result<(), VkFFTResult> {
         let mut command_buffer_handle = command_buffer.as_raw() as VkCommandBuffer;
         let params = VkFFTLaunchParams {
             command_buffer: std::ptr::from_mut(&mut command_buffer_handle),

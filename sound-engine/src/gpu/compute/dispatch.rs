@@ -45,7 +45,11 @@ impl DescriptorWrite {
 
 impl ComputeContext {
     /// Records descriptor updates, pipeline bind, push constants, and dispatch.
-    pub fn record_dispatch(&self, command_buffer: vk::CommandBuffer, spec: &DispatchSpec) -> SoundResult<()> {
+    pub fn record_dispatch(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        spec: &DispatchSpec,
+    ) -> SoundResult<()> {
         crate::debug_validate!(
             spec.groups.iter().all(|group| *group > 0),
             ErrorCode::InvalidArgument,
@@ -58,9 +62,9 @@ impl ComputeContext {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Compute pipelines lock is poisoned"))?;
 
-        let pipeline = pipelines
-            .get_mut(&spec.pipeline_id)
-            .ok_or_else(|| SoundError::not_found(format!("Invalid pipeline id {}", spec.pipeline_id.0)))?;
+        let pipeline = pipelines.get_mut(&spec.pipeline_id).ok_or_else(|| {
+            SoundError::not_found(format!("Invalid pipeline id {}", spec.pipeline_id.0))
+        })?;
 
         crate::debug_validate!(
             push_constants_fit_pipeline(spec, pipeline),
@@ -79,7 +83,9 @@ impl ComputeContext {
         let writes = build_descriptor_writes(spec, descriptor_set, &buffer_infos);
 
         unsafe {
-            self.device_context.device.update_descriptor_sets(&writes, &[]);
+            self.device_context
+                .device
+                .update_descriptor_sets(&writes, &[]);
             self.device_context.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
@@ -105,9 +111,12 @@ impl ComputeContext {
                 );
             }
 
-            self.device_context
-                .device
-                .cmd_dispatch(command_buffer, spec.groups[0], spec.groups[1], spec.groups[2]);
+            self.device_context.device.cmd_dispatch(
+                command_buffer,
+                spec.groups[0],
+                spec.groups[1],
+                spec.groups[2],
+            );
         }
 
         Ok(())
@@ -136,7 +145,10 @@ fn build_buffer_infos(spec: &DispatchSpec) -> Vec<vk::DescriptorBufferInfo> {
     for write in &spec.descriptor_writes {
         match write {
             DescriptorWrite::StorageBuffer {
-                buffer, offset, range, ..
+                buffer,
+                offset,
+                range,
+                ..
             } => {
                 buffer_infos.push(
                     vk::DescriptorBufferInfo::default()
@@ -158,7 +170,10 @@ fn build_descriptor_writes<'a>(
     let mut writes = Vec::new();
     for (idx, write) in spec.descriptor_writes.iter().enumerate() {
         match write {
-            DescriptorWrite::StorageBuffer { binding, .. } => {
+            DescriptorWrite::StorageBuffer {
+                binding,
+                ..
+            } => {
                 writes.push(
                     vk::WriteDescriptorSet::default()
                         .dst_set(descriptor_set)

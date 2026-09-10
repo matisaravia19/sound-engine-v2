@@ -4,8 +4,9 @@ use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
-    BlasBuildSpec, BlasId, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec,
-    RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
+    BlasBuildSpec, BlasId, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
+    RtMeshBuffers, RtMeshSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
+    RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
 };
 use crate::gpu::shader::ShaderStage;
 use crate::scene::SceneManager;
@@ -114,20 +115,31 @@ impl AcousticPipeline {
         Self::with_shader(gpu, config, "listener_backward.rgen.glsl", 0.0)
     }
 
-    fn with_shader(gpu: &VkBackend, config: EngineConfig, shader: &str, cone_width: f32) -> SoundResult<Self> {
+    fn with_shader(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        shader: &str,
+        cone_width: f32,
+    ) -> SoundResult<Self> {
         validate_config(config)?;
 
         let raygen = load_shader(gpu, ShaderStage::RayGeneration, shader)?;
         let continuation_miss = load_shader(gpu, ShaderStage::RayMiss, "continuation.rmiss.glsl")?;
         let visibility_miss = load_shader(gpu, ShaderStage::RayMiss, "visibility.rmiss.glsl")?;
-        let surface_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "listener_backward_surface.rchit.glsl")?;
-        let visibility_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "visibility.rchit.glsl")?;
+        let surface_closest_hit = load_shader(
+            gpu,
+            ShaderStage::RayClosestHit,
+            "listener_backward_surface.rchit.glsl",
+        )?;
+        let visibility_closest_hit =
+            load_shader(gpu, ShaderStage::RayClosestHit, "visibility.rchit.glsl")?;
         let diffraction_closest_hit = load_shader(
             gpu,
             ShaderStage::RayClosestHit,
             "listener_backward_diffraction.rchit.glsl",
         )?;
-        let diffraction_intersection = load_shader(gpu, ShaderStage::RayIntersection, "diffraction.rint.glsl")?;
+        let diffraction_intersection =
+            load_shader(gpu, ShaderStage::RayIntersection, "diffraction.rint.glsl")?;
 
         let listener_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
@@ -141,11 +153,21 @@ impl AcousticPipeline {
             ],
             // Surface continuation uses record zero and visibility adds one.
             groups: vec![
-                RtShaderGroupSpec::Raygen { shader: 0 },
-                RtShaderGroupSpec::Miss { shader: 1 },
-                RtShaderGroupSpec::Miss { shader: 2 },
-                RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 3 },
-                RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 4 },
+                RtShaderGroupSpec::Raygen {
+                    shader: 0,
+                },
+                RtShaderGroupSpec::Miss {
+                    shader: 1,
+                },
+                RtShaderGroupSpec::Miss {
+                    shader: 2,
+                },
+                RtShaderGroupSpec::TrianglesHit {
+                    closest_hit_shader: 3,
+                },
+                RtShaderGroupSpec::TrianglesHit {
+                    closest_hit_shader: 4,
+                },
                 RtShaderGroupSpec::ProceduralHit {
                     closest_hit_shader: 5,
                     intersection_shader: 6,
@@ -246,7 +268,9 @@ impl AcousticPipeline {
         let source_profile = self
             .source_profiles
             .get(query.source_radiation.profile as usize)
-            .ok_or_else(|| SoundError::invalid_argument("source directivity is not registered in this engine"))?
+            .ok_or_else(|| {
+                SoundError::invalid_argument("source directivity is not registered in this engine")
+            })?
             .clone();
         if ray_count == 0
             || ray_offset
@@ -258,7 +282,8 @@ impl AcousticPipeline {
         let profile = std::env::var_os("SOUND_ENGINE_TRACE_PROFILE").is_some();
         let started = std::time::Instant::now();
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
+        let tlas_id =
+            self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
         let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
         // A spectral bin stores one complex pair per ear; time-domain IRs
         // retain the existing one-pair-per-frame layout.
@@ -281,7 +306,8 @@ impl AcousticPipeline {
         };
         let bytes = ir_buffer_size(storage_count) as u64;
         let ir_buffer = if let Some(previous) = previous {
-            if previous.byte_size != bytes as usize || previous.scene_version != gpu_scene.version() {
+            if previous.byte_size != bytes as usize || previous.scene_version != gpu_scene.version()
+            {
                 return Err(SoundError::invalid_state(
                     "partial ray pressure does not match the current scene/storage",
                 ));
@@ -291,7 +317,9 @@ impl AcousticPipeline {
                 .ok_or_else(|| SoundError::invalid_state("partial ray pressure is missing"))?
         } else {
             match self.band_accumulator.as_ref() {
-                Some(buffer) if Arc::strong_count(buffer) == 1 && buffer.size == bytes => buffer.clone(),
+                Some(buffer) if Arc::strong_count(buffer) == 1 && buffer.size == bytes => {
+                    buffer.clone()
+                }
                 _ => Arc::new(gpu.memory().create_storage_buffer(bytes)?),
             }
         };
@@ -327,10 +355,16 @@ impl AcousticPipeline {
             maximum_frequency_hz: self.maximum_frequency_hz,
             band_count: self.band_count,
             ray_offset,
-            source_surface_paths: u32::from(self.source_surface_paths) | (u32::from(self.surface_two_edge_paths) << 1),
+            source_surface_paths: u32::from(self.source_surface_paths)
+                | (u32::from(self.surface_two_edge_paths) << 1),
             source_profile_enabled: u32::from(query.source_radiation.profile != 0),
             source_pad: 0,
-            source_inverse_rotation: query.source_radiation.orientation.normalize().conjugate().to_array(),
+            source_inverse_rotation: query
+                .source_radiation
+                .orientation
+                .normalize()
+                .conjugate()
+                .to_array(),
         };
         let mut record_ms = 0.0;
         let token = gpu.compute().submit_compute(|command_buffer| {
@@ -344,7 +378,10 @@ impl AcousticPipeline {
                         RtDescriptorWrite::storage_buffer(1, ir_buffer.buffer),
                         RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
-                        RtDescriptorWrite::storage_buffer(4, gpu_scene.diffraction_edge_buffer().buffer),
+                        RtDescriptorWrite::storage_buffer(
+                            4,
+                            gpu_scene.diffraction_edge_buffer().buffer,
+                        ),
                         RtDescriptorWrite::storage_buffer(5, source_profile.buffer),
                     ],
                     push_constants: bytemuck::bytes_of(&constants).to_vec(),
@@ -359,7 +396,9 @@ impl AcousticPipeline {
             // to IR download, caching, or convolution.
             gpu.compute().record_buffer_barrier(
                 command_buffer,
-                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
+                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(
+                    ir_buffer.buffer,
+                ),
             );
             if let Some(record_started) = record_started {
                 record_ms = record_started.elapsed().as_secs_f64() * 1000.0;
@@ -416,7 +455,11 @@ impl AcousticPipeline {
     }
 
     /// Downloads a GPU-resident pressure IR into a CPU snapshot.
-    pub fn download_gpu_ir(&self, gpu: &VkBackend, snapshot: &GpuIrSnapshot) -> SoundResult<IrSnapshot> {
+    pub fn download_gpu_ir(
+        &self,
+        gpu: &VkBackend,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<IrSnapshot> {
         let ir_buffer = snapshot
             .buffer
             .as_ref()
@@ -550,7 +593,9 @@ impl ExperimentalUtdPipeline {
         orders: u32,
     ) -> SoundResult<Self> {
         if !(1..=2).contains(&orders) {
-            return Err(SoundError::invalid_argument("UTD band orders must be 1 or 2"));
+            return Err(SoundError::invalid_argument(
+                "UTD band orders must be 1 or 2",
+            ));
         }
         if !(4..=64).contains(&band_count) || maximum_frequency_hz <= 31.25 {
             return Err(SoundError::invalid_argument(
@@ -563,17 +608,21 @@ impl ExperimentalUtdPipeline {
         } else {
             "listener_utd_bands.rgen.glsl"
         };
-        let mut pipeline = AcousticPipeline::with_shader(gpu, result.pipeline.config, shader, cone_width)?;
+        let mut pipeline =
+            AcousticPipeline::with_shader(gpu, result.pipeline.config, shader, cone_width)?;
         pipeline.maximum_frequency_hz = maximum_frequency_hz;
         pipeline.time_domain_surfaces = true;
         pipeline.band_count = band_count;
         // The optional family passes an isolated pressure check but worsens
         // current BRAS box error. Keep the measured playback candidate unchanged.
         pipeline.source_surface_paths = false;
-        let accumulator_bytes = (u64::from(band_count) * config.sound.output_channels.count() as u64 + 1)
-            * u64::from(config.sound.ir_num_samples)
-            * size_of::<IrSample>() as u64;
-        pipeline.band_accumulator = Some(Arc::new(gpu.memory().create_storage_buffer(accumulator_bytes)?));
+        let accumulator_bytes =
+            (u64::from(band_count) * config.sound.output_channels.count() as u64 + 1)
+                * u64::from(config.sound.ir_num_samples)
+                * size_of::<IrSample>() as u64;
+        pipeline.band_accumulator = Some(Arc::new(
+            gpu.memory().create_storage_buffer(accumulator_bytes)?,
+        ));
         result.pipeline = pipeline;
         result.ray_budget = Some(super::ray_budget::RayBatchBudget::new(
             config.acoustics.listener_ray_count,
@@ -625,12 +674,17 @@ impl ExperimentalUtdPipeline {
         let samples = 2 * (p.config.sound.ir_num_samples - 1);
         let minimum = p.config.sound.sample_rate as f32 / samples.next_power_of_two() as f32;
         let nodes: Vec<_> = (0..p.band_count)
-            .map(|i| minimum * (p.maximum_frequency_hz / minimum).powf(i as f32 / (p.band_count - 1) as f32))
+            .map(|i| {
+                minimum
+                    * (p.maximum_frequency_hz / minimum).powf(i as f32 / (p.band_count - 1) as f32)
+            })
             .collect();
         let pressure = profile.resample(&nodes);
         let id = u32::try_from(p.source_profiles.len())
             .map_err(|_| SoundError::invalid_state("source profile id overflow"))?;
-        let mut bytes = bytemuck::cast_slice(&[profile.phi_count, profile.theta_count, p.band_count, 0]).to_vec();
+        let mut bytes =
+            bytemuck::cast_slice(&[profile.phi_count, profile.theta_count, p.band_count, 0])
+                .to_vec();
         bytes.extend_from_slice(bytemuck::cast_slice(&pressure));
         let buffer = Arc::new(gpu.memory().create_storage_buffer(bytes.len() as u64)?);
         gpu.memory().upload_bytes(&buffer, &bytes)?;
@@ -663,7 +717,8 @@ impl ExperimentalUtdPipeline {
                 "UTD requires an even FFT length >= 4, 0 < cone width <= 0.25, and a positive bandwidth below Nyquist",
             ));
         }
-        let inverse = realfft::RealFftPlanner::<f32>::new().plan_fft_inverse(config.sound.ir_num_samples as usize);
+        let inverse = realfft::RealFftPlanner::<f32>::new()
+            .plan_fft_inverse(config.sound.ir_num_samples as usize);
         let spectrum = inverse.make_input_vec();
         let scratch = inverse.make_scratch_vec();
         config.sound.ir_num_samples = config.sound.ir_num_samples / 2 + 1;
@@ -694,7 +749,9 @@ impl ExperimentalUtdPipeline {
         scene: &mut SceneManager,
         query: AcousticQuery,
     ) -> SoundResult<Vec<[f32; 2]>> {
-        if self.pipeline.config.sound.output_channels != OutputChannels::Mono || self.pipeline.time_domain_surfaces {
+        if self.pipeline.config.sound.output_channels != OutputChannels::Mono
+            || self.pipeline.time_domain_surfaces
+        {
             return Err(SoundError::invalid_argument(
                 "build_transfer requires mono; use build_ir_gpu for spatial output",
             ));
@@ -712,9 +769,15 @@ impl ExperimentalUtdPipeline {
         query: AcousticQuery,
     ) -> SoundResult<(GpuIrSnapshot, Option<u32>)> {
         if self.bands.is_some() {
-            let count = self.ray_budget.as_ref().unwrap().count(self.pipeline.ray_count(query));
+            let count = self
+                .ray_budget
+                .as_ref()
+                .unwrap()
+                .count(self.pipeline.ray_count(query));
             let started = std::time::Instant::now();
-            let raw = self.pipeline.build_ir_range_gpu(gpu, scene, query, 0, count, None)?;
+            let raw = self
+                .pipeline
+                .build_ir_range_gpu(gpu, scene, query, 0, count, None)?;
             self.ray_budget
                 .as_mut()
                 .unwrap()
@@ -739,9 +802,9 @@ impl ExperimentalUtdPipeline {
         if next_ray < total {
             let count = self.ray_budget.as_ref().unwrap().count(total - next_ray);
             let started = std::time::Instant::now();
-            let raw = self
-                .pipeline
-                .build_ir_range_gpu(gpu, scene, query, next_ray, count, Some(raw))?;
+            let raw =
+                self.pipeline
+                    .build_ir_range_gpu(gpu, scene, query, next_ray, count, Some(raw))?;
             self.ray_budget
                 .as_mut()
                 .unwrap()
@@ -800,14 +863,23 @@ impl ExperimentalUtdPipeline {
             byte_size,
             sample_rate: raw.sample_rate,
             sample_count: samples.len() as u32,
-            energy: Some(samples.iter().map(|s| s.left * s.left + s.right * s.right).sum()),
+            energy: Some(
+                samples
+                    .iter()
+                    .map(|s| s.left * s.left + s.right * s.right)
+                    .sum(),
+            ),
             scene_version: raw.scene_version,
             query_id: raw.query_id,
         })
     }
 
     /// Downloads synthesized stereo frames using the shared snapshot layout.
-    pub fn download_gpu_ir(&self, gpu: &VkBackend, snapshot: &GpuIrSnapshot) -> SoundResult<IrSnapshot> {
+    pub fn download_gpu_ir(
+        &self,
+        gpu: &VkBackend,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<IrSnapshot> {
         self.pipeline.download_gpu_ir(gpu, snapshot)
     }
 
@@ -816,7 +888,9 @@ impl ExperimentalUtdPipeline {
     /// the call. This linear transform adds no propagation paths or calibration.
     /// The returned IR has the configured FFT length and includes band-limit ringing.
     pub fn synthesize_ir(&mut self, transfer: &[[f32; 2]]) -> SoundResult<Vec<f32>> {
-        if transfer.len() != self.spectrum.len() || transfer.iter().flatten().any(|v| !v.is_finite()) {
+        if transfer.len() != self.spectrum.len()
+            || transfer.iter().flatten().any(|v| !v.is_finite())
+        {
             return Err(SoundError::invalid_argument(
                 "UTD transfer bins must match the FFT length and be finite",
             ));
@@ -834,7 +908,11 @@ impl ExperimentalUtdPipeline {
     }
 }
 
-fn load_shader(gpu: &VkBackend, stage: ShaderStage, file: &str) -> SoundResult<crate::gpu::shader::ShaderId> {
+fn load_shader(
+    gpu: &VkBackend,
+    stage: ShaderStage,
+    file: &str,
+) -> SoundResult<crate::gpu::shader::ShaderId> {
     gpu.shaders().load_glsl_file(stage, shader_path(file))
 }
 
@@ -849,19 +927,25 @@ fn validate_config(config: EngineConfig) -> SoundResult<()> {
         ));
     }
     if config.acoustics.listener_ray_count == 0 {
-        return Err(SoundError::invalid_argument("listener_ray_count must be non-zero"));
+        return Err(SoundError::invalid_argument(
+            "listener_ray_count must be non-zero",
+        ));
     }
-    if !config.acoustics.maximum_path_length.is_finite() || config.acoustics.maximum_path_length <= 0.0 {
+    if !config.acoustics.maximum_path_length.is_finite()
+        || config.acoustics.maximum_path_length <= 0.0
+    {
         return Err(SoundError::invalid_argument(
             "maximum_path_length must be finite and positive",
         ));
     }
-    if !config.acoustics.minimum_throughput.is_finite() || config.acoustics.minimum_throughput < 0.0 {
+    if !config.acoustics.minimum_throughput.is_finite() || config.acoustics.minimum_throughput < 0.0
+    {
         return Err(SoundError::invalid_argument(
             "minimum_throughput must be finite and non-negative",
         ));
     }
-    if !config.binaural.head_radius_meters.is_finite() || config.binaural.head_radius_meters <= 0.0 {
+    if !config.binaural.head_radius_meters.is_finite() || config.binaural.head_radius_meters <= 0.0
+    {
         return Err(SoundError::invalid_argument(
             "binaural head radius must be finite and positive",
         ));
@@ -881,7 +965,9 @@ fn validate_query(query: AcousticQuery) -> SoundResult<()> {
         || !query.listener_forward.is_finite()
         || !query.listener_up.is_finite()
     {
-        return Err(SoundError::invalid_argument("acoustic query vectors must be finite"));
+        return Err(SoundError::invalid_argument(
+            "acoustic query vectors must be finite",
+        ));
     }
     let forward = query.listener_forward.normalize_or_zero();
     let up = query.listener_up.normalize_or_zero();
@@ -920,7 +1006,10 @@ fn power_cosine_pdf(cosine: f32, exponent: f32) -> f32 {
 
 #[cfg(test)]
 fn pressure_branch_probabilities(energies: &[f32]) -> Vec<f32> {
-    let weights = energies.iter().map(|energy| energy.max(0.0).sqrt()).collect::<Vec<_>>();
+    let weights = energies
+        .iter()
+        .map(|energy| energy.max(0.0).sqrt())
+        .collect::<Vec<_>>();
     let sum = weights.iter().sum::<f32>();
     if sum <= 0.0 || !sum.is_finite() {
         return vec![0.0; energies.len()];
@@ -967,7 +1056,8 @@ fn direct_lanczos_weights(fraction: f32) -> [f32; 16] {
         let window = if distance.abs() < 1.0e-6 {
             1.0
         } else {
-            (std::f32::consts::PI * window_argument).sin() / (std::f32::consts::PI * window_argument)
+            (std::f32::consts::PI * window_argument).sin()
+                / (std::f32::consts::PI * window_argument)
         };
         weights[index] = sinc * window;
     }
@@ -1071,7 +1161,9 @@ mod tests {
             },
             cache: crate::core::config::IrCacheConfig::default(),
             binaural: crate::core::config::BinauralConfig::default(),
-            auralization: crate::core::config::AuralizationConfig { block_size: 1_024 },
+            auralization: crate::core::config::AuralizationConfig {
+                block_size: 1_024,
+            },
         }
     }
 
@@ -1112,13 +1204,17 @@ mod tests {
             let cosine = (polar_index as f32 + 0.5) / polar_steps as f32;
             let sine = (1.0 - cosine * cosine).sqrt();
             for azimuth_index in 0..azimuth_steps {
-                let azimuth = std::f32::consts::TAU * (azimuth_index as f32 + 0.5) / azimuth_steps as f32;
+                let azimuth =
+                    std::f32::consts::TAU * (azimuth_index as f32 + 0.5) / azimuth_steps as f32;
                 let direction = Vec3::new(sine * azimuth.cos(), cosine, sine * azimuth.sin());
                 integral += folded_power_cosine_pdf(direction, axis, normal, exponent);
             }
         }
         integral *= std::f32::consts::TAU / (polar_steps * azimuth_steps) as f32;
-        assert!((integral - 1.0).abs() < 0.002, "folded lobe integral was {integral}");
+        assert!(
+            (integral - 1.0).abs() < 0.002,
+            "folded lobe integral was {integral}"
+        );
     }
 
     #[test]
@@ -1161,8 +1257,9 @@ mod tests {
                     assert!(angle.abs() <= FRAC_PI_2);
                     for axial in [-0.9_f64, 0.0, 0.9] {
                         let radial = (1.0 - axial * axial).sqrt();
-                        let length_squared =
-                            (radial * angle.cos()).powi(2) + (radial * angle.sin()).powi(2) + axial * axial;
+                        let length_squared = (radial * angle.cos()).powi(2)
+                            + (radial * angle.sin()).powi(2)
+                            + axial * axial;
                         assert!((length_squared - 1.0).abs() < 1e-12);
                     }
                     let uniform_angle = start + u * (end - start);
@@ -1221,7 +1318,11 @@ mod tests {
                         scattering_step as f32 / 20.0,
                         transmission_step as f32 / 20.0,
                     );
-                    assert!(energies.iter().all(|energy| energy.is_finite() && *energy >= 0.0));
+                    assert!(
+                        energies
+                            .iter()
+                            .all(|energy| energy.is_finite() && *energy >= 0.0)
+                    );
                     assert!((energies.iter().sum::<f32>() - 1.0).abs() < 1.0e-6);
                 }
             }
@@ -1306,14 +1407,26 @@ mod tests {
             std::mem::offset_of!(ListenerTracePushConstants, source_inverse_rotation),
             112
         );
-        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, band_count), 92);
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, band_count),
+            92
+        );
         assert_eq!(
             std::mem::offset_of!(ListenerTracePushConstants, maximum_frequency_hz),
             88
         );
-        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, minimum_throughput), 72);
-        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, head_radius_meters), 76);
-        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, max_ild_db), 80);
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, minimum_throughput),
+            72
+        );
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, head_radius_meters),
+            76
+        );
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, max_ild_db),
+            80
+        );
     }
 
     #[test]
@@ -1340,8 +1453,9 @@ mod tests {
         let radius = 0.0875;
         let sample_rate = 48_000;
         let (offsets, _) = analytic_binaural_estimate(1.0, radius, 12.0, sample_rate);
-        let expected =
-            radius / SPEED_OF_SOUND_METERS_PER_SECOND * (std::f32::consts::FRAC_PI_2 + 1.0) * sample_rate as f32;
+        let expected = radius / SPEED_OF_SOUND_METERS_PER_SECOND
+            * (std::f32::consts::FRAC_PI_2 + 1.0)
+            * sample_rate as f32;
         assert!(((offsets[0] - offsets[1]) - expected).abs() < 1.0e-5);
     }
 

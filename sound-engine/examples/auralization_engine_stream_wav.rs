@@ -68,12 +68,19 @@ fn build_engine(
     } else {
         None
     };
-    let ir_num_samples = ir_b.as_ref().map_or(ir_a.len(), |ir_b| ir_a.len().max(ir_b.len())) as u32;
+    let ir_num_samples = ir_b
+        .as_ref()
+        .map_or(ir_a.len(), |ir_b| ir_a.len().max(ir_b.len())) as u32;
 
     let backend = Arc::new(VkBackend::new()?);
     let mut engine = AuralizationEngine::new(
         backend,
-        engine_config(sample_rate, BLOCK_SIZE, ir_num_samples, OutputChannels::Stereo),
+        engine_config(
+            sample_rate,
+            BLOCK_SIZE,
+            ir_num_samples,
+            OutputChannels::Stereo,
+        ),
     )?;
 
     engine.register_impulse_response(IR_A_ID, &ir_a)?;
@@ -128,9 +135,11 @@ fn parse_args() -> Result<ExampleArgs, Box<dyn std::error::Error + Send + Sync>>
                 play_second_sound = false;
             }
             _ if arg.starts_with("--") => {
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Unknown argument: {arg}")).into(),
-                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unknown argument: {arg}"),
+                )
+                .into());
             }
             _ => positionals.push(arg),
         }
@@ -184,8 +193,13 @@ fn next_arg_value(
     args: &mut impl Iterator<Item = String>,
     flag: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    args.next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{flag} requires a path")).into())
+    args.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{flag} requires a path"),
+        )
+        .into()
+    })
 }
 
 fn print_usage() {
@@ -194,7 +208,9 @@ fn print_usage() {
     );
 }
 
-fn ir_sample_rate(args: &ExampleArgs) -> Result<Option<u32>, Box<dyn std::error::Error + Send + Sync>> {
+fn ir_sample_rate(
+    args: &ExampleArgs,
+) -> Result<Option<u32>, Box<dyn std::error::Error + Send + Sync>> {
     let mut sample_rate = None;
     for path in args.ir_csv_paths() {
         let path_sample_rate = read_ir_csv_sample_rate(path)?;
@@ -232,9 +248,11 @@ fn read_ir_csv_sample_rate(path: &str) -> Result<u32, Box<dyn std::error::Error 
         if let Some(value) = line.strip_prefix("# sample_rate=") {
             let sample_rate = value.trim().parse::<u32>()?;
             if sample_rate == 0 {
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "IR CSV sample_rate must be > 0").into(),
-                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "IR CSV sample_rate must be > 0",
+                )
+                .into());
             }
             return Ok(sample_rate);
         }
@@ -292,8 +310,12 @@ fn load_ir_csv(
         .into());
     }
 
-    let header =
-        header.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "IR CSV is missing a header row"))?;
+    let header = header.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "IR CSV is missing a header row",
+        )
+    })?;
     let columns: Vec<&str> = header.split(',').map(str::trim).collect();
     let left_column = find_csv_column(&columns, "left")?;
     let right_column = find_csv_column(&columns, "right")?;
@@ -325,20 +347,30 @@ fn load_ir_csv(
     }
 
     if samples.is_empty() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "IR CSV contains no samples").into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "IR CSV contains no samples",
+        )
+        .into());
     }
 
     Ok(samples)
 }
 
-fn find_csv_column(columns: &[&str], name: &str) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    columns.iter().position(|column| *column == name).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("IR CSV is missing required column: {name}"),
-        )
-        .into()
-    })
+fn find_csv_column(
+    columns: &[&str],
+    name: &str,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    columns
+        .iter()
+        .position(|column| *column == name)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("IR CSV is missing required column: {name}"),
+            )
+            .into()
+        })
 }
 
 fn build_ping_pong_ir(sample_rate: u32) -> Vec<IrSample> {
@@ -386,7 +418,11 @@ fn build_room_ir(sample_rate: u32) -> Vec<IrSample> {
         }
     }
 
-    for (i, sample) in ir.iter_mut().enumerate().skip((0.140 * sample_rate as f32) as usize) {
+    for (i, sample) in ir
+        .iter_mut()
+        .enumerate()
+        .skip((0.140 * sample_rate as f32) as usize)
+    {
         let t = i as f32 / sample_rate as f32;
         let decay = (-3.5 * t).exp();
         sample.left += decay * 0.015 * (2.0 * std::f32::consts::PI * 173.0 * t).sin();
@@ -417,6 +453,8 @@ fn engine_config(
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size },
+        auralization: AuralizationConfig {
+            block_size,
+        },
     }
 }

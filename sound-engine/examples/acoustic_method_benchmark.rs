@@ -39,7 +39,8 @@ const SPEED_OF_SOUND: f64 = 343.0;
 const MAXIMUM_PATH_LENGTH: f64 = SPEED_OF_SOUND * SAMPLE_COUNT as f64 / SAMPLE_RATE as f64;
 const SOURCE_AMPLITUDE: f32 = 1.0;
 const ROOM_REFLECTION_PRESSURE: f64 = 0.8;
-const ROOM_ABSORPTION_ENERGY: f32 = 1.0 - (ROOM_REFLECTION_PRESSURE * ROOM_REFLECTION_PRESSURE) as f32;
+const ROOM_ABSORPTION_ENERGY: f32 =
+    1.0 - (ROOM_REFLECTION_PRESSURE * ROOM_REFLECTION_PRESSURE) as f32;
 const DIFFRACTION_EDGE_HALF_LENGTH: f64 = 20.0;
 const DIFFRACTION_QUADRATURE_SEGMENTS: usize = 131_072;
 const FREQUENCIES_HZ: &[f64] = &[125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
@@ -62,7 +63,10 @@ struct Complex {
 }
 
 impl Complex {
-    const ZERO: Self = Self { re: 0.0, im: 0.0 };
+    const ZERO: Self = Self {
+        re: 0.0,
+        im: 0.0,
+    };
 
     fn from_polar(magnitude: f64, phase: f64) -> Self {
         Self {
@@ -195,7 +199,11 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,measu
     )?;
 
     for case in cases {
-        if options.case_filter.as_deref().is_some_and(|filter| filter != case.name) {
+        if options
+            .case_filter
+            .as_deref()
+            .is_some_and(|filter| filter != case.name)
+        {
             continue;
         }
         let exact_samples = exact_fractional_ir(&case.exact_paths);
@@ -208,12 +216,16 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,measu
                 let measured = transfer_from_samples(&measurement.ir.samples, frequency);
                 let exact_continuous = exact_transfer(&case.exact_paths, frequency);
                 let exact_sampled = transfer_from_f64_samples(&exact_samples, frequency);
-                let magnitude_error_db = ratio_db(measured.magnitude(), exact_continuous.magnitude());
-                let phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_continuous.phase());
-                let complex_relative_error =
-                    (measured - exact_continuous).magnitude() / exact_continuous.magnitude().max(1.0e-12);
-                let sampled_magnitude_error_db = ratio_db(measured.magnitude(), exact_sampled.magnitude());
-                let sampled_phase_error_degrees = wrapped_phase_degrees(measured.phase() - exact_sampled.phase());
+                let magnitude_error_db =
+                    ratio_db(measured.magnitude(), exact_continuous.magnitude());
+                let phase_error_degrees =
+                    wrapped_phase_degrees(measured.phase() - exact_continuous.phase());
+                let complex_relative_error = (measured - exact_continuous).magnitude()
+                    / exact_continuous.magnitude().max(1.0e-12);
+                let sampled_magnitude_error_db =
+                    ratio_db(measured.magnitude(), exact_sampled.magnitude());
+                let sampled_phase_error_degrees =
+                    wrapped_phase_degrees(measured.phase() - exact_sampled.phase());
                 let sampled_complex_relative_error =
                     (measured - exact_sampled).magnitude() / exact_sampled.magnitude().max(1.0e-12);
 
@@ -260,11 +272,18 @@ time_relative_l1,time_relative_l2,measured_pressure_sum,exact_pressure_sum,measu
     Ok(())
 }
 
-fn trace_case(gpu: &VkBackend, options: &Options, case: &BenchmarkCase) -> SoundResult<TraceMeasurement> {
+fn trace_case(
+    gpu: &VkBackend,
+    options: &Options,
+    case: &BenchmarkCase,
+) -> SoundResult<TraceMeasurement> {
     let setup_start = Instant::now();
     let mut scene = SceneManager::new();
     scene.load(case.scene.clone())?;
-    let mut pipeline = AcousticPipeline::new(gpu, engine_config(options.rays, options.seed, case.max_bounces))?;
+    let mut pipeline = AcousticPipeline::new(
+        gpu,
+        engine_config(options.rays, options.seed, case.max_bounces),
+    )?;
     let setup = setup_start.elapsed();
 
     let query = AcousticQuery {
@@ -325,7 +344,9 @@ fn engine_config(listener_ray_count: u32, sampling_seed: u32, max_bounces: u32) 
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     }
 }
 
@@ -372,10 +393,10 @@ fn parse_options() -> SoundResult<Options> {
             }
             "--output" => {
                 index += 1;
-                options.output = Some(PathBuf::from(
-                    args.get(index)
-                        .ok_or_else(|| SoundError::invalid_argument("--output needs a path"))?,
-                ));
+                options.output =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        SoundError::invalid_argument("--output needs a path")
+                    })?));
             }
             unknown => {
                 return Err(SoundError::invalid_argument(format!(
@@ -417,24 +438,62 @@ mod tests {
     #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
     fn scalar_diffraction_tracks_shadow_scale_and_reversal() -> SoundResult<()> {
         let gpu = VkBackend::new()?;
-        let names = ["diffraction_shallow_shadow", "diffraction_deep_shadow",
-            "diffraction_unequal_distances", "diffraction_unequal_reversed",
-            "diffraction_scale_double", "diffraction_wedge_240",
-            "diffraction_wedge_330", "diffraction_wedge_360"];
-        for case in benchmark_cases().into_iter().filter(|case| names.contains(&case.name)) {
-            let expected: f64 = case.exact_paths.iter()
-                .map(|path| path.pressure_reflection / path.length_meters).sum();
+        let names = [
+            "diffraction_shallow_shadow",
+            "diffraction_deep_shadow",
+            "diffraction_unequal_distances",
+            "diffraction_unequal_reversed",
+            "diffraction_scale_double",
+            "diffraction_wedge_240",
+            "diffraction_wedge_330",
+            "diffraction_wedge_360",
+        ];
+        for case in benchmark_cases()
+            .into_iter()
+            .filter(|case| names.contains(&case.name))
+        {
+            let expected: f64 = case
+                .exact_paths
+                .iter()
+                .map(|path| path.pressure_reflection / path.length_meters)
+                .sum();
             for seed in [31, 32] {
-                let options = Options { rays: 65_536, seed, seed_repeats: 1,
-                    warm_repeats: 1, case_filter: None, drop_backend: false, output: None };
+                let options = Options {
+                    rays: 65_536,
+                    seed,
+                    seed_repeats: 1,
+                    warm_repeats: 1,
+                    case_filter: None,
+                    drop_backend: false,
+                    output: None,
+                };
                 let result = trace_case(&gpu, &options, &case)?;
-                assert!(result.ir.samples.iter().all(|sample| sample.left.is_finite()));
-                let measured: f64 = result.ir.samples.iter().map(|sample| sample.left as f64).sum();
+                assert!(
+                    result
+                        .ir
+                        .samples
+                        .iter()
+                        .all(|sample| sample.left.is_finite())
+                );
+                let measured: f64 = result
+                    .ir
+                    .samples
+                    .iter()
+                    .map(|sample| sample.left as f64)
+                    .sum();
                 let error = measured / expected - 1.0;
-                println!("{} seed={seed} pressure_error_pct={:.4}", case.name, error * 100.0);
+                println!(
+                    "{} seed={seed} pressure_error_pct={:.4}",
+                    case.name,
+                    error * 100.0
+                );
                 // A pressure gate catches directional zeros, scale errors and
                 // large normalization bias without depending on noisy FFT nulls.
-                assert!(error.abs() < 0.15, "{} pressure error exceeds 15%: {error}", case.name);
+                assert!(
+                    error.abs() < 0.15,
+                    "{} pressure error exceeds 15%: {error}",
+                    case.name
+                );
             }
         }
         Ok(())
@@ -444,10 +503,15 @@ mod tests {
     #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
     fn multiple_reflection_pressure_is_stable_under_rotation() -> SoundResult<()> {
         let gpu = VkBackend::new()?;
-        for rotation in [glam::Mat4::IDENTITY,
+        for rotation in [
+            glam::Mat4::IDENTITY,
             glam::Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2),
-            glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2)] {
-            let mut case = benchmark_cases().into_iter().find(|c| c.name == "parallel_planes").unwrap();
+            glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        ] {
+            let mut case = benchmark_cases()
+                .into_iter()
+                .find(|c| c.name == "parallel_planes")
+                .unwrap();
             // Rotating the entire scene preserves exact path lengths while
             // changing their alignment with the fixed spherical ray lattice.
             case.source = rotation.transform_point3(case.source);
@@ -455,16 +519,32 @@ mod tests {
             for object in &mut case.scene.objects {
                 object.transform = rotation * object.transform;
             }
-            let expected: f64 = case.exact_paths.iter()
-                .map(|p| p.pressure_reflection / p.length_meters).sum();
+            let expected: f64 = case
+                .exact_paths
+                .iter()
+                .map(|p| p.pressure_reflection / p.length_meters)
+                .sum();
             for seed in [31, 32, 33] {
-                let options = Options { rays: 65_536, seed, seed_repeats: 1,
-                    warm_repeats: 1, case_filter: None, drop_backend: false, output: None };
+                let options = Options {
+                    rays: 65_536,
+                    seed,
+                    seed_repeats: 1,
+                    warm_repeats: 1,
+                    case_filter: None,
+                    drop_backend: false,
+                    output: None,
+                };
                 let result = trace_case(&gpu, &options, &case)?;
                 let measured: f64 = result.ir.samples.iter().map(|s| s.left as f64).sum();
                 let error = (measured / expected - 1.0).abs();
-                println!("rotated parallel planes seed={seed} pressure_error_pct={:.4}", error * 100.0);
-                assert!(error < 0.02, "six-reflection pressure error must be below 2%, got {error}");
+                println!(
+                    "rotated parallel planes seed={seed} pressure_error_pct={:.4}",
+                    error * 100.0
+                );
+                assert!(
+                    error < 0.02,
+                    "six-reflection pressure error must be below 2%, got {error}"
+                );
             }
         }
         Ok(())
@@ -474,16 +554,46 @@ mod tests {
     fn parallel_image_enumeration_has_direct_and_two_first_reflections() {
         let paths = parallel_image_paths(10.0, vec3(2.0, 0.0, 0.0), vec3(7.0, 0.0, 0.0), 1, 1.0);
         assert_eq!(paths.len(), 3);
-        assert_eq!(paths.iter().filter(|path| path._reflection_order == 0).count(), 1);
-        assert_eq!(paths.iter().filter(|path| path._reflection_order == 1).count(), 2);
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path._reflection_order == 0)
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path._reflection_order == 1)
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn shoebox_first_order_has_six_walls_and_direct_path() {
-        let paths = shoebox_image_paths(vec3(10.0, 8.0, 6.0), vec3(2.0, 2.0, 2.0), vec3(7.0, 5.0, 3.0), 1, 1.0);
+        let paths = shoebox_image_paths(
+            vec3(10.0, 8.0, 6.0),
+            vec3(2.0, 2.0, 2.0),
+            vec3(7.0, 5.0, 3.0),
+            1,
+            1.0,
+        );
         assert_eq!(paths.len(), 7);
-        assert_eq!(paths.iter().filter(|path| path._reflection_order == 0).count(), 1);
-        assert_eq!(paths.iter().filter(|path| path._reflection_order == 1).count(), 6);
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path._reflection_order == 0)
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path._reflection_order == 1)
+                .count(),
+            6
+        );
     }
 
     #[test]
@@ -495,7 +605,14 @@ mod tests {
             MAXIMUM_PATH_LENGTH,
         );
         assert!(paths.len() > 1_000);
-        assert!(paths.iter().map(|path| path._reflection_order).max().unwrap() <= 30);
+        assert!(
+            paths
+                .iter()
+                .map(|path| path._reflection_order)
+                .max()
+                .unwrap()
+                <= 30
+        );
     }
 
     #[test]
@@ -506,7 +623,8 @@ mod tests {
         let fine = btm_diffraction_paths(source, listener, 1.5 * PI, -20.0, 20.0, 131_072);
         let coarse_transfer = exact_transfer(&coarse, 8_000.0);
         let fine_transfer = exact_transfer(&fine, 8_000.0);
-        let relative_error = (coarse_transfer - fine_transfer).magnitude() / fine_transfer.magnitude().max(1.0e-12);
+        let relative_error =
+            (coarse_transfer - fine_transfer).magnitude() / fine_transfer.magnitude().max(1.0e-12);
         assert!(
             relative_error < 1.0e-4,
             "relative quadrature error was {relative_error}"

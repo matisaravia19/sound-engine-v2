@@ -26,8 +26,14 @@ fn main() -> SoundResult<()> {
     let gpu = Arc::new(VkBackend::new()?);
     let mut engine = AuralizationEngine::new(gpu.clone(), engine_config())?;
     let mut ir = vec![IrSample::zero(); IR_SAMPLE_COUNT];
-    ir[FIRST_DELAY] = IrSample { left: 1.0, right: 1.0 };
-    ir[SECOND_DELAY] = IrSample { left: 1.0, right: 1.0 };
+    ir[FIRST_DELAY] = IrSample {
+        left: 1.0,
+        right: 1.0,
+    };
+    ir[SECOND_DELAY] = IrSample {
+        left: 1.0,
+        right: 1.0,
+    };
     engine.register_impulse_response(1, &ir)?;
 
     println!("frequency_hz,expected_gain,measured_gain,relative_l2,steady_rms");
@@ -43,7 +49,8 @@ fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundR
     let input = (0..sample_count)
         .map(|index| (TAU * frequency * index as f32 / SAMPLE_RATE as f32).sin())
         .collect::<Vec<_>>();
-    let sound_id = engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
+    let sound_id =
+        engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
     let voice_id = engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
     let mut measured = Vec::with_capacity(sample_count);
     let mut output = vec![0.0; BLOCK_SIZE * 2];
@@ -62,7 +69,8 @@ fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundR
     let input_rms = rms(&input[steady_start..]);
     let measured_rms = rms(&measured[steady_start..]);
     let expected_gain = 2.0
-        * (std::f32::consts::PI * frequency * (SECOND_DELAY - FIRST_DELAY) as f32 / SAMPLE_RATE as f32)
+        * (std::f32::consts::PI * frequency * (SECOND_DELAY - FIRST_DELAY) as f32
+            / SAMPLE_RATE as f32)
             .cos()
             .abs();
     let relative_l2 = relative_l2(&measured, &exact);
@@ -95,7 +103,11 @@ fn relative_l2(measured: &[f32], exact: &[f32]) -> f32 {
         })
         .sum::<f32>()
         .sqrt();
-    let reference = exact.iter().map(|sample| sample * sample).sum::<f32>().sqrt();
+    let reference = exact
+        .iter()
+        .map(|sample| sample * sample)
+        .sum::<f32>()
+        .sqrt();
     error / reference.max(1.0e-12)
 }
 
@@ -115,6 +127,8 @@ fn engine_config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }

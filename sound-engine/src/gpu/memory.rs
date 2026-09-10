@@ -4,7 +4,9 @@ use crate::gpu::compute::{BufferBarrierSpec, ComputeContext};
 use ash::vk;
 use bytemuck::Pod;
 use std::sync::{Arc, Mutex};
-use vk_mem::{Alloc, Allocation, AllocationCreateFlags, Allocator, AllocatorCreateFlags, MemoryUsage};
+use vk_mem::{
+    Alloc, Allocation, AllocationCreateFlags, Allocator, AllocatorCreateFlags, MemoryUsage,
+};
 
 const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
 
@@ -34,7 +36,10 @@ struct TransferContext {
 }
 
 impl GpuAllocator {
-    pub(super) fn new(device_context: Arc<VkDeviceContext>, compute: Arc<ComputeContext>) -> SoundResult<Self> {
+    pub(super) fn new(
+        device_context: Arc<VkDeviceContext>,
+        compute: Arc<ComputeContext>,
+    ) -> SoundResult<Self> {
         let mut allocator_info = vk_mem::AllocatorCreateInfo::new(
             &device_context.instance,
             &device_context.device,
@@ -42,16 +47,19 @@ impl GpuAllocator {
         );
         allocator_info.flags |= AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
         allocator_info.vulkan_api_version = vk::API_VERSION_1_3;
-        let allocator =
-            unsafe {
-                Arc::new(Allocator::new(allocator_info).map_err(|e| {
-                    SoundError::resource_allocation_failed(format!("GPU allocator creation failed: {e:?}"))
-                })?)
-            };
+        let allocator = unsafe {
+            Arc::new(Allocator::new(allocator_info).map_err(|e| {
+                SoundError::resource_allocation_failed(format!(
+                    "GPU allocator creation failed: {e:?}"
+                ))
+            })?)
+        };
 
         let staging_buffer = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
 
-        let transfer = TransferContext { staging_buffer };
+        let transfer = TransferContext {
+            staging_buffer,
+        };
 
         Ok(Self {
             allocator,
@@ -84,7 +92,9 @@ impl GpuAllocator {
     ) -> SoundResult<BufferHandle> {
         self.create_buffer(
             size,
-            usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::TRANSFER_DST,
+            usage
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryUsage::AutoPreferDevice,
             AllocationCreateFlags::empty(),
         )
@@ -100,7 +110,9 @@ impl GpuAllocator {
     ) -> SoundResult<BufferHandle> {
         self.create_buffer(
             size,
-            usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::TRANSFER_SRC,
+            usage
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::TRANSFER_SRC,
             MemoryUsage::AutoPreferHost,
             AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         )
@@ -122,9 +134,14 @@ impl GpuAllocator {
             )));
         }
 
-        let mapped_ptr = self.allocator.get_allocation_info(&destination.allocation).mapped_data;
+        let mapped_ptr = self
+            .allocator
+            .get_allocation_info(&destination.allocation)
+            .mapped_data;
         if mapped_ptr.is_null() {
-            return Err(SoundError::invalid_state("Destination buffer is not mapped"));
+            return Err(SoundError::invalid_state(
+                "Destination buffer is not mapped",
+            ));
         }
 
         // Mapped VMA allocations expose host memory; flush makes writes visible to the GPU.
@@ -137,7 +154,12 @@ impl GpuAllocator {
     }
 
     /// Reads bytes from a mapped buffer after invalidating the requested range.
-    pub fn read_mapped_bytes(&self, source: &BufferHandle, size: usize, out: &mut [u8]) -> SoundResult<()> {
+    pub fn read_mapped_bytes(
+        &self,
+        source: &BufferHandle,
+        size: usize,
+        out: &mut [u8],
+    ) -> SoundResult<()> {
         if size as vk::DeviceSize > source.size {
             return Err(SoundError::invalid_argument(format!(
                 "Mapped read size {} exceeds source buffer size {}",
@@ -151,7 +173,10 @@ impl GpuAllocator {
             )));
         }
 
-        let mapped_ptr = self.allocator.get_allocation_info(&source.allocation).mapped_data;
+        let mapped_ptr = self
+            .allocator
+            .get_allocation_info(&source.allocation)
+            .mapped_data;
         if mapped_ptr.is_null() {
             return Err(SoundError::invalid_state("Source buffer is not mapped"));
         }
@@ -184,13 +209,18 @@ impl GpuAllocator {
 
     /// Fills the whole buffer with zero using the compute queue transfer path.
     pub fn clear_buffer(&self, buffer: &BufferHandle) -> SoundResult<()> {
-        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
-            self.device_context
-                .device
-                .cmd_fill_buffer(command_buffer, buffer.buffer, 0, buffer.size, 0);
+        self.compute
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                self.device_context.device.cmd_fill_buffer(
+                    command_buffer,
+                    buffer.buffer,
+                    0,
+                    buffer.size,
+                    0,
+                );
 
-            Ok(())
-        })
+                Ok(())
+            })
     }
 
     /// Uploads bytes through the shared staging buffer and waits for completion.
@@ -222,7 +252,12 @@ impl GpuAllocator {
     }
 
     /// Downloads bytes through the shared staging buffer and waits for completion.
-    pub fn download_bytes(&self, src: &BufferHandle, size: usize, out: &mut [u8]) -> SoundResult<()> {
+    pub fn download_bytes(
+        &self,
+        src: &BufferHandle,
+        size: usize,
+        out: &mut [u8],
+    ) -> SoundResult<()> {
         let copy_size = size as u64;
         if copy_size > src.size {
             return Err(SoundError::invalid_argument(format!(
@@ -258,7 +293,12 @@ impl GpuAllocator {
     }
 
     /// Downloads `count` POD elements into `out`.
-    pub fn download_typed<T: Pod>(&self, src: &BufferHandle, count: usize, out: &mut [T]) -> SoundResult<()> {
+    pub fn download_typed<T: Pod>(
+        &self,
+        src: &BufferHandle,
+        count: usize,
+        out: &mut [T],
+    ) -> SoundResult<()> {
         if count > out.len() {
             return Err(SoundError::invalid_argument(format!(
                 "download_typed count {} exceeds output len {}",
@@ -297,7 +337,11 @@ impl GpuAllocator {
         let (buffer, allocation) = unsafe {
             self.allocator
                 .create_buffer(&buffer_info, &allocation_info)
-                .map_err(|e| SoundError::resource_allocation_failed(format!("Buffer allocation failed: {e:?}")))?
+                .map_err(|e| {
+                    SoundError::resource_allocation_failed(format!(
+                        "Buffer allocation failed: {e:?}"
+                    ))
+                })?
         };
         Ok(BufferHandle {
             buffer,
@@ -307,7 +351,10 @@ impl GpuAllocator {
         })
     }
 
-    fn create_staging_buffer(allocator: &Arc<Allocator>, size: vk::DeviceSize) -> SoundResult<BufferHandle> {
+    fn create_staging_buffer(
+        allocator: &Arc<Allocator>,
+        size: vk::DeviceSize,
+    ) -> SoundResult<BufferHandle> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
@@ -320,9 +367,13 @@ impl GpuAllocator {
         };
 
         let (buffer, allocation) = unsafe {
-            allocator.create_buffer(&buffer_info, &allocation_info).map_err(|e| {
-                SoundError::resource_allocation_failed(format!("Staging buffer allocation failed: {e:?}"))
-            })?
+            allocator
+                .create_buffer(&buffer_info, &allocation_info)
+                .map_err(|e| {
+                    SoundError::resource_allocation_failed(format!(
+                        "Staging buffer allocation failed: {e:?}"
+                    ))
+                })?
         };
         Ok(BufferHandle {
             buffer,
@@ -369,13 +420,21 @@ impl GpuAllocator {
             std::ptr::copy_nonoverlapping(data.as_ptr(), mapped_ptr as *mut u8, data.len());
         }
 
-        self.allocator
-            .flush_allocation(&transfer.staging_buffer.allocation, 0, data.len() as u64)?;
+        self.allocator.flush_allocation(
+            &transfer.staging_buffer.allocation,
+            0,
+            data.len() as u64,
+        )?;
 
         Ok(())
     }
 
-    fn download_from_staging(&self, transfer: &TransferContext, size: usize, out: &mut [u8]) -> SoundResult<()> {
+    fn download_from_staging(
+        &self,
+        transfer: &TransferContext,
+        size: usize,
+        out: &mut [u8],
+    ) -> SoundResult<()> {
         let mapped_ptr = self
             .allocator
             .get_allocation_info(&transfer.staging_buffer.allocation)
@@ -385,8 +444,11 @@ impl GpuAllocator {
             return Err(SoundError::invalid_state("Staging buffer is not mapped"));
         }
 
-        self.allocator
-            .invalidate_allocation(&transfer.staging_buffer.allocation, 0, size as u64)?;
+        self.allocator.invalidate_allocation(
+            &transfer.staging_buffer.allocation,
+            0,
+            size as u64,
+        )?;
 
         unsafe {
             std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, out.as_mut_ptr(), size);
@@ -419,33 +481,35 @@ impl GpuAllocator {
             )));
         }
 
-        self.compute.submit_compute_and_wait(|command_buffer| unsafe {
-            let region = vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size,
-            };
+        self.compute
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                let region = vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size,
+                };
 
-            self.device_context.device.cmd_copy_buffer(
-                command_buffer,
-                src.buffer,
-                dst.buffer,
-                std::slice::from_ref(&region),
-            );
+                self.device_context.device.cmd_copy_buffer(
+                    command_buffer,
+                    src.buffer,
+                    dst.buffer,
+                    std::slice::from_ref(&region),
+                );
 
-            if let Some(barrier) = barrier {
-                self.compute.record_buffer_barrier(command_buffer, &barrier);
-            }
+                if let Some(barrier) = barrier {
+                    self.compute.record_buffer_barrier(command_buffer, &barrier);
+                }
 
-            Ok(())
-        })
+                Ok(())
+            })
     }
 }
 
 impl Drop for BufferHandle {
     fn drop(&mut self) {
         unsafe {
-            self.allocator.destroy_buffer(self.buffer, &mut self.allocation);
+            self.allocator
+                .destroy_buffer(self.buffer, &mut self.allocation);
         }
     }
 }
@@ -461,12 +525,19 @@ mod tests {
         let gpu = VkBackend::new().unwrap();
         // Cross both the initial capacity and its first doubling. Round-trip
         // every word so a freed/reused allocation cannot pass by checking a prefix.
-        for bytes in [STAGING_BUFFER_INITIAL_SIZE+64, 2*STAGING_BUFFER_INITIAL_SIZE+64] {
-            let input: Vec<u32> = (0..bytes as usize/4).map(|i| i as u32 ^ 0xa55a_5aa5).collect();
+        for bytes in [
+            STAGING_BUFFER_INITIAL_SIZE + 64,
+            2 * STAGING_BUFFER_INITIAL_SIZE + 64,
+        ] {
+            let input: Vec<u32> = (0..bytes as usize / 4)
+                .map(|i| i as u32 ^ 0xa55a_5aa5)
+                .collect();
             let buffer = gpu.memory().create_storage_buffer(bytes).unwrap();
             gpu.memory().upload_typed(&buffer, &input).unwrap();
             let mut output = vec![0_u32; input.len()];
-            gpu.memory().download_typed(&buffer, output.len(), &mut output).unwrap();
+            gpu.memory()
+                .download_typed(&buffer, output.len(), &mut output)
+                .unwrap();
             assert_eq!(input, output);
             gpu.memory().destroy_buffer(buffer);
         }

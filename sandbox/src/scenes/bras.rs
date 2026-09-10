@@ -5,7 +5,8 @@ use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription
 /// Builds the same rigid screen or block used by the BRAS benchmark.
 pub(super) fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> SceneDescription {
     // BRAS uses Z up. Positions.csv explicitly maps (X,Y,Z) to engine (X,Z,Y).
-    let mut scene = geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
+    let mut scene =
+        geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
     let (walls, edges) = if name == "RS5" {
         // Thin-screen approximation of the 25 mm partition, at its mid-plane.
         // Height and span come from RS5_RIR.png; no RIR was used to adjust them.
@@ -147,7 +148,14 @@ pub(super) fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> Sce
     scene
 }
 
-fn edge(id: u32, start: Vec3, end: Vec3, bisector_dir: Vec3, angle: f32, radius: f32) -> DiffractionEdge {
+fn edge(
+    id: u32,
+    start: Vec3,
+    end: Vec3,
+    bisector_dir: Vec3,
+    angle: f32,
+    radius: f32,
+) -> DiffractionEdge {
     DiffractionEdge {
         id,
         start,

@@ -45,7 +45,10 @@ mod tests {
 
     #[test]
     fn exports_ir_metadata_and_samples() {
-        let path = std::env::temp_dir().join(format!("sound_engine_ir_export_test_{}.csv", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "sound_engine_ir_export_test_{}.csv",
+            std::process::id()
+        ));
         let ir = IrSnapshot {
             sample_rate: 2,
             samples: vec![IrSample::new(0.0, 0.0), IrSample::new(0.5, 0.25)],

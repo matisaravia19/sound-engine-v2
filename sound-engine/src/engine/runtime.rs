@@ -32,9 +32,18 @@ enum EngineCommand {
     /// Start a spatial voice and reply with its voice id.
     PlaySound(PlaySpatialSoundRequest, SyncSender<SoundResult<VoiceId>>),
     /// Start a spatial voice from a tracked sound source.
-    PlaySoundFromSource(SoundId, SoundSourceId, f32, SyncSender<SoundResult<VoiceId>>),
+    PlaySoundFromSource(
+        SoundId,
+        SoundSourceId,
+        f32,
+        SyncSender<SoundResult<VoiceId>>,
+    ),
     /// Build or reuse an impulse response and reply with the raw snapshot.
-    BuildImpulseResponse(PointSource, ListenerPose, SyncSender<SoundResult<IrSnapshot>>),
+    BuildImpulseResponse(
+        PointSource,
+        ListenerPose,
+        SyncSender<SoundResult<IrSnapshot>>,
+    ),
     /// Stop an active voice if it exists.
     StopVoice(VoiceId, SyncSender<SoundResult<()>>),
     /// Stop the worker loop and return the owned engine core.
@@ -67,7 +76,10 @@ pub(super) enum RuntimeStartError {
 
 impl EngineRuntime {
     /// Starts the playback worker and moves direct engine ownership into it.
-    pub(super) fn start(core: EngineCore, playback_config: PlaybackConfig) -> Result<Self, RuntimeStartError> {
+    pub(super) fn start(
+        core: EngineCore,
+        playback_config: PlaybackConfig,
+    ) -> Result<Self, RuntimeStartError> {
         let sample_rate = core.sample_rate();
         let block_size = core.block_size();
         let output_channels = core.output_channels();
@@ -77,23 +89,25 @@ impl EngineRuntime {
         let worker_listener = pending_listener.clone();
 
         let worker = thread::spawn(move || {
-            let player = match SoundPlayer::new(sample_rate, output_channels, block_size, playback_config) {
-                Ok(player) => {
-                    let _ = init_tx.send(Ok(()));
-                    player
-                }
-                Err(error) => {
-                    let _ = init_tx.send(Err(error));
-                    return (core, Ok(()));
-                }
-            };
+            let player =
+                match SoundPlayer::new(sample_rate, output_channels, block_size, playback_config) {
+                    Ok(player) => {
+                        let _ = init_tx.send(Ok(()));
+                        player
+                    }
+                    Err(error) => {
+                        let _ = init_tx.send(Err(error));
+                        return (core, Ok(()));
+                    }
+                };
             runtime_loop(core, player, receiver, worker_listener)
         });
 
-        match init_rx
-            .recv()
-            .map_err(|_| RuntimeStartError::Fatal(SoundError::external("sound player worker stopped during startup")))?
-        {
+        match init_rx.recv().map_err(|_| {
+            RuntimeStartError::Fatal(SoundError::external(
+                "sound player worker stopped during startup",
+            ))
+        })? {
             Ok(()) => {}
             Err(error) => {
                 let _ = sender.send(EngineCommand::Shutdown);
@@ -137,8 +151,14 @@ impl EngineRuntime {
 
     /// Replaces an unapplied listener pose without waiting for the audio worker.
     pub(super) fn update_listener_pose(&self, listener: ListenerPose) -> SoundResult<()> {
-        if self.worker.as_ref().is_none_or(|worker| worker.is_finished()) {
-            return Err(SoundError::invalid_state("sound player worker is not running"));
+        if self
+            .worker
+            .as_ref()
+            .is_none_or(|worker| worker.is_finished())
+        {
+            return Err(SoundError::invalid_state(
+                "sound player worker is not running",
+            ));
         }
         let listener = crate::acoustics::canonicalize_listener(listener)?;
         *self
@@ -164,7 +184,11 @@ impl EngineRuntime {
     }
 
     /// Sends a tracked source update command to the runtime.
-    pub(super) fn update_sound_source(&self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
+    pub(super) fn update_sound_source(
+        &self,
+        id: SoundSourceId,
+        source: PointSource,
+    ) -> SoundResult<()> {
         self.request(|reply| EngineCommand::UpdateSoundSource(id, source, reply))
     }
 
@@ -208,12 +232,17 @@ impl EngineRuntime {
         let Some(worker) = self.worker.take() else {
             return (
                 None,
-                Err(SoundError::invalid_state("sound player worker was already stopped")),
+                Err(SoundError::invalid_state(
+                    "sound player worker was already stopped",
+                )),
             );
         };
         match worker.join() {
             Ok((core, result)) => (Some(core), result),
-            Err(_) => (None, Err(SoundError::external("sound player worker thread panicked"))),
+            Err(_) => (
+                None,
+                Err(SoundError::external("sound player worker thread panicked")),
+            ),
         }
     }
 
@@ -233,7 +262,10 @@ impl EngineRuntime {
     }
 
     /// Sends a command with a one-shot reply channel and waits for the result.
-    fn request<T>(&self, build: impl FnOnce(SyncSender<SoundResult<T>>) -> EngineCommand) -> SoundResult<T> {
+    fn request<T>(
+        &self,
+        build: impl FnOnce(SyncSender<SoundResult<T>>) -> EngineCommand,
+    ) -> SoundResult<T> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.commands
             .send(build(reply_tx))
@@ -256,7 +288,8 @@ fn runtime_loop(
     pending_listener: Arc<Mutex<Option<ListenerPose>>>,
 ) -> (EngineCore, SoundResult<()>) {
     let mut output_block = vec![0.0; core.block_size() * core.output_channels()];
-    let block_duration = std::time::Duration::from_secs_f64(core.block_size() as f64 / core.sample_rate() as f64);
+    let block_duration =
+        std::time::Duration::from_secs_f64(core.block_size() as f64 / core.sample_rate() as f64);
     // Repay expensive spatial work by producing audio before the next phase.
     // This preserves the configured queue capacity and the complete ray budget.
     let mut render_debt = std::time::Duration::ZERO;
@@ -461,8 +494,10 @@ impl Drop for RuntimeMeasurements<'_> {
                 path.with_extension("audio.json"),
                 format!(
                     "{{\"underrun_callbacks\":{underruns},\"missing_frames\":{missing},\"first_underrun_seconds_since_player_creation\":{},\"last_underrun_seconds_since_player_creation\":{}}}\n",
-                    starvation_times.map_or_else(|| "null".to_owned(), |(first, _)| first.to_string()),
-                    starvation_times.map_or_else(|| "null".to_owned(), |(_, last)| last.to_string()),
+                    starvation_times
+                        .map_or_else(|| "null".to_owned(), |(first, _)| first.to_string()),
+                    starvation_times
+                        .map_or_else(|| "null".to_owned(), |(_, last)| last.to_string()),
                 ),
             )?;
             Ok(())

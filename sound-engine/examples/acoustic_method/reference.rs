@@ -164,7 +164,11 @@ pub(super) fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.45),
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.45,
+            ),
             // The Biot-Tolstoy-Medwin secondary-edge-source integral is the
             // exact first-order solution for an infinite rigid wedge. Truncating
             // the integral to the authored edge gives the standard finite-edge
@@ -176,7 +180,11 @@ pub(super) fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.20),
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.20,
+            ),
             exact_paths: diffraction_exact.clone(),
         },
         BenchmarkCase {
@@ -184,45 +192,100 @@ pub(super) fn benchmark_cases() -> Vec<BenchmarkCase> {
             source: diffraction_source,
             listener: diffraction_listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.90),
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.90,
+            ),
             exact_paths: diffraction_exact,
         },
     ];
     // Additional geometries are validation controls, not inputs to the global
     // edge-gain calibration. Keep the original wedge/radius cases unchanged.
     for (name, source, listener) in [
-        ("diffraction_shallow_shadow", vec3(-0.5, 0.0, 4.0), vec3(-0.5, 0.0, -4.0)),
-        ("diffraction_deep_shadow", vec3(-2.8, 0.0, 3.0), vec3(-2.8, 0.0, -3.0)),
-        ("diffraction_unequal_distances", vec3(-1.0, 0.0, 2.0), vec3(-3.0, 0.0, -4.0)),
-        ("diffraction_axial_offset", vec3(-2.0, 1.0, 3.0), vec3(-2.0, -1.0, -3.0)),
+        (
+            "diffraction_shallow_shadow",
+            vec3(-0.5, 0.0, 4.0),
+            vec3(-0.5, 0.0, -4.0),
+        ),
+        (
+            "diffraction_deep_shadow",
+            vec3(-2.8, 0.0, 3.0),
+            vec3(-2.8, 0.0, -3.0),
+        ),
+        (
+            "diffraction_unequal_distances",
+            vec3(-1.0, 0.0, 2.0),
+            vec3(-3.0, 0.0, -4.0),
+        ),
+        (
+            "diffraction_axial_offset",
+            vec3(-2.0, 1.0, 3.0),
+            vec3(-2.0, -1.0, -3.0),
+        ),
     ] {
         cases.push(BenchmarkCase {
             name,
             source,
             listener,
             max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.45),
-            exact_paths: btm_diffraction_paths(source, listener, exterior_wedge_angle,
-                -DIFFRACTION_EDGE_HALF_LENGTH, DIFFRACTION_EDGE_HALF_LENGTH, DIFFRACTION_QUADRATURE_SEGMENTS),
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.45,
+            ),
+            exact_paths: btm_diffraction_paths(
+                source,
+                listener,
+                exterior_wedge_angle,
+                -DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_QUADRATURE_SEGMENTS,
+            ),
         });
     }
     // Withheld controls exercise reversal, metric scale and shadow directions
     // beyond the old forward-hemisphere cutoff. No parameters are fitted here.
     for (name, source, listener, scale) in [
-        ("diffraction_unequal_reversed", vec3(-3.0, 0.0, -4.0), vec3(-1.0, 0.0, 2.0), 1.0),
-        ("diffraction_scale_double", diffraction_source * 2.0, diffraction_listener * 2.0, 2.0),
+        (
+            "diffraction_unequal_reversed",
+            vec3(-3.0, 0.0, -4.0),
+            vec3(-1.0, 0.0, 2.0),
+            1.0,
+        ),
+        (
+            "diffraction_scale_double",
+            diffraction_source * 2.0,
+            diffraction_listener * 2.0,
+            2.0,
+        ),
     ] {
         let half_length = DIFFRACTION_EDGE_HALF_LENGTH * scale;
         cases.push(BenchmarkCase {
-            name, source, listener, max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior_wedge_angle as f32, half_length as f32, 0.45 * scale as f32),
-            exact_paths: btm_diffraction_paths(source, listener, exterior_wedge_angle,
-                -half_length, half_length, DIFFRACTION_QUADRATURE_SEGMENTS),
+            name,
+            source,
+            listener,
+            max_bounces: 1,
+            scene: diffraction_wedge_scene(
+                exterior_wedge_angle as f32,
+                half_length as f32,
+                0.45 * scale as f32,
+            ),
+            exact_paths: btm_diffraction_paths(
+                source,
+                listener,
+                exterior_wedge_angle,
+                -half_length,
+                half_length,
+                DIFFRACTION_QUADRATURE_SEGMENTS,
+            ),
         });
     }
     for (name, degrees) in [
-        ("diffraction_wedge_210", 210.0_f64), ("diffraction_wedge_240", 240.0),
-        ("diffraction_wedge_300", 300.0), ("diffraction_wedge_330", 330.0),
+        ("diffraction_wedge_210", 210.0_f64),
+        ("diffraction_wedge_240", 240.0),
+        ("diffraction_wedge_300", 300.0),
+        ("diffraction_wedge_330", 330.0),
         ("diffraction_wedge_360", 360.0),
     ] {
         let exterior = degrees.to_radians();
@@ -230,15 +293,32 @@ pub(super) fn benchmark_cases() -> Vec<BenchmarkCase> {
         let listener_angle = PI + source_angle + 0.83 * (exterior - PI - source_angle);
         let position = |angle: f64, radius: f64, height: f32| {
             let radial_angle = 0.5 * exterior - angle;
-            vec3((radius * radial_angle.cos()) as f32, height, (radius * radial_angle.sin()) as f32)
+            vec3(
+                (radius * radial_angle.cos()) as f32,
+                height,
+                (radius * radial_angle.sin()) as f32,
+            )
         };
         let source = position(source_angle, 4.2, -0.7);
         let listener = position(listener_angle, 6.7, 0.4);
         cases.push(BenchmarkCase {
-            name, source, listener, max_bounces: 1,
-            scene: diffraction_wedge_scene(exterior as f32, DIFFRACTION_EDGE_HALF_LENGTH as f32, 0.45),
-            exact_paths: btm_diffraction_paths(source, listener, exterior,
-                -DIFFRACTION_EDGE_HALF_LENGTH, DIFFRACTION_EDGE_HALF_LENGTH, DIFFRACTION_QUADRATURE_SEGMENTS),
+            name,
+            source,
+            listener,
+            max_bounces: 1,
+            scene: diffraction_wedge_scene(
+                exterior as f32,
+                DIFFRACTION_EDGE_HALF_LENGTH as f32,
+                0.45,
+            ),
+            exact_paths: btm_diffraction_paths(
+                source,
+                listener,
+                exterior,
+                -DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_EDGE_HALF_LENGTH,
+                DIFFRACTION_QUADRATURE_SEGMENTS,
+            ),
         });
     }
     cases
@@ -478,8 +558,8 @@ pub(super) fn btm_diffraction_paths(
         let listener_axial = edge_coordinate - listener.y as f64;
         let source_distance = source_radius.hypot(source_axial);
         let listener_distance = listener_radius.hypot(listener_axial);
-        let eta_argument =
-            (source_distance * listener_distance + source_axial * listener_axial) / (source_radius * listener_radius);
+        let eta_argument = (source_distance * listener_distance + source_axial * listener_axial)
+            / (source_radius * listener_radius);
         let eta = eta_argument.max(1.0).acosh();
 
         let mut beta_sum = 0.0;
@@ -495,7 +575,8 @@ pub(super) fn btm_diffraction_paths(
         let total_length = source_distance + listener_distance;
         // The published source convention already produces a 1/r direct field,
         // so the BTM coefficient retains its 1/(4*pi) factor.
-        let pressure = -wedge_index / (4.0 * PI) * beta_sum * segment_length / (source_distance * listener_distance);
+        let pressure = -wedge_index / (4.0 * PI) * beta_sum * segment_length
+            / (source_distance * listener_distance);
         paths.push(ExactPath {
             length_meters: total_length,
             // ExactPath stores the numerator of pressure/length.
@@ -517,5 +598,10 @@ pub(super) fn wedge_angle(origin: Vec3, axis: Vec3, direction: Vec3) -> f64 {
 
 /// Maps a source coordinate into a mirrored periodic room cell.
 pub(super) fn image_coordinate(length: f32, source: f32, cell: i32, parity: i32) -> f32 {
-    2.0 * cell as f32 * length + if parity == 0 { source } else { -source }
+    2.0 * cell as f32 * length
+        + if parity == 0 {
+            source
+        } else {
+            -source
+        }
 }

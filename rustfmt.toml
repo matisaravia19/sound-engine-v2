@@ -1,1 +1,5 @@
-﻿max_width = 120
+# Keep expressions readable without packing structs or branches onto one line.
+max_width = 100
+struct_lit_width = 0
+struct_variant_width = 0
+single_line_if_else_max_width = 0

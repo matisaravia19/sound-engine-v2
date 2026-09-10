@@ -8,13 +8,19 @@ impl RtContext {
         pipeline: &mut RayTracingPipeline,
     ) -> SoundResult<DescriptorSetAllocation> {
         for pool in pipeline.descriptor_pools.iter().rev() {
-            if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout) {
-                return Ok(DescriptorSetAllocation { pool: *pool, set });
+            if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout)
+            {
+                return Ok(DescriptorSetAllocation {
+                    pool: *pool,
+                    set,
+                });
             }
         }
 
-        let descriptor_pool = self.create_descriptor_pool(pipeline.pool_sizes_template.as_slice())?;
-        let descriptor_set = self.try_allocate_descriptor_set(descriptor_pool, pipeline.descriptor_set_layout)?;
+        let descriptor_pool =
+            self.create_descriptor_pool(pipeline.pool_sizes_template.as_slice())?;
+        let descriptor_set =
+            self.try_allocate_descriptor_set(descriptor_pool, pipeline.descriptor_set_layout)?;
         pipeline.descriptor_pools.push(descriptor_pool);
         Ok(DescriptorSetAllocation {
             pool: descriptor_pool,
@@ -39,7 +45,11 @@ impl RtContext {
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .max_sets(DESCRIPTOR_SETS_PER_POOL)
             .pool_sizes(&pool_sizes);
-        let descriptor_pool = unsafe { self.device_context.device.create_descriptor_pool(&pool_info, None)? };
+        let descriptor_pool = unsafe {
+            self.device_context
+                .device
+                .create_descriptor_pool(&pool_info, None)?
+        };
         Ok(descriptor_pool)
     }
 
@@ -52,16 +62,25 @@ impl RtContext {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
-        let descriptor_set = unsafe { self.device_context.device.allocate_descriptor_sets(&alloc_info)?[0] };
+        let descriptor_set = unsafe {
+            self.device_context
+                .device
+                .allocate_descriptor_sets(&alloc_info)?[0]
+        };
         Ok(descriptor_set)
     }
 }
 
 /// Aggregates descriptor counts by type for RT descriptor-pool creation.
-pub(super) fn aggregate_pool_sizes(bindings: &[vk::DescriptorSetLayoutBinding<'_>]) -> Vec<vk::DescriptorPoolSize> {
+pub(super) fn aggregate_pool_sizes(
+    bindings: &[vk::DescriptorSetLayoutBinding<'_>],
+) -> Vec<vk::DescriptorPoolSize> {
     let mut pool_sizes = Vec::<vk::DescriptorPoolSize>::new();
     for binding in bindings {
-        if let Some(existing) = pool_sizes.iter_mut().find(|entry| entry.ty == binding.descriptor_type) {
+        if let Some(existing) = pool_sizes
+            .iter_mut()
+            .find(|entry| entry.ty == binding.descriptor_type)
+        {
             existing.descriptor_count += binding.descriptor_count;
         } else {
             pool_sizes.push(

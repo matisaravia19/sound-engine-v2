@@ -49,11 +49,13 @@ impl SceneManager {
     ///
     /// The returned resources are owned by the manager and remain valid until
     /// the next mutable scene operation or GPU sync that replaces them.
-    pub fn sync_gpu_if_needed<'a>(&'a mut self, gpu: &VkBackend) -> SoundResult<&'a GpuSceneResources> {
-        let needs_sync = self
-            .gpu_resources
-            .as_ref()
-            .map_or(true, |resources| resources.version() != self.store.version());
+    pub fn sync_gpu_if_needed<'a>(
+        &'a mut self,
+        gpu: &VkBackend,
+    ) -> SoundResult<&'a GpuSceneResources> {
+        let needs_sync = self.gpu_resources.as_ref().map_or(true, |resources| {
+            resources.version() != self.store.version()
+        });
 
         if needs_sync {
             let previous = self.gpu_resources.take();

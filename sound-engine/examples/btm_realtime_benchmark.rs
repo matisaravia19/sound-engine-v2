@@ -71,7 +71,8 @@ fn build_btm_ir(segment_count: usize) -> Vec<f64> {
         let edge_coordinate = EDGE_START + (segment as f64 + 0.5) * segment_length;
         let source_distance = SOURCE_RADIUS.hypot(edge_coordinate);
         let receiver_distance = RECEIVER_RADIUS.hypot(edge_coordinate);
-        let eta_argument = (source_distance * receiver_distance + edge_coordinate * edge_coordinate)
+        let eta_argument = (source_distance * receiver_distance
+            + edge_coordinate * edge_coordinate)
             / (SOURCE_RADIUS * RECEIVER_RADIUS);
         let eta = eta_argument.max(1.0).acosh();
 
@@ -79,12 +80,14 @@ fn build_btm_ir(segment_count: usize) -> Vec<f64> {
         for source_sign in [-1.0, 1.0] {
             for receiver_sign in [-1.0, 1.0] {
                 let phi = PI + source_sign * SOURCE_ANGLE + receiver_sign * RECEIVER_ANGLE;
-                beta_sum += (WEDGE_INDEX * phi).sin() / ((WEDGE_INDEX * eta).cosh() - (WEDGE_INDEX * phi).cos());
+                beta_sum += (WEDGE_INDEX * phi).sin()
+                    / ((WEDGE_INDEX * eta).cosh() - (WEDGE_INDEX * phi).cos());
             }
         }
         // This coefficient uses the same source convention whose direct field
         // is 1/r; no additional 4*pi calibration is required.
-        let pressure = -WEDGE_INDEX / (4.0 * PI) * beta_sum * segment_length / (source_distance * receiver_distance);
+        let pressure = -WEDGE_INDEX / (4.0 * PI) * beta_sum * segment_length
+            / (source_distance * receiver_distance);
         let sample_position = (source_distance + receiver_distance) / SPEED_OF_SOUND * SAMPLE_RATE;
         deposit_fractional(&mut ir, sample_position, pressure);
     }
@@ -104,15 +107,19 @@ fn deposit_fractional(ir: &mut [f64], position: f64, pressure: f64) {
 
 fn transfer(ir: &[f64], frequency: f64) -> Complex {
     let angular_step = -2.0 * PI * frequency / SAMPLE_RATE;
-    ir.iter()
-        .enumerate()
-        .fold(Complex { re: 0.0, im: 0.0 }, |sum, (index, &sample)| {
+    ir.iter().enumerate().fold(
+        Complex {
+            re: 0.0,
+            im: 0.0,
+        },
+        |sum, (index, &sample)| {
             let phase = angular_step * index as f64;
             Complex {
                 re: sum.re + sample * phase.cos(),
                 im: sum.im + sample * phase.sin(),
             }
-        })
+        },
+    )
 }
 
 fn complex_distance(a: Complex, b: Complex) -> f64 {

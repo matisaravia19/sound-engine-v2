@@ -3,8 +3,9 @@ use glam::vec3;
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::gpu::rt::{
-    BlasBuildSpec, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec, RtMeshSpec, RtPipelineSpec,
-    RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
+    BlasBuildSpec, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec, RtMeshSpec,
+    RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec,
+    TlasBuildSpec,
 };
 use sound_engine::gpu::shader::{ShaderId, ShaderLibrary, ShaderStage};
 use std::mem::size_of;
@@ -18,7 +19,10 @@ fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
     let result = run_smoke_trace(&gpu)?;
 
-    println!("raytracing smoke result: hit={}, miss={}", result.hit, result.miss);
+    println!(
+        "raytracing smoke result: hit={}, miss={}",
+        result.hit, result.miss
+    );
     if result.hit != HIT_VALUE || result.miss != MISS_VALUE {
         return Err(SoundError::invalid_state(format!(
             "Unexpected smoke trace result: expected hit={HIT_VALUE}, miss={MISS_VALUE}"
@@ -34,7 +38,11 @@ struct SmokeTraceResult {
 }
 
 fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
-    let vertices = [vec3(-0.5, -0.5, 0.0), vec3(0.5, -0.5, 0.0), vec3(0.0, 0.5, 0.0)];
+    let vertices = [
+        vec3(-0.5, -0.5, 0.0),
+        vec3(0.5, -0.5, 0.0),
+        vec3(0.0, 0.5, 0.0),
+    ];
     let mesh = gpu.rt().upload_mesh(RtMeshSpec {
         vertices: &vertices,
         indices: None,
@@ -71,9 +79,15 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
             RtShaderStageSpec::new(shader_ids.closest_hit),
         ],
         groups: vec![
-            RtShaderGroupSpec::Raygen { shader: 0 },
-            RtShaderGroupSpec::Miss { shader: 1 },
-            RtShaderGroupSpec::TrianglesHit { closest_hit_shader: 2 },
+            RtShaderGroupSpec::Raygen {
+                shader: 0,
+            },
+            RtShaderGroupSpec::Miss {
+                shader: 1,
+            },
+            RtShaderGroupSpec::TrianglesHit {
+                closest_hit_shader: 2,
+            },
         ],
         descriptor_bindings: vec![
             RtDescriptorBindingSpec::AccelerationStructure {
@@ -130,9 +144,11 @@ struct SmokeShaderIds {
 
 fn load_smoke_shaders(shaders: &ShaderLibrary) -> SoundResult<SmokeShaderIds> {
     Ok(SmokeShaderIds {
-        raygen: shaders.load_glsl_file(ShaderStage::RayGeneration, shader_path("smoke.rgen.glsl"))?,
+        raygen: shaders
+            .load_glsl_file(ShaderStage::RayGeneration, shader_path("smoke.rgen.glsl"))?,
         miss: shaders.load_glsl_file(ShaderStage::RayMiss, shader_path("smoke.rmiss.glsl"))?,
-        closest_hit: shaders.load_glsl_file(ShaderStage::RayClosestHit, shader_path("smoke.rchit.glsl"))?,
+        closest_hit: shaders
+            .load_glsl_file(ShaderStage::RayClosestHit, shader_path("smoke.rchit.glsl"))?,
     })
 }
 

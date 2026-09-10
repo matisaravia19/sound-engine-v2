@@ -2,8 +2,8 @@
 use super::GpuIrSnapshot;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::compute::{
-    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec, MemoryBarrierSpec,
-    PipelineId, PushConstantSpec,
+    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec,
+    MemoryBarrierSpec, PipelineId, PushConstantSpec,
 };
 use crate::gpu::{backend::VkBackend, memory::BufferHandle, shader::ShaderStage};
 use ash::vk;
@@ -60,7 +60,9 @@ impl BandSynthesis {
         let fft_size = samples
             .checked_next_power_of_two()
             .ok_or_else(|| SoundError::invalid_argument("IR FFT size overflow"))?;
-        let scratch = gpu.memory().create_storage_buffer(u64::from(fft_size) * 8 * u64::from(bands) * u64::from(channels))?;
+        let scratch = gpu.memory().create_storage_buffer(
+            u64::from(fft_size) * 8 * u64::from(bands) * u64::from(channels),
+        )?;
         let combined = gpu.memory().create_storage_buffer(fft_size as u64 * 8)?;
         let handles = DeviceHandles {
             physical_device: gpu.device().physical_device,
@@ -86,12 +88,18 @@ impl BandSynthesis {
             .map_err(|e| SoundError::external(format!("UTD band inverse FFT: {e:?}")))?;
         let shader_id = gpu.shaders().load_glsl_file(
             ShaderStage::Compute,
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders/utd_bands.comp.glsl"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/acoustics/shaders/utd_bands.comp.glsl"
+            ),
         )?;
         let kernel = gpu.compute().create_pipeline(ComputePipelineSpec {
             shader_id,
             descriptor_bindings: (0..4).map(DescriptorBindingSpec::storage_buffer).collect(),
-            push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<Constants>() as u32)],
+            push_constant_ranges: vec![PushConstantSpec::new(
+                0,
+                std::mem::size_of::<Constants>() as u32,
+            )],
         })?;
         Ok(Self {
             forward,
@@ -112,7 +120,11 @@ impl BandSynthesis {
     }
 
     /// Reconstructs both ears entirely on GPU; only ray-deposited pressure is used.
-    pub(super) fn synthesize(&mut self, gpu: &VkBackend, raw: &GpuIrSnapshot) -> SoundResult<GpuIrSnapshot> {
+    pub(super) fn synthesize(
+        &mut self,
+        gpu: &VkBackend,
+        raw: &GpuIrSnapshot,
+    ) -> SoundResult<GpuIrSnapshot> {
         let input = raw
             .buffer
             .as_ref()
@@ -125,7 +137,8 @@ impl BandSynthesis {
             // One batched transform retains separate complex pressure for every
             // band/ear. Interpolation overwrites all bins, including zero bins.
             barrier(gpu, command);
-            self.forward.append(command)
+            self.forward
+                .append(command)
                 .map_err(|e| SoundError::external(format!("UTD batched FFT launch: {e:?}")))?;
             barrier(gpu, command);
             constants.stage = 1;
@@ -176,8 +189,15 @@ impl BandSynthesis {
                 ],
                 push_constants: bytemuck::bytes_of(&constants).to_vec(),
                 push_constant_offset: 0,
-                groups: [constants.fft_size.div_ceil(256),
-                    if constants.stage == 0 { constants.bands * constants.channels } else { 1 }, 1],
+                groups: [
+                    constants.fft_size.div_ceil(256),
+                    if constants.stage == 0 {
+                        constants.bands * constants.channels
+                    } else {
+                        1
+                    },
+                    1,
+                ],
             },
         )
     }
@@ -212,64 +232,105 @@ mod tests {
         let fft_size = samples.next_power_of_two() as usize;
         let frequency_max = 20000.0_f32;
         let impulse = |band: usize, ear: usize| {
-            (317 + 37*band + 11*ear, Complex32::new(0.05*(band+1) as f32,
-                if (band+ear)%2 == 0 { 0.07 } else { -0.03 }))
+            (
+                317 + 37 * band + 11 * ear,
+                Complex32::new(
+                    0.05 * (band + 1) as f32,
+                    if (band + ear) % 2 == 0 {
+                        0.07
+                    } else {
+                        -0.03
+                    },
+                ),
+            )
         };
-        let mut input = vec![IrSample::zero(); ((bands*channels+1)*samples) as usize];
+        let mut input = vec![IrSample::zero(); ((bands * channels + 1) * samples) as usize];
         for band in 0..bands as usize {
             for ear in 0..channels as usize {
                 let (time, pressure) = impulse(band, ear);
-                input[(band*channels as usize+ear)*samples as usize+time] = IrSample::new(pressure.re, pressure.im);
+                input[(band * channels as usize + ear) * samples as usize + time] =
+                    IrSample::new(pressure.re, pressure.im);
             }
         }
-        let surface_index = (bands*channels*samples) as usize;
-        input[surface_index+17] = IrSample::new(0.25, -0.125);
-        input[surface_index+samples as usize-1] = IrSample::new(-0.05, 0.1);
-        let buffer = Arc::new(gpu.memory().create_storage_buffer((input.len()*8) as u64).unwrap());
+        let surface_index = (bands * channels * samples) as usize;
+        input[surface_index + 17] = IrSample::new(0.25, -0.125);
+        input[surface_index + samples as usize - 1] = IrSample::new(-0.05, 0.1);
+        let buffer = Arc::new(
+            gpu.memory()
+                .create_storage_buffer((input.len() * 8) as u64)
+                .unwrap(),
+        );
         gpu.memory().upload_typed(&buffer, &input).unwrap();
-        let raw = GpuIrSnapshot { buffer: Some(buffer), byte_size: input.len()*8,
-            sample_rate: rate, sample_count: input.len() as u32, energy: None, scene_version: 1, query_id: 1 };
-        let mut synthesis = BandSynthesis::new(&gpu, samples, rate, channels, bands, frequency_max).unwrap();
+        let raw = GpuIrSnapshot {
+            buffer: Some(buffer),
+            byte_size: input.len() * 8,
+            sample_rate: rate,
+            sample_count: input.len() as u32,
+            energy: None,
+            scene_version: 1,
+            query_id: 1,
+        };
+        let mut synthesis =
+            BandSynthesis::new(&gpu, samples, rate, channels, bands, frequency_max).unwrap();
         let snapshot = synthesis.synthesize(&gpu, &raw).unwrap();
         let mut actual = vec![IrSample::zero(); samples as usize];
-        gpu.memory().download_typed(snapshot.buffer.as_ref().unwrap(), actual.len(), &mut actual).unwrap();
+        gpu.memory()
+            .download_typed(snapshot.buffer.as_ref().unwrap(), actual.len(), &mut actual)
+            .unwrap();
         let inverse = realfft::RealFftPlanner::<f32>::new().plan_fft_inverse(fft_size);
         for ear in 0..channels as usize {
             let mut spectrum = inverse.make_input_vec();
             for (bin, value) in spectrum.iter_mut().enumerate().skip(1) {
                 let frequency = bin as f32 * rate as f32 / fft_size as f32;
-                if frequency > frequency_max { continue; }
-                let node = (frequency/(rate as f32/fft_size as f32)).ln()
-                    / (frequency_max/(rate as f32/fft_size as f32)).ln() * (bands-1) as f32;
+                if frequency > frequency_max {
+                    continue;
+                }
+                let node = (frequency / (rate as f32 / fft_size as f32)).ln()
+                    / (frequency_max / (rate as f32 / fft_size as f32)).ln()
+                    * (bands - 1) as f32;
                 // CPU reference sums all triangular basis functions; the GPU
                 // gathers only the two nonzero neighboring band spectra.
                 for band in 0..bands as usize {
-                    let weight = (1.0-(node-band as f32).abs()).max(0.0);
+                    let weight = (1.0 - (node - band as f32).abs()).max(0.0);
                     let (time, pressure) = impulse(band, ear);
                     let phase = -std::f64::consts::TAU * bin as f64 * time as f64 / fft_size as f64;
-                    *value += pressure * Complex32::new(phase.cos() as f32, phase.sin() as f32) * weight;
+                    *value +=
+                        pressure * Complex32::new(phase.cos() as f32, phase.sin() as f32) * weight;
                 }
             }
             let mut expected = inverse.make_output_vec();
             inverse.process(&mut spectrum, &mut expected).unwrap();
             let (mut error, mut norm) = (0.0_f64, 0.0_f64);
             for i in 0..samples as usize {
-                let direct = input[surface_index+i];
-                let expected = expected[i]/fft_size as f32 + if ear == 0 { direct.left } else { direct.right };
-                let actual = if ear == 0 { actual[i].left } else { actual[i].right };
+                let direct = input[surface_index + i];
+                let expected = expected[i] / fft_size as f32
+                    + if ear == 0 {
+                        direct.left
+                    } else {
+                        direct.right
+                    };
+                let actual = if ear == 0 {
+                    actual[i].left
+                } else {
+                    actual[i].right
+                };
                 assert!(actual.is_finite());
-                error += f64::from(actual-expected).powi(2);
+                error += f64::from(actual - expected).powi(2);
                 norm += f64::from(expected).powi(2);
             }
-            let relative = (error/norm).sqrt();
+            let relative = (error / norm).sqrt();
             eprintln!("long stereo batched synthesis ear={ear} relative L2={relative}");
             assert!(relative < 2e-5, "batched FFT changed complex pressure");
         }
         // Repeated queries clear the complete scratch and assembled spectrum.
         let zero = vec![IrSample::zero(); input.len()];
-        gpu.memory().upload_typed(raw.buffer.as_ref().unwrap(), &zero).unwrap();
+        gpu.memory()
+            .upload_typed(raw.buffer.as_ref().unwrap(), &zero)
+            .unwrap();
         let silent = synthesis.synthesize(&gpu, &raw).unwrap();
-        gpu.memory().download_typed(silent.buffer.as_ref().unwrap(), actual.len(), &mut actual).unwrap();
+        gpu.memory()
+            .download_typed(silent.buffer.as_ref().unwrap(), actual.len(), &mut actual)
+            .unwrap();
         assert!(actual.iter().all(|s| s.left == 0.0 && s.right == 0.0));
     }
 }

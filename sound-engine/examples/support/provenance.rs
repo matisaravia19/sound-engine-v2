@@ -16,7 +16,9 @@ pub fn revision() -> String {
     let Some(mut revision) = run(&["rev-parse", "HEAD"]) else {
         return "unknown".into();
     };
-    if run(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|status| !status.is_empty()) {
+    if run(&["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.is_empty())
+    {
         revision.push_str("+dirty");
     }
     revision

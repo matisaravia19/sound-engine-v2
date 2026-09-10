@@ -21,7 +21,14 @@ fn main() -> SoundResult<()> {
     // Small deterministic IR so expected output is easy to validate.
     let stereo_ir = mono_to_stereo_ir(&ir);
     let impulse_response = convolver.create_impulse_response(&stereo_ir)?;
-    let mut voice = Voice::new(1, 0, 1.0, impulse_response, convolver.tail_size(), convolver.fft_size());
+    let mut voice = Voice::new(
+        1,
+        0,
+        1.0,
+        impulse_response,
+        convolver.tail_size(),
+        convolver.fft_size(),
+    );
 
     let block_size = BLOCK_SIZE;
     let mut input_block = vec![0.0_f32; block_size];
@@ -45,7 +52,9 @@ fn main() -> SoundResult<()> {
     }
 
     println!("\nmax_abs_err(first {compare_len} samples) = {max_abs_err:.6}");
-    println!("If convolution is working, GPU output should differ from input and be close to expected (small error).");
+    println!(
+        "If convolution is working, GPU output should differ from input and be close to expected (small error)."
+    );
 
     Ok(())
 }
@@ -68,7 +77,9 @@ fn cpu_linear_convolution(signal: &[f32], ir: &[f32]) -> Vec<f32> {
 }
 
 fn mono_to_stereo_ir(ir: &[f32]) -> Vec<IrSample> {
-    ir.iter().map(|&sample| IrSample::new(sample, sample)).collect()
+    ir.iter()
+        .map(|&sample| IrSample::new(sample, sample))
+        .collect()
 }
 
 fn engine_config(
@@ -92,6 +103,8 @@ fn engine_config(
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size },
+        auralization: AuralizationConfig {
+            block_size,
+        },
     }
 }

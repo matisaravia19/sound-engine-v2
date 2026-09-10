@@ -111,7 +111,8 @@ impl IrCache {
         // authoritative; quantization is only an insertion/eviction bucket.
         let mut best: Option<(f32, LocationCacheKey, usize, IrCacheKey, GpuIrSnapshot)> = None;
         for (&location, entries) in &self.entries {
-            if location.scene_version != query.scene_version || location.query_id != query.query_id {
+            if location.scene_version != query.scene_version || location.query_id != query.query_id
+            {
                 continue;
             }
             for (index, entry) in entries.iter().enumerate() {
@@ -119,7 +120,10 @@ impl IrCache {
                     continue;
                 }
                 let score = reuse_score(entry.query, query);
-                if best.as_ref().is_none_or(|(best_score, ..)| score < *best_score) {
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, ..)| score < *best_score)
+                {
                     best = Some((
                         score,
                         location,
@@ -151,7 +155,10 @@ impl IrCache {
         self.entries
             .entry(location)
             .or_default()
-            .push(IrCacheEntry { query, snapshot });
+            .push(IrCacheEntry {
+                query,
+                snapshot,
+            });
         self.touch(self.key_for_query(query));
         self.evict_to_limit();
     }
@@ -185,9 +192,14 @@ impl IrCache {
     fn can_reuse(&self, entry: &IrCacheEntry, query: IrCacheQuery) -> bool {
         entry.query.scene_version == query.scene_version
             && entry.query.source_radiation.cache_key() == query.source_radiation.cache_key()
-            && entry.query.source_position.distance(query.source_position) <= self.cfg.reuse_distance_meters
+            && entry.query.source_position.distance(query.source_position)
+                <= self.cfg.reuse_distance_meters
             && (entry.query.source_amplitude - query.source_amplitude).abs() <= f32::EPSILON
-            && entry.query.listener_position.distance(query.listener_position) <= self.cfg.reuse_distance_meters
+            && entry
+                .query
+                .listener_position
+                .distance(query.listener_position)
+                <= self.cfg.reuse_distance_meters
             && entry
                 .query
                 .listener_forward
@@ -208,7 +220,10 @@ impl IrCache {
             scene_version: query.scene_version,
             query_id: query.query_id,
             source_cell: quantize_position(query.source_position, self.cfg.position_cell_meters),
-            listener_cell: quantize_position(query.listener_position, self.cfg.position_cell_meters),
+            listener_cell: quantize_position(
+                query.listener_position,
+                self.cfg.position_cell_meters,
+            ),
         }
     }
 
@@ -219,7 +234,10 @@ impl IrCache {
                 query.listener_forward,
                 self.cfg.listener_orientation_dot_threshold,
             ),
-            listener_up_cell: quantize_direction(query.listener_up, self.cfg.listener_orientation_dot_threshold),
+            listener_up_cell: quantize_direction(
+                query.listener_up,
+                self.cfg.listener_orientation_dot_threshold,
+            ),
         }
     }
 
@@ -238,7 +256,10 @@ impl IrCache {
                 if let Some(index) = entries.iter().position(|entry| {
                     IrCacheKey {
                         location: oldest.location,
-                        listener_forward_cell: quantize_direction(entry.query.listener_forward, threshold),
+                        listener_forward_cell: quantize_direction(
+                            entry.query.listener_forward,
+                            threshold,
+                        ),
                         listener_up_cell: quantize_direction(entry.query.listener_up, threshold),
                     } == oldest
                 }) {
@@ -262,8 +283,12 @@ fn reuse_score(entry: IrCacheQuery, query: IrCacheQuery) -> f32 {
         .listener_up
         .normalize_or_zero()
         .dot(query.listener_up.normalize_or_zero());
-    entry.source_position.distance_squared(query.source_position)
-        + entry.listener_position.distance_squared(query.listener_position)
+    entry
+        .source_position
+        .distance_squared(query.source_position)
+        + entry
+            .listener_position
+            .distance_squared(query.listener_position)
         + (1.0 - forward_alignment)
         + (1.0 - up_alignment)
 }
@@ -272,7 +297,10 @@ fn quantize_direction(direction: Vec3, dot_threshold: f32) -> [i32; 3] {
     if !dot_threshold.is_finite() {
         return [0; 3];
     }
-    quantize_position(direction.normalize_or_zero(), (1.0 - dot_threshold).max(0.001))
+    quantize_position(
+        direction.normalize_or_zero(),
+        (1.0 - dot_threshold).max(0.001),
+    )
 }
 
 fn quantize_position(position: Vec3, cell_size: f32) -> [i32; 3] {

@@ -3,8 +3,10 @@ use super::*;
 use sound_engine::acoustics::IrSample;
 
 fn fixture() -> SceneDescription {
-    let mut scene = geometry::scene_from_walls(vec![geometry::quad_x(0.0, 0.0, 2.0, -20.0, 20.0)], 1.0);
-    let mut floor = geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
+    let mut scene =
+        geometry::scene_from_walls(vec![geometry::quad_x(0.0, 0.0, 2.0, -20.0, 20.0)], 1.0);
+    let mut floor =
+        geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
     floor.meshes[0].id = 2;
     floor.materials[0].id = 2;
     floor.objects[0].id = 2;
@@ -69,9 +71,12 @@ fn source_surface_edge_matches_plane_reflection_reference() {
         },
         cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     };
-    let mut pipeline = ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
+    let mut pipeline =
+        ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
     let mut scene = SceneManager::new();
     let description = fixture();
     scene.load(description.clone()).unwrap();
@@ -89,8 +94,11 @@ fn source_surface_edge_matches_plane_reflection_reference() {
     assert!(norm > 1e-8, "source-floor-edge family was missed");
     let fft = realfft::RealFftPlanner::<f32>::new().plan_fft_forward(4096);
     let mut transfer = fft.make_output_vec();
-    fft.process(&mut added.iter().map(|v| v.left).collect::<Vec<_>>(), &mut transfer)
-        .unwrap();
+    fft.process(
+        &mut added.iter().map(|v| v.left).collect::<Vec<_>>(),
+        &mut transfer,
+    )
+    .unwrap();
     // Independent SciPy coefficient and unfolded floor distance are evaluated
     // offline in mixed_surface_stationary_reference.py. Runtime uses real hits.
     for (bin, expected) in [
@@ -115,11 +123,15 @@ fn source_surface_edge_matches_plane_reflection_reference() {
         1,
         19,
         vec![20.0, 20000.0],
-        (0..19).flat_map(|t| [[1.0 - 0.5 * t as f32 / 18.0, 0.0]; 2]).collect(),
+        (0..19)
+            .flat_map(|t| [[1.0 - 0.5 * t as f32 / 18.0, 0.0]; 2])
+            .collect(),
     )
     .unwrap();
     let mut directional_query = query;
-    directional_query.source_radiation.profile = pipeline.register_source_directivity(&gpu, &profile).unwrap();
+    directional_query.source_radiation.profile = pipeline
+        .register_source_directivity(&gpu, &profile)
+        .unwrap();
     let directional = added_pressure(&mut pipeline, &gpu, &mut scene, directional_query);
     let expected_gain = 1.0 - 0.5 * 2.5_f32.atan2(2.0) / std::f32::consts::PI;
     let ratio_error = (directional
@@ -129,7 +141,9 @@ fn source_surface_edge_matches_plane_reflection_reference() {
         .sum::<f32>()
         / norm)
         .sqrt();
-    eprintln!("source-floor-edge directional scaling error={ratio_error}, expected gain={expected_gain}");
+    eprintln!(
+        "source-floor-edge directional scaling error={ratio_error}, expected gain={expected_gain}"
+    );
     assert!(
         ratio_error < 0.01,
         "source-launched rays used the wrong departure direction"
@@ -151,12 +165,18 @@ fn source_surface_edge_matches_plane_reflection_reference() {
     absorbing.materials[1].absorption_bands = vec![1.0];
     scene.load(absorbing).unwrap();
     let silent = added_pressure(&mut pipeline, &gpu, &mut scene, query);
-    assert!(silent.iter().all(|v| v.left.abs() < 1e-7 && v.right.abs() < 1e-7));
+    assert!(
+        silent
+            .iter()
+            .all(|v| v.left.abs() < 1e-7 && v.right.abs() < 1e-7)
+    );
     // With the floor absorbing, only the source-edge-listener family survives.
     pipeline.set_source_surface_paths(false);
     let raw = pipeline.build_ir_gpu(&gpu, &mut scene, query).unwrap();
     let single = pipeline.download_gpu_ir(&gpu, &raw).unwrap();
-    let raw = pipeline.build_ir_gpu(&gpu, &mut scene, directional_query).unwrap();
+    let raw = pipeline
+        .build_ir_gpu(&gpu, &mut scene, directional_query)
+        .unwrap();
     let directional_single = pipeline.download_gpu_ir(&gpu, &raw).unwrap();
     let expected_gain = 1.0 - 0.5 * 1.5_f32.atan2(2.0) / std::f32::consts::PI;
     let single_error = (directional_single
@@ -193,7 +213,9 @@ fn coplanar_surface_edge_does_not_create_a_reflection_path() {
         },
         cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     };
     // Both wedge faces end at the same edge. Any reflection followed by that
     // edge would have its outgoing leg tangent to the reflecting plane, which
@@ -216,7 +238,8 @@ fn coplanar_surface_edge_does_not_create_a_reflection_path() {
     ));
     let mut scene = SceneManager::new();
     scene.load(description).unwrap();
-    let mut pipeline = ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
+    let mut pipeline =
+        ExperimentalUtdPipeline::with_band_orders(&gpu, config, 0.04, 20000.0, 16, 2).unwrap();
     let query = AcousticQuery {
         query_id: 0,
         source_position: vec3(-0.25, -2.0, 0.0),

@@ -24,7 +24,9 @@ const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_SIZE: usize = 1_024;
 const WARM_BLOCKS: usize = 5;
 const MEASURED_BLOCKS: usize = 31;
-const IR_LENGTHS: &[usize] = &[8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384];
+const IR_LENGTHS: &[usize] = &[
+    8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384,
+];
 
 fn main() -> SoundResult<()> {
     if let Some(length) = child_length()? {
@@ -37,13 +39,16 @@ fn main() -> SoundResult<()> {
 direct_p50_ms,direct_p95_ms,direct_p99_ms,fft_p50_ms,fft_p95_ms,fft_p99_ms,\
 fft_over_direct_p50,relative_l2,max_absolute_error"
     );
-    let executable = std::env::current_exe()
-        .map_err(|error| SoundError::external(format!("failed to locate benchmark executable: {error}")))?;
+    let executable = std::env::current_exe().map_err(|error| {
+        SoundError::external(format!("failed to locate benchmark executable: {error}"))
+    })?;
     for &length in IR_LENGTHS {
         let output = Command::new(&executable)
             .args(["--length", &length.to_string()])
             .output()
-            .map_err(|error| SoundError::external(format!("failed to launch length {length}: {error}")))?;
+            .map_err(|error| {
+                SoundError::external(format!("failed to launch length {length}: {error}"))
+            })?;
         if !output.status.success() {
             return Err(SoundError::external(format!(
                 "length {length} failed: {}",
@@ -54,7 +59,9 @@ fft_over_direct_p50,relative_l2,max_absolute_error"
         let row = stdout
             .lines()
             .find_map(|line| line.strip_prefix("measurement,"))
-            .ok_or_else(|| SoundError::external(format!("length {length} returned no measurement")))?;
+            .ok_or_else(|| {
+                SoundError::external(format!("length {length} returned no measurement"))
+            })?;
         println!("{row}");
     }
     Ok(())
@@ -100,7 +107,8 @@ fn run_length(ir_length: usize) -> SoundResult<String> {
 
     let total_blocks = WARM_BLOCKS + MEASURED_BLOCKS;
     let input = deterministic_signal(total_blocks * BLOCK_SIZE);
-    let sound_id = engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
+    let sound_id =
+        engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
     engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
 
     let mut direct = DirectFir::new(impulse);
@@ -200,7 +208,11 @@ fn impulse_response(length: usize) -> Vec<f32> {
             let time = index as f32 / length.max(1) as f32;
             let carrier = (index as f32 * 0.754_877_7).sin();
             let sample = (-6.0 * time).exp() * carrier;
-            if index == 0 { 1.0 } else { sample * 0.02 }
+            if index == 0 {
+                1.0
+            } else {
+                sample * 0.02
+            }
         })
         .collect()
 }
@@ -231,6 +243,8 @@ fn engine_config(ir_length: usize) -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }

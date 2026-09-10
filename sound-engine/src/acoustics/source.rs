@@ -69,7 +69,12 @@ impl SourceDirectivity {
     /// for all azimuths. Frequency interpolation uses complex pressure versus
     /// log frequency; outside the measured range, the nearest endpoint is held.
     /// Multipliers are not automatically normalized or fitted to room responses.
-    pub fn new(phi_count: u32, theta_count: u32, frequencies: Vec<f32>, pressure: Vec<[f32; 2]>) -> SoundResult<Self> {
+    pub fn new(
+        phi_count: u32,
+        theta_count: u32,
+        frequencies: Vec<f32>,
+        pressure: Vec<[f32; 2]>,
+    ) -> SoundResult<Self> {
         let size = (phi_count as usize)
             .checked_mul(theta_count as usize)
             .and_then(|n| n.checked_mul(frequencies.len()));
@@ -116,7 +121,9 @@ impl SourceDirectivity {
     /// Decodes and validates the portable DIR1 representation without GPU access.
     pub fn from_bytes(bytes: &[u8]) -> SoundResult<Self> {
         if bytes.len() < 16 || &bytes[..4] != b"DIR1" {
-            return Err(SoundError::invalid_argument("invalid DIR1 source directivity header"));
+            return Err(SoundError::invalid_argument(
+                "invalid DIR1 source directivity header",
+            ));
         }
         let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         let (p, t, f) = (word(4), word(8), word(12));
@@ -132,7 +139,9 @@ impl SourceDirectivity {
                 "source directivity payload length mismatch",
             ));
         }
-        let frequencies = (0..f as usize).map(|i| f32::from_bits(word(16 + 4 * i))).collect();
+        let frequencies = (0..f as usize)
+            .map(|i| f32::from_bits(word(16 + 4 * i)))
+            .collect();
         let start = start.unwrap();
         let pressure = (0..samples.unwrap())
             .map(|i| {
@@ -148,7 +157,8 @@ impl SourceDirectivity {
     /// Resamples only source calibration to the tracer's pressure bands at setup.
     /// The same immutable table is shared by every ray using this source asset.
     pub(super) fn resample(&self, nodes: &[f32]) -> Vec<[f32; 2]> {
-        let mut result = Vec::with_capacity(self.phi_count as usize * self.theta_count as usize * nodes.len());
+        let mut result =
+            Vec::with_capacity(self.phi_count as usize * self.theta_count as usize * nodes.len());
         for direction in self.pressure.chunks_exact(self.frequencies.len()) {
             for &f in nodes {
                 let hi = self
@@ -159,8 +169,9 @@ impl SourceDirectivity {
                 let fraction = if hi == lo {
                     0.0
                 } else {
-                    ((f.ln() - self.frequencies[lo].ln()) / (self.frequencies[hi].ln() - self.frequencies[lo].ln()))
-                        .clamp(0.0, 1.0)
+                    ((f.ln() - self.frequencies[lo].ln())
+                        / (self.frequencies[hi].ln() - self.frequencies[lo].ln()))
+                    .clamp(0.0, 1.0)
                 };
                 result.push(std::array::from_fn(|c| {
                     direction[lo][c] * (1.0 - fraction) + direction[hi][c] * fraction

@@ -26,7 +26,8 @@ fn main() -> SoundResult<()> {
     let sound_a = engine.insert_sound(sine_tone(440.0, 0.75)?)?;
     let sound_b = engine.insert_sound(sine_tone(660.0, 0.75)?)?;
     let knocks = engine.insert_sound(tac_tac_tac()?)?;
-    let music = engine.load_wav_sound("C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion.wav")?;
+    let music =
+        engine.load_wav_sound("C:/Users/matis/OneDrive/Documentos/Fing/Tesis/explosion.wav")?;
     engine.start_sound_player(PlaybackConfig::default())?;
 
     let voice_a = engine.play_sound(PlaySpatialSoundRequest {
@@ -101,7 +102,9 @@ fn engine_config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
 
@@ -155,7 +158,9 @@ fn box_room_vertices(half_extent: Vec3) -> Vec<Vec3> {
 
     let mut vertices = Vec::with_capacity(faces.len() * 6);
     for [a, b, c, d] in faces {
-        vertices.extend_from_slice(&[corners[a], corners[b], corners[c], corners[a], corners[c], corners[d]]);
+        vertices.extend_from_slice(&[
+            corners[a], corners[b], corners[c], corners[a], corners[c], corners[d],
+        ]);
     }
     vertices
 }

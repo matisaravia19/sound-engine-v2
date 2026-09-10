@@ -42,7 +42,11 @@ fn main() -> SoundResult<()> {
         let output_channels = match mode.as_str() {
             "--stereo" => OutputChannels::Stereo,
             "--binaural" => OutputChannels::Binaural,
-            _ => return Err(SoundError::invalid_argument(format!("unknown benchmark mode {mode}"))),
+            _ => {
+                return Err(SoundError::invalid_argument(format!(
+                    "unknown benchmark mode {mode}"
+                )));
+            }
         };
         print_child_measurements(&run_mode(output_channels)?);
         return Ok(());
@@ -78,12 +82,15 @@ source_move_render_ms,warm_p50_ms,warm_p95_ms,warm_p99_ms,audio_deadline_ms"
 }
 
 fn run_isolated_mode(mode: &str) -> SoundResult<Measurements> {
-    let executable = std::env::current_exe()
-        .map_err(|error| SoundError::external(format!("failed to locate benchmark executable: {error}")))?;
+    let executable = std::env::current_exe().map_err(|error| {
+        SoundError::external(format!("failed to locate benchmark executable: {error}"))
+    })?;
     let output = Command::new(executable)
         .arg(mode)
         .output()
-        .map_err(|error| SoundError::external(format!("failed to launch {mode} benchmark: {error}")))?;
+        .map_err(|error| {
+            SoundError::external(format!("failed to launch {mode} benchmark: {error}"))
+        })?;
     if !output.status.success() {
         return Err(SoundError::external(format!(
             "{mode} benchmark failed: {}",
@@ -95,7 +102,9 @@ fn run_isolated_mode(mode: &str) -> SoundResult<Measurements> {
     let line = stdout
         .lines()
         .find_map(|line| line.strip_prefix("measurements,"))
-        .ok_or_else(|| SoundError::external(format!("{mode} benchmark returned no measurements")))?;
+        .ok_or_else(|| {
+            SoundError::external(format!("{mode} benchmark returned no measurements"))
+        })?;
     parse_measurements(line)
 }
 
@@ -117,9 +126,9 @@ fn parse_measurements(line: &str) -> SoundResult<Measurements> {
     let values = line
         .split(',')
         .map(|value| {
-            value
-                .parse::<f64>()
-                .map_err(|error| SoundError::external(format!("invalid benchmark measurement {value}: {error}")))
+            value.parse::<f64>().map_err(|error| {
+                SoundError::external(format!("invalid benchmark measurement {value}: {error}"))
+            })
         })
         .collect::<SoundResult<Vec<_>>>()?;
     if values.len() != 8 {
@@ -243,7 +252,9 @@ fn engine_config(output_channels: OutputChannels) -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
 

@@ -101,7 +101,8 @@ impl AuralizationEngine {
 
     /// Loads a WAV asset into the sound bank at the engine sample rate.
     pub fn load_wav_sound(&mut self, path: impl AsRef<Path>) -> SoundResult<SoundId> {
-        self.sound_bank.load_wav(path, self.config.sound.sample_rate)
+        self.sound_bank
+            .load_wav(path, self.config.sound.sample_rate)
     }
 
     /// Inserts a mono sound asset into the engine sound bank.
@@ -117,7 +118,11 @@ impl AuralizationEngine {
     }
 
     /// Registers an impulse response for later playback.
-    pub fn register_impulse_response(&mut self, id: ImpulseResponseId, samples: &[IrSample]) -> SoundResult<()> {
+    pub fn register_impulse_response(
+        &mut self,
+        id: ImpulseResponseId,
+        samples: &[IrSample],
+    ) -> SoundResult<()> {
         let impulse_response = self.convolver.create_impulse_response(samples)?;
         self.impulse_responses.insert(id, impulse_response);
         Ok(())
@@ -129,7 +134,9 @@ impl AuralizationEngine {
         id: ImpulseResponseId,
         snapshot: &GpuIrSnapshot,
     ) -> SoundResult<()> {
-        let impulse_response = self.convolver.create_impulse_response_from_gpu_ir(snapshot)?;
+        let impulse_response = self
+            .convolver
+            .create_impulse_response_from_gpu_ir(snapshot)?;
         self.impulse_responses.insert(id, impulse_response);
         Ok(())
     }
@@ -154,14 +161,23 @@ impl AuralizationEngine {
         let impulse_response = self
             .impulse_responses
             .get(&impulse_response_id)
-            .ok_or_else(|| SoundError::not_found(format!("Unknown impulse response id {}", impulse_response_id)))?
+            .ok_or_else(|| {
+                SoundError::not_found(format!(
+                    "Unknown impulse response id {}",
+                    impulse_response_id
+                ))
+            })?
             .clone();
         let voice = self
             .active_voices
             .get_mut(&voice_id)
             .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {}", voice_id)))?;
 
-        let transition_frames = self.config.auralization.block_size.saturating_mul(IR_TRANSITION_BLOCKS);
+        let transition_frames = self
+            .config
+            .auralization
+            .block_size
+            .saturating_mul(IR_TRANSITION_BLOCKS);
         voice.queue_impulse_response_transition(
             impulse_response,
             self.convolver.tail_size(),
@@ -179,14 +195,19 @@ impl AuralizationEngine {
         }
         let asset = self.sound_bank.get(request.sound_id)?;
         if asset.is_empty() {
-            return Err(SoundError::invalid_argument("sound asset must not be empty"));
+            return Err(SoundError::invalid_argument(
+                "sound asset must not be empty",
+            ));
         }
 
         let impulse_response = self
             .impulse_responses
             .get(&request.impulse_response_id)
             .ok_or_else(|| {
-                SoundError::not_found(format!("Unknown impulse response id {}", request.impulse_response_id))
+                SoundError::not_found(format!(
+                    "Unknown impulse response id {}",
+                    request.impulse_response_id
+                ))
             })?;
         let voice_id = self.next_voice_id;
         self.next_voice_id = self.next_voice_id.saturating_add(1);
@@ -250,7 +271,10 @@ impl AuralizationEngine {
                     mix_into(output_block, &self.wet_block);
                 }
                 VoiceState::FlushingTail => {
-                    if self.convolver.flush_tail_block(voice, &mut self.wet_block)? {
+                    if self
+                        .convolver
+                        .flush_tail_block(voice, &mut self.wet_block)?
+                    {
                         mix_into(output_block, &self.wet_block);
                     } else {
                         self.finished_voices.push(*voice_id);
@@ -353,7 +377,9 @@ mod tests {
             },
             cache: crate::core::config::IrCacheConfig::default(),
             binaural: Default::default(),
-            auralization: crate::core::config::AuralizationConfig { block_size: 64 },
+            auralization: crate::core::config::AuralizationConfig {
+                block_size: 64,
+            },
         }
     }
 }

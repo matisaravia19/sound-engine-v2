@@ -1,10 +1,13 @@
 //! Interactive scene catalog. Measurement files remain optional runtime assets.
+
 mod bell_box;
 mod bras;
 mod geometry;
 
 use glam::{Mat4, Vec3, vec3};
-use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{
+    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
+};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -65,8 +68,12 @@ pub(crate) fn catalog(root: &Path) -> Vec<Entry> {
             positions: None,
         })
         .collect();
+
     for (id, title) in [("RS5", "BRAS RS5: tabique"), ("RS6", "BRAS RS6: bloque")] {
-        let positions = root.join("measured-reference-research").join(id).join("positions.csv");
+        let positions = root
+            .join("measured-reference-research")
+            .join(id)
+            .join("positions.csv");
         entries.push(Entry {
             id: id.into(),
             title: title.into(),
@@ -74,7 +81,9 @@ pub(crate) fn catalog(root: &Path) -> Vec<Entry> {
             positions: Some(positions),
         });
     }
+
     let folder = root.join("bras-extended-20260909/fixtures");
+
     if let Ok(files) = std::fs::read_dir(folder) {
         let mut paths: Vec<_> = files
             .filter_map(Result::ok)
@@ -82,11 +91,18 @@ pub(crate) fn catalog(root: &Path) -> Vec<Entry> {
             .filter(|p| p.extension().is_some_and(|x| x == "scene"))
             .collect();
         paths.sort();
+
         for scene in paths {
-            let Some(id) = scene.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
+            let Some(id) = scene
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+            else {
                 continue;
             };
+
             let positions = scene.with_extension("csv");
+
             if positions.is_file() {
                 entries.push(Entry {
                     title: fixture_title(&id),
@@ -97,6 +113,7 @@ pub(crate) fn catalog(root: &Path) -> Vec<Entry> {
             }
         }
     }
+
     entries
 }
 
@@ -153,7 +170,11 @@ impl Entry {
                         .collect(),
                 ),
                 "single-plane" | "absorbing-plane" => (
-                    geometry::single_plane_scene(if self.id == "absorbing-plane" { 0.36 } else { 0.0 }),
+                    geometry::single_plane_scene(if self.id == "absorbing-plane" {
+                        0.36
+                    } else {
+                        0.0
+                    }),
                     pair("Pared", vec3(1.1, -0.3, 0.2), vec3(2.7, 0.8, -0.4)),
                 ),
                 "parallel-planes" => (
@@ -170,7 +191,11 @@ impl Entry {
                 ),
                 "bell-empty" => (
                     bell_box::scene(false, false, 0.1, 0.05),
-                    pair("Caja vacia", bell_box::EMPTY_SOURCE, bell_box::EMPTY_LISTENER),
+                    pair(
+                        "Caja vacia",
+                        bell_box::EMPTY_SOURCE,
+                        bell_box::EMPTY_LISTENER,
+                    ),
                 ),
                 "bell-baffle" | "bell-no-diffraction" => (
                     bell_box::scene(true, self.id == "bell-baffle", 0.1, 0.05),
@@ -200,7 +225,11 @@ impl Entry {
                 }
             } else {
                 for t in mesh.indices.chunks_exact(3) {
-                    triangles.push([0, 1, 2].map(|i| object.transform.transform_point3(mesh.vertices[t[i] as usize])));
+                    triangles.push([0, 1, 2].map(|i| {
+                        object
+                            .transform
+                            .transform_point3(mesh.vertices[t[i] as usize])
+                    }));
                 }
             }
         }

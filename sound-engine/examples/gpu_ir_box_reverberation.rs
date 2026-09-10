@@ -40,8 +40,9 @@ fn main() -> SoundResult<()> {
     export_ir(&ir, IR_EXPORT_PATH)?;
     println!("  exported ir: {IR_EXPORT_PATH}");
 
-    let direct_center_sample =
-        ((listener_position - source_position).length() / 343.0 * SAMPLE_RATE as f32).round() as usize;
+    let direct_center_sample = ((listener_position - source_position).length() / 343.0
+        * SAMPLE_RATE as f32)
+        .round() as usize;
     let late_start = direct_center_sample + 100;
     let mut nonzero = 0;
     let mut late_nonzero = 0;
@@ -83,7 +84,9 @@ fn main() -> SoundResult<()> {
         return Err(SoundError::invalid_state("Expected direct listener hits"));
     }
     if late_nonzero == 0 {
-        return Err(SoundError::invalid_state("Expected reverberant listener hits"));
+        return Err(SoundError::invalid_state(
+            "Expected reverberant listener hits",
+        ));
     }
 
     Ok(())
@@ -105,7 +108,9 @@ fn engine_config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
 
@@ -160,7 +165,9 @@ fn box_room_vertices(half_extent: Vec3) -> Vec<Vec3> {
 
     let mut vertices = Vec::with_capacity(faces.len() * 6);
     for [a, b, c, d] in faces {
-        vertices.extend_from_slice(&[corners[a], corners[b], corners[c], corners[a], corners[c], corners[d]]);
+        vertices.extend_from_slice(&[
+            corners[a], corners[b], corners[c], corners[a], corners[c], corners[d],
+        ]);
     }
     vertices
 }

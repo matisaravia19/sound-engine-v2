@@ -1,6 +1,6 @@
 use super::types::{
-    DiffractionEdge, DiffractionEdgeId, Material, MaterialId, MeshAsset, MeshId, ObjectId, SceneDescription,
-    SceneObject, SceneUpdate, SceneUpdates, SceneVersion,
+    DiffractionEdge, DiffractionEdgeId, Material, MaterialId, MeshAsset, MeshId, ObjectId,
+    SceneDescription, SceneObject, SceneUpdate, SceneUpdates, SceneVersion,
 };
 use crate::core::error::{SoundError, SoundResult};
 use std::collections::HashMap;
@@ -36,7 +36,9 @@ impl SceneStore {
         for material in scene.materials {
             validate_material(&material)?;
             if next.materials.insert(material.id, material).is_some() {
-                return Err(SoundError::invalid_argument("Duplicate material id in scene"));
+                return Err(SoundError::invalid_argument(
+                    "Duplicate material id in scene",
+                ));
             }
         }
         for object in scene.objects {
@@ -48,7 +50,9 @@ impl SceneStore {
         for edge in scene.diffraction_edges {
             validate_diffraction_edge(&edge)?;
             if next.diffraction_edges.insert(edge.id, edge).is_some() {
-                return Err(SoundError::invalid_argument("Duplicate diffraction edge id in scene"));
+                return Err(SoundError::invalid_argument(
+                    "Duplicate diffraction edge id in scene",
+                ));
             }
         }
 
@@ -103,19 +107,27 @@ impl SceneStore {
             SceneUpdate::AddMesh(mesh) => {
                 validate_mesh(&mesh)?;
                 if self.meshes.insert(mesh.id, mesh).is_some() {
-                    return Err(SoundError::invalid_argument("AddMesh received an existing mesh id"));
+                    return Err(SoundError::invalid_argument(
+                        "AddMesh received an existing mesh id",
+                    ));
                 }
             }
             SceneUpdate::ReplaceMesh(mesh) => {
                 validate_mesh(&mesh)?;
                 if !self.meshes.contains_key(&mesh.id) {
-                    return Err(SoundError::not_found(format!("Mesh {} does not exist", mesh.id)));
+                    return Err(SoundError::not_found(format!(
+                        "Mesh {} does not exist",
+                        mesh.id
+                    )));
                 }
                 self.meshes.insert(mesh.id, mesh);
             }
             SceneUpdate::RemoveMesh(id) => {
                 if self.objects.values().any(|object| object.mesh_id == id) {
-                    return Err(SoundError::invalid_state(format!("Mesh {} is still referenced", id)));
+                    return Err(SoundError::invalid_state(format!(
+                        "Mesh {} is still referenced",
+                        id
+                    )));
                 }
                 self.meshes
                     .remove(&id)
@@ -146,27 +158,32 @@ impl SceneStore {
                         id
                     )));
                 }
-                self.materials
-                    .remove(&id)
-                    .ok_or_else(|| SoundError::not_found(format!("Material {} does not exist", id)))?;
+                self.materials.remove(&id).ok_or_else(|| {
+                    SoundError::not_found(format!("Material {} does not exist", id))
+                })?;
             }
             SceneUpdate::AddObject(object) => {
                 validate_object_refs(self, &object)?;
                 if self.objects.insert(object.id, object).is_some() {
-                    return Err(SoundError::invalid_argument("AddObject received an existing object id"));
+                    return Err(SoundError::invalid_argument(
+                        "AddObject received an existing object id",
+                    ));
                 }
             }
             SceneUpdate::ReplaceObject(object) => {
                 validate_object_refs(self, &object)?;
                 if !self.objects.contains_key(&object.id) {
-                    return Err(SoundError::not_found(format!("Object {} does not exist", object.id)));
+                    return Err(SoundError::not_found(format!(
+                        "Object {} does not exist",
+                        object.id
+                    )));
                 }
                 self.objects.insert(object.id, object);
             }
             SceneUpdate::RemoveObject(id) => {
-                self.objects
-                    .remove(&id)
-                    .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id)))?;
+                self.objects.remove(&id).ok_or_else(|| {
+                    SoundError::not_found(format!("Object {} does not exist", id))
+                })?;
             }
             SceneUpdate::AddDiffractionEdge(edge) => {
                 validate_diffraction_edge(&edge)?;
@@ -187,17 +204,26 @@ impl SceneStore {
                 self.diffraction_edges.insert(edge.id, edge);
             }
             SceneUpdate::RemoveDiffractionEdge(id) => {
-                self.diffraction_edges
-                    .remove(&id)
-                    .ok_or_else(|| SoundError::not_found(format!("Diffraction edge {} does not exist", id)))?;
+                self.diffraction_edges.remove(&id).ok_or_else(|| {
+                    SoundError::not_found(format!("Diffraction edge {} does not exist", id))
+                })?;
             }
-            SceneUpdate::SetTransform { id, transform } => {
+            SceneUpdate::SetTransform {
+                id,
+                transform,
+            } => {
                 self.object_mut(id)?.transform = transform;
             }
-            SceneUpdate::SetActive { id, active } => {
+            SceneUpdate::SetActive {
+                id,
+                active,
+            } => {
                 self.object_mut(id)?.active = active;
             }
-            SceneUpdate::SetMaterial { id, material_id } => {
+            SceneUpdate::SetMaterial {
+                id,
+                material_id,
+            } => {
                 if !self.materials.contains_key(&material_id) {
                     return Err(SoundError::not_found(format!(
                         "Material {} does not exist",
@@ -263,7 +289,10 @@ fn validate_material(material: &Material) -> SoundResult<()> {
 
 fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult<()> {
     if !store.meshes.contains_key(&object.mesh_id) {
-        return Err(SoundError::not_found(format!("Mesh {} does not exist", object.mesh_id)));
+        return Err(SoundError::not_found(format!(
+            "Mesh {} does not exist",
+            object.mesh_id
+        )));
     }
     if !store.materials.contains_key(&object.material_id) {
         return Err(SoundError::not_found(format!(
@@ -379,8 +408,14 @@ mod tests {
                         roughness: 0.2,
                         transmission: None,
                     }),
-                    SceneUpdate::SetMaterial { id: 10, material_id: 2 },
-                    SceneUpdate::SetMaterial { id: 20, material_id: 2 },
+                    SceneUpdate::SetMaterial {
+                        id: 10,
+                        material_id: 2,
+                    },
+                    SceneUpdate::SetMaterial {
+                        id: 20,
+                        material_id: 2,
+                    },
                     SceneUpdate::RemoveMaterial(1),
                 ],
             })
@@ -445,7 +480,11 @@ mod tests {
     fn mesh(id: MeshId) -> MeshAsset {
         MeshAsset {
             id,
-            vertices: vec![vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)],
+            vertices: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(1.0, 0.0, 0.0),
+                vec3(0.0, 1.0, 0.0),
+            ],
             indices: Vec::new(),
             opaque: true,
         }

@@ -39,28 +39,17 @@ impl ComputeContext {
             }
             self.available_command_buffers
                 .lock()
-                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
+                .map_err(|_| {
+                    SoundError::poisoned_lock("Compute command buffer pool lock is poisoned")
+                })?
                 .push(command_buffer);
             return Err(error);
         }
 
-        if let Err(error) = unsafe { self.device_context.device.end_command_buffer(command_buffer) } {
-            self.release_descriptor_sets(command_buffer)?;
-            unsafe {
-                self.device_context.device.destroy_fence(fence, None);
-            }
-            self.available_command_buffers
-                .lock()
-                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
-                .push(command_buffer);
-            return Err(error.into());
-        }
-
-        let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
         if let Err(error) = unsafe {
             self.device_context
                 .device
-                .queue_submit(queue.handle, std::slice::from_ref(&submit_info), fence)
+                .end_command_buffer(command_buffer)
         } {
             self.release_descriptor_sets(command_buffer)?;
             unsafe {
@@ -68,7 +57,31 @@ impl ComputeContext {
             }
             self.available_command_buffers
                 .lock()
-                .map_err(|_| SoundError::poisoned_lock("Compute command buffer pool lock is poisoned"))?
+                .map_err(|_| {
+                    SoundError::poisoned_lock("Compute command buffer pool lock is poisoned")
+                })?
+                .push(command_buffer);
+            return Err(error.into());
+        }
+
+        let submit_info =
+            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+        if let Err(error) = unsafe {
+            self.device_context.device.queue_submit(
+                queue.handle,
+                std::slice::from_ref(&submit_info),
+                fence,
+            )
+        } {
+            self.release_descriptor_sets(command_buffer)?;
+            unsafe {
+                self.device_context.device.destroy_fence(fence, None);
+            }
+            self.available_command_buffers
+                .lock()
+                .map_err(|_| {
+                    SoundError::poisoned_lock("Compute command buffer pool lock is poisoned")
+                })?
                 .push(command_buffer);
             return Err(error.into());
         }
@@ -76,7 +89,13 @@ impl ComputeContext {
         self.in_flight
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Compute in_flight lock is poisoned"))?
-            .insert(token, InFlightSubmission { fence, command_buffer });
+            .insert(
+                token,
+                InFlightSubmission {
+                    fence,
+                    command_buffer,
+                },
+            );
 
         Ok(FrameToken(token))
     }
@@ -95,7 +114,11 @@ impl ComputeContext {
             .command_pool(queue.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
-        let command_buffer = unsafe { self.device_context.device.allocate_command_buffers(&alloc_info)? }[0];
+        let command_buffer = unsafe {
+            self.device_context
+                .device
+                .allocate_command_buffers(&alloc_info)?
+        }[0];
         Ok(command_buffer)
     }
 
@@ -135,10 +158,14 @@ impl ComputeContext {
 
     fn wait_for_submission(&self, submission: &InFlightSubmission) -> SoundResult<()> {
         unsafe {
+            self.device_context.device.wait_for_fences(
+                std::slice::from_ref(&submission.fence),
+                true,
+                u64::MAX,
+            )?;
             self.device_context
                 .device
-                .wait_for_fences(std::slice::from_ref(&submission.fence), true, u64::MAX)?;
-            self.device_context.device.destroy_fence(submission.fence, None);
+                .destroy_fence(submission.fence, None);
         }
 
         self.release_descriptor_sets(submission.command_buffer)?;

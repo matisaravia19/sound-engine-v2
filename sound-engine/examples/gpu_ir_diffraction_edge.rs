@@ -6,7 +6,9 @@ use sound_engine::core::config::{
 use sound_engine::core::debug::export_ir;
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{
+    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
+};
 
 const BASELINE_IR_EXPORT_PATH: &str = "target/gpu_ir_diffraction_baseline_ir.csv";
 const DIFFRACTION_IR_EXPORT_PATH: &str = "target/gpu_ir_diffraction_edge_ir.csv";
@@ -93,7 +95,8 @@ fn main() -> SoundResult<()> {
         .map(|sample| sample.left as f64)
         .collect::<Vec<_>>();
     let alternate_pressure = alternate_radius_samples.iter().sum::<f64>();
-    let radius_error = (measured_pressure - alternate_pressure).abs() / measured_pressure.abs().max(1.0e-12);
+    let radius_error =
+        (measured_pressure - alternate_pressure).abs() / measured_pressure.abs().max(1.0e-12);
     if radius_error > 0.35 {
         return Err(SoundError::invalid_state(format!(
             "Normalized ray diffraction changed across proxy radii by {radius_error:.6}"
@@ -110,7 +113,13 @@ fn main() -> SoundResult<()> {
 
     let visible_source = vec3(1.0, 0.0, -1.0);
     let visible_listener = vec3(1.0, 0.0, -2.0);
-    let visible_baseline = trace_scene(&gpu, diffraction_scene(None, 0.18), 4, visible_source, visible_listener)?;
+    let visible_baseline = trace_scene(
+        &gpu,
+        diffraction_scene(None, 0.18),
+        4,
+        visible_source,
+        visible_listener,
+    )?;
     let visible_zero_strength = trace_scene(
         &gpu,
         diffraction_scene(Some(diffraction_edge(3.0, 0.0)), 0.18),
@@ -128,7 +137,8 @@ fn main() -> SoundResult<()> {
         .iter()
         .flat_map(|sample| [sample.left as f64, sample.right as f64])
         .collect::<Vec<_>>();
-    let visible_invariance_error = relative_l2(&visible_baseline_samples, &visible_zero_strength_samples);
+    let visible_invariance_error =
+        relative_l2(&visible_baseline_samples, &visible_zero_strength_samples);
     if visible_invariance_error > 1.0e-6 {
         return Err(SoundError::invalid_state(format!(
             "A transparent zero-strength proxy changed ordinary transport: relative L2 {visible_invariance_error:.9}"
@@ -138,7 +148,8 @@ fn main() -> SoundResult<()> {
     let sandbox_source_position = vec3(-4.5, 0.45, 0.0);
     let (doorway_maximum_step_db, doorway_span_db, shadow_excess_db, boundary_step_db) =
         doorway_position_sweep(&gpu, sandbox_source_position)?;
-    let (multibounce_energy_ratio, multibounce_peak_ratio) = doorway_multibounce_growth(&gpu, sandbox_source_position)?;
+    let (multibounce_energy_ratio, multibounce_peak_ratio) =
+        doorway_multibounce_growth(&gpu, sandbox_source_position)?;
     if doorway_maximum_step_db > 2.0 {
         return Err(SoundError::invalid_state(format!(
             "Visible doorway sweep changed by {doorway_maximum_step_db:.6} dB between adjacent 5 cm positions"
@@ -183,8 +194,22 @@ fn main() -> SoundResult<()> {
 
 fn doorway_multibounce_growth(gpu: &VkBackend, source_position: Vec3) -> SoundResult<(f64, f64)> {
     let listener_position = vec3(1.8, 0.45, 0.0);
-    let first_order = trace_scene_with_bounces(gpu, doorway_scene(), 9_000, source_position, listener_position, 1)?;
-    let multibounce = trace_scene_with_bounces(gpu, doorway_scene(), 9_001, source_position, listener_position, 3)?;
+    let first_order = trace_scene_with_bounces(
+        gpu,
+        doorway_scene(),
+        9_000,
+        source_position,
+        listener_position,
+        1,
+    )?;
+    let multibounce = trace_scene_with_bounces(
+        gpu,
+        doorway_scene(),
+        9_001,
+        source_position,
+        listener_position,
+        3,
+    )?;
     let first_peak = first_order
         .samples
         .iter()
@@ -201,7 +226,10 @@ fn doorway_multibounce_growth(gpu: &VkBackend, source_position: Vec3) -> SoundRe
     ))
 }
 
-fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult<(f64, f64, f64, f64)> {
+fn doorway_position_sweep(
+    gpu: &VkBackend,
+    source_position: Vec3,
+) -> SoundResult<(f64, f64, f64, f64)> {
     let mut scene = SceneManager::new();
     scene.load(doorway_scene())?;
     let mut pipeline = AcousticPipeline::new(gpu, engine_config())?;
@@ -230,7 +258,9 @@ fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult
                 .iter()
                 .any(|sample| !sample.left.is_finite() || !sample.right.is_finite())
         {
-            return Err(SoundError::invalid_state("Doorway sweep produced non-finite IR data"));
+            return Err(SoundError::invalid_state(
+                "Doorway sweep produced non-finite IR data",
+            ));
         }
         levels.push(10.0 * (ir.energy as f64).max(1.0e-24).log10());
     }
@@ -243,7 +273,10 @@ fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult
         .max_by(|left, right| left.1.total_cmp(&right.1))
         .unwrap_or((0, 0.0));
     let minimum_level = visible_levels.iter().copied().fold(f64::INFINITY, f64::min);
-    let maximum_level = visible_levels.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let maximum_level = visible_levels
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
     let maximum_shadow_level = levels[..=32]
         .iter()
         .chain(&levels[88..])
@@ -329,7 +362,14 @@ fn trace_scene(
     source_position: Vec3,
     listener_position: Vec3,
 ) -> SoundResult<sound_engine::acoustics::IrSnapshot> {
-    trace_scene_with_bounces(gpu, scene_description, query_id, source_position, listener_position, 1)
+    trace_scene_with_bounces(
+        gpu,
+        scene_description,
+        query_id,
+        source_position,
+        listener_position,
+        1,
+    )
 }
 
 fn trace_scene_with_bounces(
@@ -379,7 +419,9 @@ fn engine_config_with_bounces(max_bounces: u32) -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     }
 }
 
@@ -387,7 +429,10 @@ fn diffraction_scene(edge: Option<DiffractionEdge>, absorption: f32) -> SceneDes
     diffraction_scene_with_edges(edge.into_iter().collect(), absorption)
 }
 
-fn diffraction_scene_with_edges(diffraction_edges: Vec<DiffractionEdge>, absorption: f32) -> SceneDescription {
+fn diffraction_scene_with_edges(
+    diffraction_edges: Vec<DiffractionEdge>,
+    absorption: f32,
+) -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
@@ -515,7 +560,9 @@ fn box_vertices(center: Vec3, size: Vec3) -> Vec<Vec3> {
     ];
     let mut vertices = Vec::with_capacity(36);
     for [a, b, c, d] in faces {
-        vertices.extend_from_slice(&[corners[a], corners[b], corners[c], corners[a], corners[c], corners[d]]);
+        vertices.extend_from_slice(&[
+            corners[a], corners[b], corners[c], corners[a], corners[c], corners[d],
+        ]);
     }
     vertices
 }
@@ -552,9 +599,11 @@ mod btm_reference {
         let edge_vector = edge.end - edge.start;
         let edge_length = edge_vector.length() as f64;
         let edge_axis = edge_vector.normalize();
-        let bisector = (edge.bisector_dir - edge_axis * edge.bisector_dir.dot(edge_axis)).normalize();
+        let bisector =
+            (edge.bisector_dir - edge_axis * edge.bisector_dir.dot(edge_axis)).normalize();
         let plane_normal = bisector.cross(edge_axis).normalize();
-        let delta = ((edge.edge_angle_radians - std::f32::consts::PI) * 0.5).clamp(0.0, std::f32::consts::FRAC_PI_2);
+        let delta = ((edge.edge_angle_radians - std::f32::consts::PI) * 0.5)
+            .clamp(0.0, std::f32::consts::FRAC_PI_2);
         let positive_shadow = (delta.cos() * plane_normal - delta.sin() * bisector).normalize();
         let source_relative = source - edge.start;
         let listener_relative = listener - edge.start;
@@ -575,20 +624,27 @@ mod btm_reference {
             let listener_axial = (edge_point - listener).dot(edge_axis) as f64;
             let source_distance = source_radius.hypot(source_axial);
             let listener_distance = listener_radius.hypot(listener_axial);
-            let eta_argument = (source_distance * listener_distance + source_axial * listener_axial)
+            let eta_argument = (source_distance * listener_distance
+                + source_axial * listener_axial)
                 / (source_radius * listener_radius);
             let eta = eta_argument.max(1.0).acosh();
             let mut beta_sum = 0.0;
             for source_sign in [-1.0, 1.0] {
                 for listener_sign in [-1.0, 1.0] {
                     let phi = PI + source_sign * source_angle + listener_sign * listener_angle;
-                    beta_sum += (wedge_index * phi).sin() / ((wedge_index * eta).cosh() - (wedge_index * phi).cos());
+                    beta_sum += (wedge_index * phi).sin()
+                        / ((wedge_index * eta).cosh() - (wedge_index * phi).cos());
                 }
             }
             let total_distance = source_distance + listener_distance;
-            let pressure = source_amplitude * strength * -wedge_index / (4.0 * PI) * beta_sum * segment_length
-                / (source_distance * listener_distance);
-            deposit_fractional(&mut samples, total_distance / 343.0 * SAMPLE_RATE as f64, pressure);
+            let pressure =
+                source_amplitude * strength * -wedge_index / (4.0 * PI) * beta_sum * segment_length
+                    / (source_distance * listener_distance);
+            deposit_fractional(
+                &mut samples,
+                total_distance / 343.0 * SAMPLE_RATE as f64,
+                pressure,
+            );
         }
         samples
     }

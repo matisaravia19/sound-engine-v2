@@ -4,8 +4,8 @@ use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{
-    AabbBlasBuildSpec, BlasBuildSpec, BlasId, RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec,
-    TlasBuildSpec, TlasId,
+    AabbBlasBuildSpec, BlasBuildSpec, BlasId, RtAabbBuffers, RtAabbSpec, RtInstanceSpec,
+    RtMeshBuffers, RtMeshSpec, TlasBuildSpec, TlasId,
 };
 use ash::vk;
 use glam::Vec3;
@@ -90,8 +90,13 @@ unsafe impl bytemuck::Pod for GpuDiffractionEdge {}
 
 impl GpuSceneResources {
     /// Builds a GPU scene mirror, reusing uploaded mesh BLAS data when possible.
-    pub(crate) fn build(gpu: &VkBackend, store: &SceneStore, previous: Option<Self>) -> SoundResult<Self> {
-        let mut uploaded_meshes = previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
+    pub(crate) fn build(
+        gpu: &VkBackend,
+        store: &SceneStore,
+        previous: Option<Self>,
+    ) -> SoundResult<Self> {
+        let mut uploaded_meshes =
+            previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
         for mesh in store.meshes() {
             if uploaded_meshes.contains_key(&mesh.id) {
                 continue;
@@ -118,16 +123,19 @@ impl GpuSceneResources {
         }
         uploaded_meshes.retain(|mesh_id, _| store.meshes.contains_key(mesh_id));
 
-        let mut active_objects = store.objects().filter(|object| object.active).collect::<Vec<_>>();
+        let mut active_objects = store
+            .objects()
+            .filter(|object| object.active)
+            .collect::<Vec<_>>();
         active_objects.sort_by_key(|object| object.id);
 
         let instances = active_objects
             .iter()
             .enumerate()
             .map(|(object_index, object)| {
-                let uploaded = uploaded_meshes
-                    .get(&object.mesh_id)
-                    .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id)))?;
+                let uploaded = uploaded_meshes.get(&object.mesh_id).ok_or_else(|| {
+                    SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id))
+                })?;
                 Ok(RtInstanceSpec {
                     blas_id: uploaded.blas_id,
                     transform: object.transform,
@@ -228,22 +236,23 @@ fn upload_scene_buffers(
     let mut objects = Vec::with_capacity(active_objects.len().max(1));
 
     for object in active_objects {
-        let mesh = store
-            .meshes
-            .get(&object.mesh_id)
-            .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not available", object.mesh_id)))?;
-        let uploaded = uploaded_meshes
-            .get(&object.mesh_id)
-            .ok_or_else(|| SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id)))?;
-        let material_index = *material_indices
-            .get(&object.material_id)
-            .ok_or_else(|| SoundError::not_found(format!("Material {} is not available", object.material_id)))?;
+        let mesh = store.meshes.get(&object.mesh_id).ok_or_else(|| {
+            SoundError::not_found(format!("Mesh {} is not available", object.mesh_id))
+        })?;
+        let uploaded = uploaded_meshes.get(&object.mesh_id).ok_or_else(|| {
+            SoundError::not_found(format!("Mesh {} is not uploaded", object.mesh_id))
+        })?;
+        let material_index = *material_indices.get(&object.material_id).ok_or_else(|| {
+            SoundError::not_found(format!("Material {} is not available", object.material_id))
+        })?;
 
         objects.push(GpuObject {
             material_index,
             indexed: u32::from(!mesh.indices.is_empty()),
             _pad: [0; 2],
-            vertex_address: gpu.memory().buffer_device_address(&uploaded._buffers.vertex_buffer),
+            vertex_address: gpu
+                .memory()
+                .buffer_device_address(&uploaded._buffers.vertex_buffer),
             index_address: uploaded
                 ._buffers
                 .index_buffer
@@ -412,7 +421,11 @@ fn diffraction_edge_aabb(edge: &GpuDiffractionEdge) -> SoundResult<RtAabbSpec> {
         }
     }
 
-    Ok(RtAabbSpec { min, max, opaque: true })
+    Ok(RtAabbSpec {
+        min,
+        max,
+        opaque: true,
+    })
 }
 
 fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {
@@ -421,10 +434,13 @@ fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {
     let edge_dir = edge_vector / edge_length;
     let bisector_dir = (edge.bisector_dir - edge_dir * edge.bisector_dir.dot(edge_dir)).normalize();
     let positive_plane_normal = bisector_dir.cross(edge_dir).normalize();
-    let delta = ((edge.edge_angle_radians - std::f32::consts::PI) * 0.5).clamp(0.0, std::f32::consts::FRAC_PI_2);
+    let delta = ((edge.edge_angle_radians - std::f32::consts::PI) * 0.5)
+        .clamp(0.0, std::f32::consts::FRAC_PI_2);
     let (sin_delta, cos_delta) = delta.sin_cos();
-    let positive_shadow_dir = (cos_delta * positive_plane_normal - sin_delta * bisector_dir).normalize();
-    let negative_shadow_dir = (-cos_delta * positive_plane_normal - sin_delta * bisector_dir).normalize();
+    let positive_shadow_dir =
+        (cos_delta * positive_plane_normal - sin_delta * bisector_dir).normalize();
+    let negative_shadow_dir =
+        (-cos_delta * positive_plane_normal - sin_delta * bisector_dir).normalize();
     let solid_wedge_cos = ((std::f32::consts::TAU - edge.edge_angle_radians) * 0.5).cos();
 
     GpuDiffractionEdge {
@@ -476,11 +492,21 @@ mod tests {
                     };
                     let gpu = gpu_material(&material);
                     let reflected = (gpu.specular_pressure + gpu.rough_pressure).powi(2);
-                    assert!((reflected + gpu.transmission_pressure.powi(2) - (1.0 - absorption)).abs() < 1e-6);
-                    assert!((gpu.transmission_pressure.powi(2) - transmission.min(1.0 - absorption)).abs() < 1e-6);
-                    let separate_energy = gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
+                    assert!(
+                        (reflected + gpu.transmission_pressure.powi(2) - (1.0 - absorption)).abs()
+                            < 1e-6
+                    );
+                    assert!(
+                        (gpu.transmission_pressure.powi(2) - transmission.min(1.0 - absorption))
+                            .abs()
+                            < 1e-6
+                    );
+                    let separate_energy =
+                        gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
                     assert!(separate_energy <= reflected + 1e-6);
-                    assert!((gpu.rough_pressure.powi(2) - separate_energy * scattering).abs() < 1e-6);
+                    assert!(
+                        (gpu.rough_pressure.powi(2) - separate_energy * scattering).abs() < 1e-6
+                    );
                 }
             }
         }
@@ -504,8 +530,10 @@ mod tests {
         let bisector_dir = Vec3::from_array(gpu_edge.bisector_dir);
         let positive_shadow_dir = Vec3::from_array(gpu_edge.positive_shadow_dir);
         let negative_shadow_dir = Vec3::from_array(gpu_edge.negative_shadow_dir);
-        let expected_positive = (delta.cos() * positive_plane_normal - delta.sin() * bisector_dir).normalize();
-        let expected_negative = (-delta.cos() * positive_plane_normal - delta.sin() * bisector_dir).normalize();
+        let expected_positive =
+            (delta.cos() * positive_plane_normal - delta.sin() * bisector_dir).normalize();
+        let expected_negative =
+            (-delta.cos() * positive_plane_normal - delta.sin() * bisector_dir).normalize();
         let expected_solid_wedge_cos = std::f32::consts::FRAC_PI_4.cos();
 
         assert!((positive_shadow_dir - expected_positive).length() <= 1.0e-6);

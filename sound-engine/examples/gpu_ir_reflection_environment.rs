@@ -18,7 +18,8 @@ fn main() -> SoundResult<()> {
     let sample_rate = 48_000;
     let source_position = vec3(0.0, 0.0, 0.0);
     let listener_position = vec3(0.0, 0.7, 0.0);
-    let mut pipeline = AcousticPipeline::new(&gpu, engine_config(sample_rate, sample_rate, 1_000_000, 10))?;
+    let mut pipeline =
+        AcousticPipeline::new(&gpu, engine_config(sample_rate, sample_rate, 1_000_000, 10))?;
 
     let ir = pipeline.build_ir(
         &gpu,
@@ -44,8 +45,9 @@ fn main() -> SoundResult<()> {
     export_ir(&ir, IR_EXPORT_PATH)?;
     println!("  exported ir: {IR_EXPORT_PATH}");
 
-    let direct_center_sample =
-        ((listener_position - source_position).length() / 343.0 * sample_rate as f32).round() as usize;
+    let direct_center_sample = ((listener_position - source_position).length() / 343.0
+        * sample_rate as f32)
+        .round() as usize;
     let late_start = direct_center_sample + 100;
     let mut nonzero = 0;
     let mut late_nonzero = 0;
@@ -55,7 +57,10 @@ fn main() -> SoundResult<()> {
             if sample_idx >= late_start {
                 late_nonzero += 1;
             }
-            println!("  sample {}: left={}, right={}", sample_idx, sample.left, sample.right);
+            println!(
+                "  sample {}: left={}, right={}",
+                sample_idx, sample.left, sample.right
+            );
         }
     }
 
@@ -63,13 +68,20 @@ fn main() -> SoundResult<()> {
         return Err(SoundError::invalid_state("Expected direct listener hits"));
     }
     if late_nonzero == 0 {
-        return Err(SoundError::invalid_state("Expected late reflected listener hits"));
+        return Err(SoundError::invalid_state(
+            "Expected late reflected listener hits",
+        ));
     }
 
     Ok(())
 }
 
-fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
+fn engine_config(
+    sample_rate: u32,
+    ir_num_samples: u32,
+    listener_ray_count: u32,
+    max_bounces: u32,
+) -> EngineConfig {
     EngineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Stereo,
@@ -85,7 +97,9 @@ fn engine_config(sample_rate: u32, ir_num_samples: u32, listener_ray_count: u32,
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     }
 }
 

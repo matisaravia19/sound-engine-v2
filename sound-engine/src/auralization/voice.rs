@@ -72,7 +72,8 @@ impl Voice {
         // The overlap tail summarizes every dry sample emitted before this IR
         // update. Both transition branches must retain it; only contributions
         // from new dry samples should diverge between the old and new filters.
-        let next = VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution, fft_size);
+        let next =
+            VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution, fft_size);
         let previous = std::mem::replace(&mut self.convolution, next);
         self.ir_transition = Some(VoiceIrTransition {
             previous,
@@ -94,7 +95,13 @@ impl Voice {
         if self.ir_transition.is_some() {
             self.pending_impulse_response = Some(impulse_response);
         } else {
-            self.transition_impulse_response(impulse_response, tail_size, fft_size, output_samples, transition_frames);
+            self.transition_impulse_response(
+                impulse_response,
+                tail_size,
+                fft_size,
+                output_samples,
+                transition_frames,
+            );
         }
     }
 }
@@ -138,7 +145,11 @@ pub(crate) struct VoiceIrTransition {
 
 impl VoiceConvolutionState {
     /// Allocates zeroed overlap and staging buffers for a registered IR.
-    pub(crate) fn new(impulse_response: Arc<ImpulseResponse>, tail_size: usize, fft_size: usize) -> Self {
+    pub(crate) fn new(
+        impulse_response: Arc<ImpulseResponse>,
+        tail_size: usize,
+        fft_size: usize,
+    ) -> Self {
         Self {
             impulse_response,
             tail: vec![[0.0, 0.0]; tail_size],
@@ -148,7 +159,11 @@ impl VoiceConvolutionState {
     }
 
     /// Creates a replacement filter while preserving pre-update overlap history.
-    fn with_carried_tail(impulse_response: Arc<ImpulseResponse>, previous: &Self, fft_size: usize) -> Self {
+    fn with_carried_tail(
+        impulse_response: Arc<ImpulseResponse>,
+        previous: &Self,
+        fft_size: usize,
+    ) -> Self {
         Self {
             impulse_response,
             tail: previous.tail.clone(),

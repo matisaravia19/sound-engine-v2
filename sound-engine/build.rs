@@ -8,8 +8,16 @@ fn collect_shaders(directory: &Path, root: &Path, paths: &mut Vec<String>) -> io
         let path = entry?.path();
         if path.is_dir() {
             collect_shaders(&path, root, paths)?;
-        } else if path.extension().is_some_and(|extension| extension == "glsl") {
-            paths.push(path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "glsl")
+        {
+            paths.push(
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
         }
     }
     Ok(())

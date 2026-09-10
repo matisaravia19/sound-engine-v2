@@ -27,11 +27,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = Arc::new(VkBackend::new()?);
     let convolver = PartitionedConvolver::new(
         backend,
-        engine_config(sample_rate, BLOCK_SIZE, ir.len() as u32, OutputChannels::Mono),
+        engine_config(
+            sample_rate,
+            BLOCK_SIZE,
+            ir.len() as u32,
+            OutputChannels::Mono,
+        ),
     )?;
     let stereo_ir = mono_to_stereo_ir(&ir);
     let impulse_response = convolver.create_impulse_response(&stereo_ir)?;
-    let mut voice = Voice::new(1, 0, 1.0, impulse_response, convolver.tail_size(), convolver.fft_size());
+    let mut voice = Voice::new(
+        1,
+        0,
+        1.0,
+        impulse_response,
+        convolver.tail_size(),
+        convolver.fft_size(),
+    );
 
     let block_size = BLOCK_SIZE;
     let mut processed = Vec::with_capacity(input_samples.len() + block_size);
@@ -60,7 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-fn read_mono_wav_as_f32(path: &str) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error + Send + Sync>> {
+fn read_mono_wav_as_f32(
+    path: &str,
+) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error + Send + Sync>> {
     let mut reader = WavReader::open(path)?;
     let spec = reader.spec();
     if spec.channels != 1 {
@@ -133,7 +147,10 @@ fn build_sample_ir(sample_rate: u32) -> Vec<f32> {
 }
 
 fn normalize_if_needed(samples: &mut [f32]) {
-    let peak = samples.iter().map(|x| x.abs()).fold(0.0_f32, |a, b| a.max(b));
+    let peak = samples
+        .iter()
+        .map(|x| x.abs())
+        .fold(0.0_f32, |a, b| a.max(b));
 
     if peak > 1.0 {
         let gain = 0.98 / peak;
@@ -144,7 +161,9 @@ fn normalize_if_needed(samples: &mut [f32]) {
 }
 
 fn mono_to_stereo_ir(ir: &[f32]) -> Vec<IrSample> {
-    ir.iter().map(|&sample| IrSample::new(sample, sample)).collect()
+    ir.iter()
+        .map(|&sample| IrSample::new(sample, sample))
+        .collect()
 }
 
 fn engine_config(
@@ -168,6 +187,8 @@ fn engine_config(
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size },
+        auralization: AuralizationConfig {
+            block_size,
+        },
     }
 }

@@ -28,7 +28,10 @@ fn main() -> SoundResult<()> {
     let gpu = Arc::new(VkBackend::new()?);
     let mut engine = AuralizationEngine::new(gpu, config())?;
     let mut ir = vec![IrSample::zero(); IR_SAMPLES];
-    ir[DELAY_SAMPLES] = IrSample { left: 1.0, right: 0.0 };
+    ir[DELAY_SAMPLES] = IrSample {
+        left: 1.0,
+        right: 0.0,
+    };
     for id in 1..=3 {
         engine.register_impulse_response(id, &ir)?;
     }
@@ -76,7 +79,10 @@ fn relative_l2(measured: &[f32], expected: &[f32]) -> f64 {
         .zip(expected)
         .map(|(measured, expected)| (*measured as f64 - *expected as f64).powi(2))
         .sum::<f64>();
-    let reference = expected.iter().map(|sample| (*sample as f64).powi(2)).sum::<f64>();
+    let reference = expected
+        .iter()
+        .map(|sample| (*sample as f64).powi(2))
+        .sum::<f64>();
     (error / reference.max(1.0e-24)).sqrt()
 }
 
@@ -96,6 +102,8 @@ fn config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }

@@ -1,8 +1,12 @@
 //! Direct, synchronous engine implementation.
 
-use super::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request};
+use super::{
+    ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request,
+};
 use crate::acoustics::{AcousticsEngine, GpuIrProgress, GpuIrSnapshot, IrSnapshot, PendingGpuIr};
-use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
+use crate::auralization::{
+    AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId,
+};
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -92,10 +96,14 @@ impl EngineCore {
         &mut self,
         profile: &crate::acoustics::SourceDirectivity,
     ) -> SoundResult<crate::acoustics::SourceDirectivityId> {
-        self.acoustics.register_source_directivity(self.gpu.as_ref(), profile)
+        self.acoustics
+            .register_source_directivity(self.gpu.as_ref(), profile)
     }
     /// Creates a direct engine core with an empty scene and sound bank.
-    pub(super) fn new(config: EngineConfig, model: crate::acoustics::AcousticModel) -> SoundResult<Self> {
+    pub(super) fn new(
+        config: EngineConfig,
+        model: crate::acoustics::AcousticModel,
+    ) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
         let acoustics = AcousticsEngine::with_model(gpu.as_ref(), config, model)?;
         let auralization = AuralizationEngine::new(gpu.clone(), config)?;
@@ -125,7 +133,10 @@ impl EngineCore {
     }
 
     /// Applies scene edits and clears cached IRs when scene contents changed.
-    pub(super) fn apply_scene_updates(&mut self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
+    pub(super) fn apply_scene_updates(
+        &mut self,
+        updates: SceneUpdates,
+    ) -> SoundResult<SceneVersion> {
         let changed = !updates.updates.is_empty();
         if changed {
             self.pending_ir = None;
@@ -152,13 +163,20 @@ impl EngineCore {
     }
 
     /// Creates a movable sound source and returns its public handle.
-    pub(super) fn create_sound_source(&mut self, source: PointSource) -> SoundResult<SoundSourceId> {
+    pub(super) fn create_sound_source(
+        &mut self,
+        source: PointSource,
+    ) -> SoundResult<SoundSourceId> {
         self.acoustics.validate_source_reference(source)?;
         Ok(self.insert_sound_source(source, false))
     }
 
     /// Updates a tracked sound source and marks bound voices for IR refresh.
-    pub(super) fn update_sound_source(&mut self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
+    pub(super) fn update_sound_source(
+        &mut self,
+        id: SoundSourceId,
+        source: PointSource,
+    ) -> SoundResult<()> {
         self.acoustics.validate_source_reference(source)?;
         let record = self
             .sound_sources
@@ -171,7 +189,11 @@ impl EngineCore {
 
     /// Removes a tracked sound source when no active voice still references it.
     pub(super) fn remove_sound_source(&mut self, id: SoundSourceId) -> SoundResult<()> {
-        if self.spatial_voices.values().any(|voice| voice.source_id == id) {
+        if self
+            .spatial_voices
+            .values()
+            .any(|voice| voice.source_id == id)
+        {
             return Err(SoundError::invalid_state(format!(
                 "Sound source {} is still referenced by an active voice",
                 id
@@ -232,7 +254,8 @@ impl EngineCore {
         }) {
             Ok(voice_id) => voice_id,
             Err(error) => {
-                self.auralization.forget_impulse_response(impulse_response_id);
+                self.auralization
+                    .forget_impulse_response(impulse_response_id);
                 return Err(error);
             }
         };
@@ -291,7 +314,11 @@ impl EngineCore {
         let started = std::time::Instant::now();
         self.auralization.render_block(output_block)?;
         self.cleanup_finished_spatial_voices();
-        Ok([trace_ms, prepare_ms, started.elapsed().as_secs_f64() * 1000.0])
+        Ok([
+            trace_ms,
+            prepare_ms,
+            started.elapsed().as_secs_f64() * 1000.0,
+        ])
     }
 
     /// Advances one coherent query without restarting it for each incoming pose.
@@ -309,12 +336,20 @@ impl EngineCore {
             let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
             return match progress {
                 GpuIrProgress::Pending(pressure) => {
-                    self.pending_ir = Some(PendingSpatialIr { pressure, ..pending });
+                    self.pending_ir = Some(PendingSpatialIr {
+                        pressure,
+                        ..pending
+                    });
                     Ok((trace_ms, 0.0))
                 }
                 GpuIrProgress::Ready(snapshot) => {
                     let started = std::time::Instant::now();
-                    self.apply_spatial_ir(pending.voice_id, pending.revision, pending.requested_at, &snapshot)?;
+                    self.apply_spatial_ir(
+                        pending.voice_id,
+                        pending.revision,
+                        pending.requested_at,
+                        &snapshot,
+                    )?;
                     Ok((trace_ms, started.elapsed().as_secs_f64() * 1000.0))
                 }
             };
@@ -341,9 +376,9 @@ impl EngineCore {
         let requested_at = voice.changed_at;
         let source = self.source(voice.source_id)?;
         let started = std::time::Instant::now();
-        let progress = self
-            .acoustics
-            .begin_impulse_response_gpu(self.gpu.as_ref(), source, self.listener)?;
+        let progress =
+            self.acoustics
+                .begin_impulse_response_gpu(self.gpu.as_ref(), source, self.listener)?;
         let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
         match progress {
             GpuIrProgress::Pending(pressure) => {
@@ -394,18 +429,29 @@ impl EngineCore {
         self.auralization.output_channels()
     }
 
-    fn impulse_response_for(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<IrSnapshot> {
+    fn impulse_response_for(
+        &mut self,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<IrSnapshot> {
         self.acoustics
             .build_impulse_response(self.gpu.as_ref(), source, listener)
     }
 
-    fn gpu_impulse_response_for(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<GpuIrSnapshot> {
+    fn gpu_impulse_response_for(
+        &mut self,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<GpuIrSnapshot> {
         self.acoustics
             .build_impulse_response_gpu(self.gpu.as_ref(), source, listener)
     }
 
     /// Registers a GPU-resident IR snapshot for use by the auralizer and returns its id.
-    fn register_gpu_impulse_response(&mut self, snapshot: &GpuIrSnapshot) -> SoundResult<ImpulseResponseId> {
+    fn register_gpu_impulse_response(
+        &mut self,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<ImpulseResponseId> {
         let impulse_response_id = self.next_ir_id();
         self.auralization
             .register_impulse_response_from_gpu_ir(impulse_response_id, snapshot)?;
@@ -415,7 +461,13 @@ impl EngineCore {
     /// Inserts a sound source with the requested ownership policy.
     fn insert_sound_source(&mut self, source: PointSource, internal: bool) -> SoundSourceId {
         let id = self.next_source_id();
-        self.sound_sources.insert(id, SoundSourceRecord { source, internal });
+        self.sound_sources.insert(
+            id,
+            SoundSourceRecord {
+                source,
+                internal,
+            },
+        );
         id
     }
 
@@ -467,7 +519,9 @@ impl EngineCore {
                 .spatial_voices
                 .get(&voice_id)
                 .map(|voice| voice.source_id)
-                .ok_or_else(|| SoundError::not_found(format!("Unknown spatial voice id {}", voice_id)))?;
+                .ok_or_else(|| {
+                    SoundError::not_found(format!("Unknown spatial voice id {}", voice_id))
+                })?;
             let source = self.source(source_id)?;
             let started = std::time::Instant::now();
             let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
@@ -504,7 +558,10 @@ impl EngineCore {
             return Ok(());
         }
         let next_ir_id = self.register_gpu_impulse_response(snapshot)?;
-        if let Err(error) = self.auralization.update_voice_impulse_response(voice_id, next_ir_id) {
+        if let Err(error) = self
+            .auralization
+            .update_voice_impulse_response(voice_id, next_ir_id)
+        {
             self.auralization.forget_impulse_response(next_ir_id);
             return Err(error);
         }
@@ -546,7 +603,8 @@ impl EngineCore {
         let Some(voice) = self.spatial_voices.remove(&voice_id) else {
             return;
         };
-        self.auralization.forget_impulse_response(voice.impulse_response_id);
+        self.auralization
+            .forget_impulse_response(voice.impulse_response_id);
 
         let should_remove_source = self
             .sound_sources

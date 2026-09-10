@@ -29,7 +29,9 @@ fn check_source_directivity(band_count: u32) {
         },
         cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     };
     let mut core = EngineCore::new(
         config,
@@ -47,11 +49,16 @@ fn check_source_directivity(band_count: u32) {
         for t in 0..5 {
             let theta = t as f32 * std::f32::consts::PI / 4.0;
             let phi = p as f32 * std::f32::consts::PI / 4.0;
-            let y = if t == 0 || t == 4 { 0.0 } else { theta.sin() * phi.cos() };
+            let y = if t == 0 || t == 4 {
+                0.0
+            } else {
+                theta.sin() * phi.cos()
+            };
             values.extend([[0.625 + 0.375 * theta.cos(), 0.1 * y]; 2]);
         }
     }
-    let profile = crate::acoustics::SourceDirectivity::new(8, 5, vec![20.0, 20000.0], values).unwrap();
+    let profile =
+        crate::acoustics::SourceDirectivity::new(8, 5, vec![20.0, 20000.0], values).unwrap();
     let id = core.register_source_directivity(&profile).unwrap();
     let mut source = PointSource::new(Vec3::ZERO);
     source.radiation.profile = id;
@@ -59,25 +66,44 @@ fn check_source_directivity(band_count: u32) {
     let fft = realfft::RealFftPlanner::<f32>::new().plan_fft_forward(4096);
     for (rotation, gain) in [
         (glam::Quat::IDENTITY, [1.0, 0.0]),
-        (glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), [0.625, -0.1]),
-        (glam::Quat::from_rotation_y(std::f32::consts::PI), [0.25, 0.0]),
+        (
+            glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            [0.625, -0.1],
+        ),
+        (
+            glam::Quat::from_rotation_y(std::f32::consts::PI),
+            [0.25, 0.0],
+        ),
     ] {
         source.radiation.orientation = rotation;
         let ir = core.build_impulse_response(source, listener).unwrap();
-        assert!(ir.samples.iter().all(|v| v.left.is_finite() && v.right.is_finite()));
+        assert!(
+            ir.samples
+                .iter()
+                .all(|v| v.left.is_finite() && v.right.is_finite())
+        );
         for ear in 0..2 {
             let mut spectrum = fft.make_output_vec();
             let mut pressure: Vec<_> = ir
                 .samples
                 .iter()
-                .map(|v| if ear == 0 { v.left } else { v.right })
+                .map(|v| {
+                    if ear == 0 {
+                        v.left
+                    } else {
+                        v.right
+                    }
+                })
                 .collect();
             fft.process(&mut pressure, &mut spectrum).unwrap();
             for bin in [23, 93, 163] {
                 let frequency = bin as f32 * 48000.0 / 4096.0;
                 let phase = -std::f32::consts::TAU * frequency * 3.0 / 343.0;
                 let expected = realfft::num_complex::Complex32::new(gain[0], gain[1])
-                    * realfft::num_complex::Complex32::from_polar(std::f32::consts::FRAC_1_SQRT_2 / 3.0, phase);
+                    * realfft::num_complex::Complex32::from_polar(
+                        std::f32::consts::FRAC_1_SQRT_2 / 3.0,
+                        phase,
+                    );
                 let error = (spectrum[bin] - expected).norm() / expected.norm();
                 assert!(
                     error < 0.01,
@@ -173,10 +199,15 @@ fn assert_same_pressure(actual: &[IrSample], reference: &IrSnapshot) {
     let error: f64 = actual
         .iter()
         .zip(&reference.samples)
-        .map(|(a, b)| (a.left as f64 - b.left as f64).powi(2) + (a.right as f64 - b.right as f64).powi(2))
+        .map(|(a, b)| {
+            (a.left as f64 - b.left as f64).powi(2) + (a.right as f64 - b.right as f64).powi(2)
+        })
         .sum();
     assert_eq!(actual.len(), reference.samples.len());
-    assert!(reference.energy > 1e-8, "fixture must carry diffracted pressure");
+    assert!(
+        reference.energy > 1e-8,
+        "fixture must carry diffracted pressure"
+    );
     assert!(
         (error / reference.energy as f64).sqrt() < 1e-4,
         "staging changed stereo ray pressure"
@@ -207,7 +238,9 @@ fn reflected_ray_uses_complex_gain_at_physical_source_departure() {
         },
         cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     };
     let mut core = EngineCore::new(
         config,
@@ -283,7 +316,10 @@ fn reflected_ray_uses_complex_gain_at_physical_source_departure() {
     for bin in [23, 93, 163] {
         let f = bin as f32 * 48000.0 / 4096.0;
         let expected = gain
-            * realfft::num_complex::Complex32::from_polar(1.0 / length, -std::f32::consts::TAU * f * length / 343.0);
+            * realfft::num_complex::Complex32::from_polar(
+                1.0 / length,
+                -std::f32::consts::TAU * f * length / 343.0,
+            );
         let error = (spectrum[bin] - expected).norm() / expected.norm();
         eprintln!("reflected source pressure bin={bin}, relative={error}");
         assert!(
@@ -314,7 +350,11 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
         },
         acoustics: AcousticsConfig {
             listener_ray_count: 65537,
-            max_bounces: if surface_two_edge_paths { 3 } else { 2 },
+            max_bounces: if surface_two_edge_paths {
+                3
+            } else {
+                2
+            },
             maximum_path_length: 15.0,
             minimum_throughput: 0.0,
             sampling_seed: 7,
@@ -324,7 +364,9 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
             ..IrCacheConfig::default()
         },
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     };
     let model = AcousticModel::Utd {
         cone_width: 0.04,
@@ -398,9 +440,15 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
     let first = pose(1.5, -Vec3::Z);
     let second = pose(2.0, Vec3::Z);
     // Compare against a single unsplit launch, including an odd ray budget.
-    let mut reference_pipeline =
-        crate::acoustics::ExperimentalUtdPipeline::with_band_orders(core.gpu.as_ref(), config, 0.04, 20000.0, 16, 2)
-            .unwrap();
+    let mut reference_pipeline = crate::acoustics::ExperimentalUtdPipeline::with_band_orders(
+        core.gpu.as_ref(),
+        config,
+        0.04,
+        20000.0,
+        16,
+        2,
+    )
+    .unwrap();
     reference_pipeline.set_surface_two_edge_paths(surface_two_edge_paths);
     for profile in &profiles {
         reference_pipeline
@@ -431,7 +479,11 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
     core.set_listener_pose(pose(3.0, Vec3::X)).unwrap();
     let asset = core
         .insert_sound(
-            SoundAsset::from_mono_samples(48000, (0..96000).map(|i| (i as f32 * 0.1).sin() * 0.1).collect()).unwrap(),
+            SoundAsset::from_mono_samples(
+                48000,
+                (0..96000).map(|i| (i as f32 * 0.1).sin() * 0.1).collect(),
+            )
+            .unwrap(),
         )
         .unwrap();
     let source_id = core.create_sound_source(source).unwrap();
@@ -442,12 +494,18 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
     core.set_listener_pose(first).unwrap();
     core.render_realtime_block(&mut output, true).unwrap();
     assert!(core.pending_ir.is_some());
-    assert!(Arc::ptr_eq(&original, &core.spatial_voices[&voice].acoustic_ir_buffer));
+    assert!(Arc::ptr_eq(
+        &original,
+        &core.spatial_voices[&voice].acoustic_ir_buffer
+    ));
     core.set_listener_pose(second).unwrap();
     core.update_sound_source(source_id, updated_source).unwrap();
     core.render_realtime_block(&mut output, true).unwrap();
     assert!(core.pending_ir.is_some());
-    assert!(Arc::ptr_eq(&original, &core.spatial_voices[&voice].acoustic_ir_buffer));
+    assert!(Arc::ptr_eq(
+        &original,
+        &core.spatial_voices[&voice].acoustic_ir_buffer
+    ));
     finish_pending_ir(&mut core, &mut output);
     assert!(core.pending_ir.is_none());
     assert!(core.spatial_voices[&voice].dirty, "newer pose was lost");
@@ -464,7 +522,8 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
         core.spatial_voices[&other].impulse_response_id,
     ];
     for step in 0..34 {
-        core.set_listener_pose(pose(2.2 + step as f32 * 0.1, Vec3::Z)).unwrap();
+        core.set_listener_pose(pose(2.2 + step as f32 * 0.1, Vec3::Z))
+            .unwrap();
         core.render_realtime_block(&mut output, true).unwrap();
         assert!(output.iter().all(|v| v.is_finite()));
         if core.spatial_voices[&voice].impulse_response_id != previous[0]
@@ -482,10 +541,17 @@ fn check_staged_source_updates(directional: bool, surface_two_edge_paths: bool) 
     let mut blocked = scene;
     blocked.diffraction_edges.clear();
     core.load_scene(blocked).unwrap();
-    assert!(core.pending_ir.is_none(), "old scene pressure survived replacement");
+    assert!(
+        core.pending_ir.is_none(),
+        "old scene pressure survived replacement"
+    );
     core.render_realtime_block(&mut output, true).unwrap();
     finish_pending_ir(&mut core, &mut output);
-    assert!(samples(&core, voice).iter().all(|v| v.left == 0.0 && v.right == 0.0));
+    assert!(
+        samples(&core, voice)
+            .iter()
+            .all(|v| v.left == 0.0 && v.right == 0.0)
+    );
     core.set_listener_pose(second).unwrap();
     core.render_realtime_block(&mut output, true).unwrap();
     assert!(core.pending_ir.is_some());
@@ -510,7 +576,10 @@ fn finish_pending_ir(core: &mut EngineCore, output: &mut [f32]) {
         core.render_realtime_block(output, true).unwrap();
         if core.pending_ir.is_some() {
             for (id, buffer) in &previous {
-                assert!(Arc::ptr_eq(buffer, &core.spatial_voices[id].acoustic_ir_buffer));
+                assert!(Arc::ptr_eq(
+                    buffer,
+                    &core.spatial_voices[id].acoustic_ir_buffer
+                ));
             }
         }
     }

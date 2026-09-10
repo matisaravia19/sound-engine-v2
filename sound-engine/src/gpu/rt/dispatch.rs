@@ -47,7 +47,10 @@ pub enum RtDescriptorWrite {
 impl RtDescriptorWrite {
     /// Creates an acceleration-structure descriptor write.
     pub fn acceleration_structure(binding: u32, tlas_id: TlasId) -> Self {
-        Self::AccelerationStructure { binding, tlas_id }
+        Self::AccelerationStructure {
+            binding,
+            tlas_id,
+        }
     }
 
     /// Creates a storage-buffer descriptor write covering the whole buffer.
@@ -63,7 +66,11 @@ impl RtDescriptorWrite {
 
 impl RtContext {
     /// Records descriptor updates, pipeline bind, push constants, and ray trace.
-    pub fn record_trace(&self, command_buffer: vk::CommandBuffer, spec: &RtTraceSpec) -> SoundResult<()> {
+    pub fn record_trace(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        spec: &RtTraceSpec,
+    ) -> SoundResult<()> {
         crate::debug_validate!(
             spec.dimensions.iter().all(|dimension| *dimension > 0),
             ErrorCode::InvalidArgument,
@@ -76,9 +83,9 @@ impl RtContext {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT pipelines lock is poisoned"))?;
 
-        let pipeline = pipelines
-            .get_mut(&spec.pipeline_id)
-            .ok_or_else(|| SoundError::not_found(format!("Invalid RT pipeline id {}", spec.pipeline_id.0)))?;
+        let pipeline = pipelines.get_mut(&spec.pipeline_id).ok_or_else(|| {
+            SoundError::not_found(format!("Invalid RT pipeline id {}", spec.pipeline_id.0))
+        })?;
 
         crate::debug_validate!(
             push_constants_fit_pipeline(spec, pipeline),
@@ -155,10 +162,13 @@ impl RtContext {
 
         for write in writes {
             match *write {
-                RtDescriptorWrite::AccelerationStructure { binding, tlas_id } => {
-                    let tlas = tlas
-                        .get(&tlas_id)
-                        .ok_or_else(|| SoundError::not_found(format!("Invalid TLAS id {}", tlas_id.0)))?;
+                RtDescriptorWrite::AccelerationStructure {
+                    binding,
+                    tlas_id,
+                } => {
+                    let tlas = tlas.get(&tlas_id).ok_or_else(|| {
+                        SoundError::not_found(format!("Invalid TLAS id {}", tlas_id.0))
+                    })?;
                     let mut as_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
                         .acceleration_structures(std::slice::from_ref(&tlas.handle));
                     let descriptor_write = vk::WriteDescriptorSet::default()

@@ -15,7 +15,8 @@ mod scene;
 pub use acceleration::{AabbBlasBuildSpec, BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
 pub use pipeline::{
-    RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec,
+    RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
+    RtShaderStageSpec,
 };
 pub use scene::{RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
 
@@ -87,9 +88,13 @@ impl Drop for RtContext {
             if let Ok(mut pipelines) = self.pipelines.lock() {
                 for (_, pipeline) in pipelines.drain() {
                     for pool in &pipeline.descriptor_pools {
-                        self.device_context.device.destroy_descriptor_pool(*pool, None);
+                        self.device_context
+                            .device
+                            .destroy_descriptor_pool(*pool, None);
                     }
-                    self.device_context.device.destroy_pipeline(pipeline.handle, None);
+                    self.device_context
+                        .device
+                        .destroy_pipeline(pipeline.handle, None);
                     self.device_context
                         .device
                         .destroy_pipeline_layout(pipeline.layout, None);

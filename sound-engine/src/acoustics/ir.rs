@@ -45,12 +45,18 @@ pub struct IrSample {
 impl IrSample {
     /// Creates a new stereo IR sample with the given left and right values.
     pub fn new(left: f32, right: f32) -> Self {
-        Self { left, right }
+        Self {
+            left,
+            right,
+        }
     }
 
     /// Creates a zero-valued stereo IR sample.
     pub fn zero() -> Self {
-        Self { left: 0.0, right: 0.0 }
+        Self {
+            left: 0.0,
+            right: 0.0,
+        }
     }
 }
 

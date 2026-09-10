@@ -42,7 +42,11 @@ impl SampleQueue {
     ///
     /// Returns `false` if playback is stopped before the block is enqueued. The
     /// `stop_requested` flag lets blocked producers wake and exit cleanly.
-    pub(super) fn push_block(&self, block: &[f32], stop_requested: &AtomicBool) -> SoundResult<bool> {
+    pub(super) fn push_block(
+        &self,
+        block: &[f32],
+        stop_requested: &AtomicBool,
+    ) -> SoundResult<bool> {
         crate::debug_validate!(
             block.len() <= self.capacity,
             ErrorCode::InvalidArgument,

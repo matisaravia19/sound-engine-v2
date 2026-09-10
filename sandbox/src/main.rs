@@ -105,7 +105,9 @@ impl PlaygroundState {
         };
 
         Self {
-            catalog: scenes::catalog(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../output")),
+            catalog: scenes::catalog(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../output"),
+            ),
             scene_index: 0,
             benchmark: None,
             pair_index: 0,
@@ -161,7 +163,9 @@ impl PlaygroundState {
         if self.listener_spin_enabled {
             format!(
                 "spinning {:.0} deg",
-                self.listener_spin_angle.rem_euclid(std::f32::consts::TAU).to_degrees()
+                self.listener_spin_angle
+                    .rem_euclid(std::f32::consts::TAU)
+                    .to_degrees()
             )
         } else {
             listener_rotation_name(self.listener_rotation_index).to_owned()
@@ -222,7 +226,8 @@ impl PlaygroundState {
     fn toggle_listener_spin(&mut self) {
         self.listener_spin_enabled = !self.listener_spin_enabled;
         if self.listener_spin_enabled {
-            self.listener_spin_angle = angle_from_forward(listener_forward(self.listener_rotation_index));
+            self.listener_spin_angle =
+                angle_from_forward(listener_forward(self.listener_rotation_index));
         }
     }
 
@@ -231,7 +236,8 @@ impl PlaygroundState {
             return false;
         }
 
-        self.listener_spin_angle = (self.listener_spin_angle + LISTENER_SPIN_RADIANS_PER_SECOND * frame_time_seconds)
+        self.listener_spin_angle = (self.listener_spin_angle
+            + LISTENER_SPIN_RADIANS_PER_SECOND * frame_time_seconds)
             .rem_euclid(std::f32::consts::TAU);
         true
     }
@@ -245,12 +251,21 @@ fn main() -> SoundResult<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../output"));
     let catalog = scenes::catalog(&benchmark_root);
-    if args.iter().any(|a| a == "--list-scenes" || a == "--validate-scenes") {
+    if args
+        .iter()
+        .any(|a| a == "--list-scenes" || a == "--validate-scenes")
+    {
         for entry in &catalog {
             println!("{}: {}", entry.id, entry.title);
             if args.iter().any(|a| a == "--validate-scenes") && entry.id != "playground" {
-                let loaded = entry.load().map_err(sound_engine::core::error::SoundError::external)?;
-                println!("  {} triangles, {} pairs", loaded.triangles.len(), loaded.pairs.len());
+                let loaded = entry
+                    .load()
+                    .map_err(sound_engine::core::error::SoundError::external)?;
+                println!(
+                    "  {} triangles, {} pairs",
+                    loaded.triangles.len(),
+                    loaded.pairs.len()
+                );
             }
         }
         return Ok(());
@@ -261,13 +276,19 @@ fn main() -> SoundResult<()> {
         .find_map(|a| a.strip_prefix("--diffraction-radius="))
         .unwrap_or("1.25")
         .parse::<f32>()
-        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-radius"))?;
+        .map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-radius")
+        })?;
     let diffraction_strength = args
         .iter()
         .find_map(|a| a.strip_prefix("--diffraction-strength="))
         .unwrap_or("0.85")
         .parse::<f32>()
-        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-strength"))?;
+        .map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument(
+                "invalid --diffraction-strength",
+            )
+        })?;
     if !diffraction_radius.is_finite()
         || diffraction_radius <= 0.0
         || !diffraction_strength.is_finite()
@@ -297,13 +318,17 @@ fn main() -> SoundResult<()> {
             );
         }
     }
-    let source_profile_path = args.iter().find_map(|a| a.strip_prefix("--source-directivity="));
+    let source_profile_path = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--source-directivity="));
     let source_yaw_degrees = args
         .iter()
         .find_map(|a| a.strip_prefix("--source-yaw="))
         .unwrap_or("0")
         .parse::<f32>()
-        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --source-yaw"))?;
+        .map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument("invalid --source-yaw")
+        })?;
     if !source_yaw_degrees.is_finite() {
         return Err(sound_engine::core::error::SoundError::invalid_argument(
             "source yaw must be finite",
@@ -325,26 +350,33 @@ fn main() -> SoundResult<()> {
     let utd_orders = args.iter().find_map(|a| a.strip_prefix("--utd-orders="));
     let utd_bands = args.iter().find_map(|a| a.strip_prefix("--utd-bands="));
     let surface_two_edge_paths = args.iter().any(|a| a == "--utd-surface-two-edges");
-    let band_count = utd_bands
-        .unwrap_or("16")
-        .parse::<u32>()
-        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --utd-bands"))?;
-    let utd =
-        args.iter().any(|a| a == "--utd") || utd_orders.is_some() || utd_bands.is_some() || surface_two_edge_paths;
+    let band_count = utd_bands.unwrap_or("16").parse::<u32>().map_err(|_| {
+        sound_engine::core::error::SoundError::invalid_argument("invalid --utd-bands")
+    })?;
+    let utd = args.iter().any(|a| a == "--utd")
+        || utd_orders.is_some()
+        || utd_bands.is_some()
+        || surface_two_edge_paths;
     let diffraction_orders = utd_orders
-        .unwrap_or(if surface_two_edge_paths { "2" } else { "1" })
+        .unwrap_or(if surface_two_edge_paths {
+            "2"
+        } else {
+            "1"
+        })
         .parse::<u32>()
-        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --utd-orders"))?;
+        .map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument("invalid --utd-orders")
+        })?;
     let mut config = engine_config(sample_rate);
     if let Some(value) = args.iter().find_map(|a| a.strip_prefix("--rays=")) {
-        config.acoustics.listener_ray_count = value
-            .parse()
-            .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --rays"))?;
+        config.acoustics.listener_ray_count = value.parse().map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument("invalid --rays")
+        })?;
     }
     if let Some(value) = args.iter().find_map(|a| a.strip_prefix("--bounces=")) {
-        config.acoustics.max_bounces = value
-            .parse()
-            .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --bounces"))?;
+        config.acoustics.max_bounces = value.parse().map_err(|_| {
+            sound_engine::core::error::SoundError::invalid_argument("invalid --bounces")
+        })?;
     }
     let model = if utd {
         sound_engine::acoustics::AcousticModel::Utd {
@@ -373,7 +405,8 @@ fn main() -> SoundResult<()> {
     if let Some(path) = source_profile_path {
         let profile = sound_engine::acoustics::SourceDirectivity::read(path)?;
         state.source_radiation.profile = engine.register_source_directivity(&profile)?;
-        state.source_radiation.orientation = glam::Quat::from_rotation_y(source_yaw_degrees.to_radians());
+        state.source_radiation.orientation =
+            glam::Quat::from_rotation_y(source_yaw_degrees.to_radians());
     }
     engine.load_scene(
         state
@@ -417,7 +450,11 @@ fn main() -> SoundResult<()> {
         frame_selected_pair(&state, &mut camera);
     }
     let camera_stress_seconds = std::env::args()
-        .find_map(|argument| argument.strip_prefix("--camera-stress-seconds=").map(str::to_owned))
+        .find_map(|argument| {
+            argument
+                .strip_prefix("--camera-stress-seconds=")
+                .map(str::to_owned)
+        })
         .and_then(|seconds| seconds.parse::<f32>().ok())
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
     if camera_stress_seconds.is_some() {
@@ -430,7 +467,8 @@ fn main() -> SoundResult<()> {
         let voice_id = play_source_sound(&mut engine, sound_id, &state, &camera, playback_gain)?;
         state.ui.last_voice = Some(voice_id);
     }
-    let camera_stress = camera_stress_seconds.map(|seconds| (Duration::from_secs_f32(seconds), Instant::now()));
+    let camera_stress =
+        camera_stress_seconds.map(|seconds| (Duration::from_secs_f32(seconds), Instant::now()));
 
     let mut frame_times = Vec::new();
 
@@ -442,7 +480,11 @@ fn main() -> SoundResult<()> {
                 break;
             }
             let angle = elapsed * 0.75;
-            camera.position = Vector3::new(angle.cos() * 7.0, 2.0 + (angle * 0.37).sin(), angle.sin() * 4.0);
+            camera.position = Vector3::new(
+                angle.cos() * 7.0,
+                2.0 + (angle * 0.37).sin(),
+                angle.sin() * 4.0,
+            );
             camera.target = Vector3::new(0.0, 1.0, 0.0);
         } else if !state.scene_menu {
             rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
@@ -454,7 +496,9 @@ fn main() -> SoundResult<()> {
         if state.listener_mode == ListenerMode::Camera {
             sync_camera_listener_if_changed(&mut engine, &mut state, &camera, false);
         }
-        if state.update_listener_spin(rl.get_frame_time()) && state.listener_mode == ListenerMode::RedSphere {
+        if state.update_listener_spin(rl.get_frame_time())
+            && state.listener_mode == ListenerMode::RedSphere
+        {
             sync_red_sphere_listener(&mut engine, &mut state, "listener spin");
         }
 
@@ -494,9 +538,11 @@ fn main() -> SoundResult<()> {
     if let Some(path) = args.iter().find_map(|a| a.strip_prefix("--frame-report=")) {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(
-            std::fs::File::create(path).map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?,
+            std::fs::File::create(path)
+                .map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?,
         );
-        writeln!(file, "frame,total_ms").map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?;
+        writeln!(file, "frame,total_ms")
+            .map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?;
         for (index, ms) in frame_times.iter().enumerate() {
             writeln!(file, "{index},{ms}")
                 .map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?;
@@ -521,7 +567,9 @@ fn engine_config(sample_rate: u32) -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
 
@@ -534,7 +582,9 @@ fn play_source_sound(
 ) -> SoundResult<u64> {
     engine.set_listener_pose(state.active_listener_pose(camera))?;
     let source_id = state.sound_source_id.ok_or_else(|| {
-        sound_engine::core::error::SoundError::invalid_state("sandbox sound source is not initialized")
+        sound_engine::core::error::SoundError::invalid_state(
+            "sandbox sound source is not initialized",
+        )
     })?;
     engine.play_sound_from_source(sound_id, source_id, playback_gain)
 }
@@ -619,7 +669,11 @@ fn select_scene(
     index: usize,
 ) -> Result<(), String> {
     let entry = state.catalog.get(index).ok_or("Unknown scene index")?;
-    let benchmark = if index == 0 { None } else { Some(entry.load()?) };
+    let benchmark = if index == 0 {
+        None
+    } else {
+        Some(entry.load()?)
+    };
     let description = benchmark
         .as_ref()
         .map(|b| b.description.clone())
@@ -643,7 +697,13 @@ fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundState) {
     let width = (d.get_screen_width() - 80).min(760).max(240);
     let rows = scene_menu_rows(d.get_screen_height());
     let start = state.scene_choice / rows * rows;
-    d.draw_rectangle(32, 48, width + 16, rows as i32 * 26 + 104, Color::new(20, 28, 36, 250));
+    d.draw_rectangle(
+        32,
+        48,
+        width + 16,
+        rows as i32 * 26 + 104,
+        Color::new(20, 28, 36, 250),
+    );
     d.draw_text("Elegir escena", 48, 62, 24, Color::RAYWHITE);
     d.draw_text(
         "Arriba/abajo o rueda | Enter o clic | F1: cerrar",
@@ -657,7 +717,15 @@ fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundState) {
         if row == state.scene_choice {
             d.draw_rectangle(40, y, width, 25, Color::new(40, 83, 105, 255));
         }
-        let label = format!("{}{}", if row == state.scene_index { "* " } else { "  " }, entry.title);
+        let label = format!(
+            "{}{}",
+            if row == state.scene_index {
+                "* "
+            } else {
+                "  "
+            },
+            entry.title
+        );
         d.draw_text(&label, 48, y + 4, 17, Color::RAYWHITE);
     }
     d.draw_text(
@@ -674,7 +742,12 @@ fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundState) {
     );
 }
 
-fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut PlaygroundState, camera: &Camera3D) {
+fn handle_config_keys(
+    rl: &RaylibHandle,
+    engine: &mut SoundEngine,
+    state: &mut PlaygroundState,
+    camera: &Camera3D,
+) {
     if rl.is_key_pressed(KeyboardKey::KEY_V) {
         state.ui.benchmark_wireframe = !state.ui.benchmark_wireframe;
     }
@@ -700,7 +773,8 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
 
     if rl.is_key_pressed(KeyboardKey::KEY_FOUR) {
         state.listener_spin_enabled = false;
-        state.listener_rotation_index = next_index(state.listener_rotation_index, listener_rotation_count());
+        state.listener_rotation_index =
+            next_index(state.listener_rotation_index, listener_rotation_count());
         sync_red_sphere_listener(engine, state, "red sphere rotation");
     }
 
@@ -725,7 +799,9 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
     }
     if rl.is_key_pressed(KeyboardKey::KEY_EIGHT) && state.source_radiation.profile != 0 {
         state.source_radiation.orientation =
-            (glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4) * state.source_radiation.orientation).normalize();
+            (glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)
+                * state.source_radiation.orientation)
+                .normalize();
         sync_source(engine, state);
     }
 
@@ -847,7 +923,8 @@ fn camera_listener_pose(camera: &Camera3D) -> ListenerPose {
 }
 
 fn listener_poses_match(left: ListenerPose, right: ListenerPose) -> bool {
-    left.position.distance_squared(right.position) <= CAMERA_LISTENER_POSITION_EPSILON_METERS.powi(2)
+    left.position.distance_squared(right.position)
+        <= CAMERA_LISTENER_POSITION_EPSILON_METERS.powi(2)
         && left.forward.dot(right.forward) >= CAMERA_LISTENER_ORIENTATION_DOT_THRESHOLD
         && left.up.dot(right.up) >= CAMERA_LISTENER_ORIENTATION_DOT_THRESHOLD
 }
@@ -975,12 +1052,20 @@ fn build_scene(config: SceneConfig) -> PlaygroundScene {
 
     blocks.extend([
         Block {
-            center: Vector3::new(0.0, WALL_HEIGHT * 0.5, -(ROOM_HALF_Z + DOOR_HALF_WIDTH) * 0.5),
+            center: Vector3::new(
+                0.0,
+                WALL_HEIGHT * 0.5,
+                -(ROOM_HALF_Z + DOOR_HALF_WIDTH) * 0.5,
+            ),
             size: Vector3::new(WALL_THICKNESS, WALL_HEIGHT, ROOM_HALF_Z - DOOR_HALF_WIDTH),
             color: Color::new(125, 132, 138, 255),
         },
         Block {
-            center: Vector3::new(0.0, WALL_HEIGHT * 0.5, (ROOM_HALF_Z + DOOR_HALF_WIDTH) * 0.5),
+            center: Vector3::new(
+                0.0,
+                WALL_HEIGHT * 0.5,
+                (ROOM_HALF_Z + DOOR_HALF_WIDTH) * 0.5,
+            ),
             size: Vector3::new(WALL_THICKNESS, WALL_HEIGHT, ROOM_HALF_Z - DOOR_HALF_WIDTH),
             color: Color::new(125, 132, 138, 255),
         },
@@ -1073,7 +1158,13 @@ fn scene_description(scene: &PlaygroundScene) -> SceneDescription {
     SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
-            vertices: scene.acoustic_mesh.vertices.iter().copied().map(to_glam).collect(),
+            vertices: scene
+                .acoustic_mesh
+                .vertices
+                .iter()
+                .copied()
+                .map(to_glam)
+                .collect(),
             indices,
             opaque: true,
         }],
@@ -1102,7 +1193,8 @@ fn start_sound_requested(rl: &RaylibHandle) -> bool {
 
 fn bisector_plane_toggle_requested(rl: &RaylibHandle) -> bool {
     rl.is_key_pressed(KeyboardKey::KEY_B)
-        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && mouse_in_bisector_toggle(rl))
+        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+            && mouse_in_bisector_toggle(rl))
 }
 
 fn mouse_in_start_button(rl: &RaylibHandle) -> bool {
@@ -1167,7 +1259,12 @@ fn draw_block(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, block: &Block) {
     d.draw_cube_wires_v(block.center, block.size, Color::new(190, 198, 204, 255));
 }
 
-fn draw_marker(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, position: Vector3, radius: f32, color: Color) {
+fn draw_marker(
+    d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>,
+    position: Vector3,
+    radius: f32,
+    color: Color,
+) {
     d.draw_sphere(position, radius, color);
     d.draw_sphere_wires(position, radius, 16, 16, Color::WHITE);
     d.draw_line_3D(
@@ -1185,7 +1282,10 @@ fn draw_listener(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, position: Vecto
     d.draw_sphere(from_glam(tip), 0.11, Color::new(255, 150, 150, 255));
 }
 
-fn draw_diffraction_edges(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, edges: &[DiffractionEdge]) {
+fn draw_diffraction_edges(
+    d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>,
+    edges: &[DiffractionEdge],
+) {
     for edge in edges {
         let start = from_glam(edge.start);
         let end = from_glam(edge.end);
@@ -1216,7 +1316,12 @@ fn draw_bisector_planes(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, edges: &
     }
 }
 
-fn draw_plane_line(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, start: Vec3, end: Vec3, color: Color) {
+fn draw_plane_line(
+    d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>,
+    start: Vec3,
+    end: Vec3,
+    color: Color,
+) {
     d.draw_line_3D(from_glam(start), from_glam(end), color);
 }
 
@@ -1284,7 +1389,11 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
             format!(
                 "1 roof: {} | 2 door: {} | 3 red pos: {} | 4 red rot: {}",
                 on_off(state.scene_config.roof_enabled),
-                if state.scene_config.door_open { "open" } else { "closed" },
+                if state.scene_config.door_open {
+                    "open"
+                } else {
+                    "closed"
+                },
                 listener_position_name(state.listener_index),
                 state.listener_rotation_label()
             )
@@ -1339,7 +1448,11 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
 }
 
 fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
+    if value {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 fn to_glam(value: Vector3) -> Vec3 {

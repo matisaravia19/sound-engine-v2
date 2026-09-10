@@ -92,15 +92,30 @@ fn build_stream_for_sample_format(
     state: Arc<PlaybackState>,
 ) -> SoundResult<cpal::Stream> {
     match sample_format {
-        cpal::SampleFormat::F32 => {
-            build_typed_output_stream::<f32>(device, stream_config, device_channels, output_channels, queue, state)
-        }
-        cpal::SampleFormat::I16 => {
-            build_typed_output_stream::<i16>(device, stream_config, device_channels, output_channels, queue, state)
-        }
-        cpal::SampleFormat::U16 => {
-            build_typed_output_stream::<u16>(device, stream_config, device_channels, output_channels, queue, state)
-        }
+        cpal::SampleFormat::F32 => build_typed_output_stream::<f32>(
+            device,
+            stream_config,
+            device_channels,
+            output_channels,
+            queue,
+            state,
+        ),
+        cpal::SampleFormat::I16 => build_typed_output_stream::<i16>(
+            device,
+            stream_config,
+            device_channels,
+            output_channels,
+            queue,
+            state,
+        ),
+        cpal::SampleFormat::U16 => build_typed_output_stream::<u16>(
+            device,
+            stream_config,
+            device_channels,
+            output_channels,
+            queue,
+            state,
+        ),
         other => {
             return Err(SoundError::unsupported_feature(format!(
                 "Unsupported output sample format: {other:?}"
@@ -129,7 +144,16 @@ where
     let err_fn = |err| eprintln!("Audio stream error: {err}");
     device.build_output_stream(
         stream_config,
-        move |data: &mut [T], _| write_output(data, device_channels, output_channels, &queue, &state, &mut scratch),
+        move |data: &mut [T], _| {
+            write_output(
+                data,
+                device_channels,
+                output_channels,
+                &queue,
+                &state,
+                &mut scratch,
+            )
+        },
         err_fn,
         None,
     )
@@ -150,7 +174,8 @@ fn write_output<T>(
     T: cpal::Sample + cpal::FromSample<f32>,
 {
     #[cfg(debug_assertions)]
-    if let Err(error) = validate_callback_sample_shape(data.len(), device_channels, output_channels) {
+    if let Err(error) = validate_callback_sample_shape(data.len(), device_channels, output_channels)
+    {
         eprintln!("Audio callback shape error: {error}");
         let _ = state.request_stop();
         silence_output(data);
@@ -193,7 +218,11 @@ fn write_output<T>(
     let mut device_frames = data.chunks_exact_mut(device_channels);
     let engine_frames = scratch[..drained].chunks_exact(output_channels);
 
-    for (device_frame, engine_frame) in device_frames.by_ref().take(rendered_frame_count).zip(engine_frames) {
+    for (device_frame, engine_frame) in device_frames
+        .by_ref()
+        .take(rendered_frame_count)
+        .zip(engine_frames)
+    {
         let (rendered_channels, extra_device_channels) = device_frame.split_at_mut(output_channels);
 
         // Copy a complete rendered frame into the matching leading device
@@ -226,7 +255,11 @@ fn write_output<T>(
 }
 
 #[cfg(debug_assertions)]
-fn validate_callback_sample_shape(data_len: usize, device_channels: usize, output_channels: usize) -> SoundResult<()> {
+fn validate_callback_sample_shape(
+    data_len: usize,
+    device_channels: usize,
+    output_channels: usize,
+) -> SoundResult<()> {
     crate::debug_validate!(
         device_channels > 0,
         ErrorCode::InvalidArgument,

@@ -116,7 +116,11 @@ impl SoundBank {
     }
 
     /// Loads a WAV file into the bank at `target_sample_rate`.
-    pub fn load_wav(&mut self, path: impl AsRef<Path>, target_sample_rate: u32) -> SoundResult<SoundId> {
+    pub fn load_wav(
+        &mut self,
+        path: impl AsRef<Path>,
+        target_sample_rate: u32,
+    ) -> SoundResult<SoundId> {
         let asset = SoundAsset::from_wav_file(path, target_sample_rate)?;
         Ok(self.insert(asset))
     }
@@ -164,22 +168,30 @@ impl DecodedWav {
             (SampleFormat::Float, 32) => reader
                 .samples::<f32>()
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
+                .map_err(|source| {
+                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
+                })?,
             (SampleFormat::Int, 16) => reader
                 .samples::<i16>()
                 .map(|sample| sample.map(|x| x as f32 / i16::MAX as f32))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
+                .map_err(|source| {
+                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
+                })?,
             (SampleFormat::Int, 24) => reader
                 .samples::<i32>()
                 .map(|sample| sample.map(|x| x as f32 / 8_388_607.0))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
+                .map_err(|source| {
+                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
+                })?,
             (SampleFormat::Int, 32) => reader
                 .samples::<i32>()
                 .map(|sample| sample.map(|x| x as f32 / i32::MAX as f32))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))?,
+                .map_err(|source| {
+                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
+                })?,
             _ => {
                 return Err(SoundError::unsupported_feature(format!(
                     "Unsupported WAV format: {:?} {} bits",
@@ -239,7 +251,9 @@ mod tests {
 
     #[test]
     fn mixes_interleaved_stereo_to_mono() {
-        let asset = SoundAsset::from_interleaved_samples(48_000, 2, vec![1.0, -1.0, 0.25, 0.75], 48_000).unwrap();
+        let asset =
+            SoundAsset::from_interleaved_samples(48_000, 2, vec![1.0, -1.0, 0.25, 0.75], 48_000)
+                .unwrap();
 
         assert_eq!(asset.samples(), &[0.0, 0.5]);
     }

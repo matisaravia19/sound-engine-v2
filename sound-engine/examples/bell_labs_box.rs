@@ -85,7 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 cache: IrCacheConfig::default(),
                 binaural: BinauralConfig::default(),
-                auralization: AuralizationConfig { block_size: 1024 },
+                auralization: AuralizationConfig {
+                    block_size: 1024,
+                },
             };
             let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
@@ -163,7 +165,9 @@ mod tests {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
 
@@ -196,7 +200,11 @@ mod tests {
             let ir = pipeline.build_ir(&gpu, &mut scene, query).unwrap();
             assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));
             if variant == 0 {
-                let first = ir.samples.iter().position(|sample| sample.left.abs() > 1e-8).unwrap();
+                let first = ir
+                    .samples
+                    .iter()
+                    .position(|sample| sample.left.abs() > 1e-8)
+                    .unwrap();
                 assert!(first >= (1.6758_f32 / 343.0 * 48000.0).floor() as usize);
                 assert!(ir.energy > 0.0);
             } else {
@@ -230,7 +238,9 @@ mod tests {
             },
             cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig { block_size: 1024 },
+            auralization: AuralizationConfig {
+                block_size: 1024,
+            },
         };
         let mut reference = Vec::<f32>::new();
         for (index, strength, amplitude, bounces) in [
@@ -290,7 +300,11 @@ mod tests {
                     "insufficient events or a silent source must contribute nothing"
                 );
             } else {
-                let expected_gain = if index == 1 { 0.25 } else { 0.5 };
+                let expected_gain = if index == 1 {
+                    0.25
+                } else {
+                    0.5
+                };
                 let residual: f64 = samples
                     .iter()
                     .zip(&reference)

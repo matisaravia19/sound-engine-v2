@@ -5,7 +5,9 @@ use sound_engine::core::config::{
 };
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject};
+use sound_engine::scene::{
+    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
+};
 
 const SAMPLE_RATE: u32 = 48_000;
 const IR_SAMPLES: u32 = SAMPLE_RATE;
@@ -64,7 +66,10 @@ fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
         source_radiation: Default::default(),
     };
     let ir = trace(gpu, occluding_wall_scene(), config(4_096, 0), query)?;
-    require(channel_sum(&ir) == 0.0, "occluding wall must remove the direct path")
+    require(
+        channel_sum(&ir) == 0.0,
+        "occluding wall must remove the direct path",
+    )
 }
 
 fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
@@ -94,10 +99,14 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
             let reflected_distance = vec3(-source.x, source.y, source.z).distance(listener);
             let expected_pressure = 0.75_f32.sqrt() / reflected_distance;
             let measured_pressure = signed_channel_sum(&ir) - source.distance(listener).recip();
-            require_relative_close(measured_pressure, expected_pressure, 0.02,
-                "smooth reflection pressure must agree with the planar reference within 2%")?;
-            let cutoff = ((source.distance(listener) + reflected_distance) * 0.5
-                / 343.0 * SAMPLE_RATE as f32) as usize;
+            require_relative_close(
+                measured_pressure,
+                expected_pressure,
+                0.02,
+                "smooth reflection pressure must agree with the planar reference within 2%",
+            )?;
+            let cutoff = ((source.distance(listener) + reflected_distance) * 0.5 / 343.0
+                * SAMPLE_RATE as f32) as usize;
             let mut mass = 0.0;
             let mut moment = 0.0;
             for (index, sample) in ir.samples.iter().enumerate().skip(cutoff) {
@@ -106,10 +115,15 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
             }
             let centroid = moment / mass;
             let expected_sample = reflected_distance / 343.0 * SAMPLE_RATE as f32;
-            require((centroid - expected_sample).abs() < 0.75,
-                "smooth reflection centroid must be within 0.75 samples of the planar reference")?;
-            println!("reflection seed={seed} source_x={} pressure={measured_pressure:.8} expected={expected_pressure:.8} delay_error_samples={:.4}",
-                source.x, centroid - expected_sample);
+            require(
+                (centroid - expected_sample).abs() < 0.75,
+                "smooth reflection centroid must be within 0.75 samples of the planar reference",
+            )?;
+            println!(
+                "reflection seed={seed} source_x={} pressure={measured_pressure:.8} expected={expected_pressure:.8} delay_error_samples={:.4}",
+                source.x,
+                centroid - expected_sample
+            );
         }
     }
     Ok(())
@@ -132,7 +146,12 @@ fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<(
     )?;
 
     let low = trace(gpu, diffraction_scene(Some(0.45)), config(65_536, 1), query)?;
-    let high = trace(gpu, diffraction_scene(Some(0.45)), config(262_144, 1), query)?;
+    let high = trace(
+        gpu,
+        diffraction_scene(Some(0.45)),
+        config(262_144, 1),
+        query,
+    )?;
     require(
         nonzero_samples(&high) > 2 && channel_sum(&high) > 0.0,
         "authored edge must produce a distribution of diffraction delays",
@@ -182,7 +201,9 @@ fn config(listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: 1024 },
+        auralization: AuralizationConfig {
+            block_size: 1024,
+        },
     }
 }
 
@@ -300,7 +321,10 @@ fn signed_arrival_centroid(ir: &IrSnapshot) -> f32 {
 }
 
 fn nonzero_samples(ir: &IrSnapshot) -> usize {
-    ir.samples.iter().filter(|sample| sample.left != 0.0).count()
+    ir.samples
+        .iter()
+        .filter(|sample| sample.left != 0.0)
+        .count()
 }
 
 fn require(condition: bool, message: &str) -> SoundResult<()> {
@@ -327,10 +351,17 @@ mod reflection_tests {
         let vertices = &scene.meshes[0].vertices;
         let wall_center = vertices.iter().copied().sum::<Vec3>() / vertices.len() as f32;
         let edge_center = (edge.start + edge.end) * 0.5;
-        assert!((edge.edge_angle_radians - std::f32::consts::TAU).abs() < 1.0e-6,
-            "a single thin screen has a 360-degree exterior air wedge");
-        assert!((wall_center - edge_center).normalize().dot(edge.bisector_dir) < -0.999,
-            "the exterior bisector must point away from the physical screen");
+        assert!(
+            (edge.edge_angle_radians - std::f32::consts::TAU).abs() < 1.0e-6,
+            "a single thin screen has a 360-degree exterior air wedge"
+        );
+        assert!(
+            (wall_center - edge_center)
+                .normalize()
+                .dot(edge.bisector_dir)
+                < -0.999,
+            "the exterior bisector must point away from the physical screen"
+        );
     }
 
     #[test]
@@ -411,7 +442,9 @@ mod reflection_tests {
         let with_proxy = trace(&gpu, scene, settings, query)?;
         let late_start = (9.0 * SAMPLE_RATE as f32 / 343.0) as usize;
         require(
-            reference.samples[late_start..].iter().any(|s| s.left.abs() > 1.0e-5),
+            reference.samples[late_start..]
+                .iter()
+                .any(|s| s.left.abs() > 1.0e-5),
             "fixture must contain a two-reflection arrival beyond the proxy",
         )?;
         for (a, b) in reference.samples.iter().zip(&with_proxy.samples) {

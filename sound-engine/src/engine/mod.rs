@@ -48,7 +48,11 @@ impl Default for ListenerPose {
 impl ListenerPose {
     /// Creates a listener pose from a position and approximate forward/up axes.
     pub fn new(position: Vec3, forward: Vec3, up: Vec3) -> Self {
-        Self { position, forward, up }
+        Self {
+            position,
+            forward,
+            up,
+        }
     }
 
     /// Returns the unit right-ear axis derived from this pose.
@@ -56,7 +60,10 @@ impl ListenerPose {
     /// Invalid or collinear orientation vectors produce the zero vector; public
     /// engine entry points reject those poses before using them.
     pub fn right(self) -> Vec3 {
-        self.forward.normalize_or_zero().cross(self.up).normalize_or_zero()
+        self.forward
+            .normalize_or_zero()
+            .cross(self.up)
+            .normalize_or_zero()
     }
 }
 
@@ -143,7 +150,10 @@ impl SoundEngine {
 
     /// Creates an engine with an explicitly selected ray-local diffraction model.
     /// The selected model supplies both manual IR queries and moving-voice playback.
-    pub fn with_acoustic_model(config: EngineConfig, model: crate::acoustics::AcousticModel) -> SoundResult<Self> {
+    pub fn with_acoustic_model(
+        config: EngineConfig,
+        model: crate::acoustics::AcousticModel,
+    ) -> SoundResult<Self> {
         Ok(Self {
             mode: Some(EngineMode::Direct(EngineCore::new(config, model)?)),
         })
@@ -218,7 +228,11 @@ impl SoundEngine {
     }
 
     /// Updates the position, amplitude and radiation of an existing tracked source.
-    pub fn update_sound_source(&mut self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
+    pub fn update_sound_source(
+        &mut self,
+        id: SoundSourceId,
+        source: PointSource,
+    ) -> SoundResult<()> {
         match self.mode_mut()? {
             EngineMode::Direct(core) => core.update_sound_source(id, source),
             #[cfg(feature = "playback")]
@@ -254,12 +268,18 @@ impl SoundEngine {
         match self.mode_mut()? {
             EngineMode::Direct(core) => core.play_sound_from_source(sound_id, source_id, volume),
             #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.play_sound_from_source(sound_id, source_id, volume),
+            EngineMode::Runtime(runtime) => {
+                runtime.play_sound_from_source(sound_id, source_id, volume)
+            }
         }
     }
 
     /// Builds or reuses the raw acoustic impulse response for a source/listener pair.
-    pub fn build_impulse_response(&mut self, source: PointSource, listener: ListenerPose) -> SoundResult<IrSnapshot> {
+    pub fn build_impulse_response(
+        &mut self,
+        source: PointSource,
+        listener: ListenerPose,
+    ) -> SoundResult<IrSnapshot> {
         match self.mode_mut()? {
             EngineMode::Direct(core) => core.build_impulse_response(source, listener),
             #[cfg(feature = "playback")]
@@ -347,7 +367,9 @@ impl SoundEngine {
     #[cfg(feature = "playback")]
     pub fn start_sound_player(&mut self, config: PlaybackConfig) -> SoundResult<()> {
         let Some(mode) = self.mode.take() else {
-            return Err(SoundError::invalid_state("sound engine is already transitioning modes"));
+            return Err(SoundError::invalid_state(
+                "sound engine is already transitioning modes",
+            ));
         };
 
         match mode {
@@ -373,7 +395,9 @@ impl SoundEngine {
     #[cfg(feature = "playback")]
     pub fn stop_sound_player(&mut self) -> SoundResult<()> {
         let Some(mode) = self.mode.take() else {
-            return Err(SoundError::invalid_state("sound engine is already transitioning modes"));
+            return Err(SoundError::invalid_state(
+                "sound engine is already transitioning modes",
+            ));
         };
 
         match mode {

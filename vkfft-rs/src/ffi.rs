@@ -1,4 +1,4 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use std::ffi::c_void;
 
@@ -151,6 +151,7 @@ unsafe extern "C" {
     pub fn vkfft_app_destroy(app: VkFFTApp);
 
     pub fn vkfft_init(app: VkFFTApp, config: *const VkFFTConfiguration) -> VkFFTResult;
-    pub fn vkfft_exec(app: VkFFTApp, inverse: i32, params: *const VkFFTLaunchParams) -> VkFFTResult;
+    pub fn vkfft_exec(app: VkFFTApp, inverse: i32, params: *const VkFFTLaunchParams)
+    -> VkFFTResult;
     pub fn vkfft_delete_plan(app: VkFFTApp);
 }

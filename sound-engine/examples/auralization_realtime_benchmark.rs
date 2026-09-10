@@ -43,7 +43,11 @@ fn main() -> SoundResult<()> {
     Ok(())
 }
 
-fn benchmark_voice_count(gpu: Arc<VkBackend>, gpu_setup: Duration, voice_count: usize) -> SoundResult<()> {
+fn benchmark_voice_count(
+    gpu: Arc<VkBackend>,
+    gpu_setup: Duration,
+    voice_count: usize,
+) -> SoundResult<()> {
     let engine_start = Instant::now();
     let mut engine = AuralizationEngine::new(gpu, engine_config())?;
     let engine_setup = engine_start.elapsed();
@@ -120,6 +124,8 @@ fn engine_config() -> EngineConfig {
         },
         cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig { block_size: BLOCK_SIZE },
+        auralization: AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
     }
 }
