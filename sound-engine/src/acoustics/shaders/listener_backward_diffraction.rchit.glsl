@@ -20,7 +20,7 @@ struct DiffractionEdge {
     vec3 start;
     float diffraction_radius;
     vec3 end;
-    float base_strength;
+    float pressure_gain;
     vec3 edge_dir;
     float edge_length;
     vec3 bisector_dir;

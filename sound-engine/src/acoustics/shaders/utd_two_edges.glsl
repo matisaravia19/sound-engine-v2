@@ -93,7 +93,7 @@ void depositTwoEdgePath(uint id1, uint id2, vec3 e1, vec3 e2,
     float h12 = -(dot(edge1.edge_dir, edge2.edge_dir)-b*c)/r1;
     float determinant = max(0.0, h11*h22-h12*h12);
     float weight = proposal*delta*determinant;
-    weight *= sqrt(clamp(edge1.base_strength,0.0,1.0)*clamp(edge2.base_strength,0.0,1.0));
+    weight *= (edge1.pressure_gain * edge2.pressure_gain);
     vec3 terms1[4], terms2[4];
     if (!prepareEdgeTerms(edge1, incoming, between, terms1) || !prepareEdgeTerms(edge2, between, outgoing, terms2)) return;
     float sin1 = sqrt(max(1.0-a*a, 1e-6));

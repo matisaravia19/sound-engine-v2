@@ -43,11 +43,11 @@ struct UploadedMesh {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuMaterial {
-    // The current pressure tracer uses the first authored coefficient from each
-    // optional band list as its broad-band transport value.
-    absorption: f32,
-    scattering: f32,
-    transmission: f32,
+    // Authored energy fractions are converted before upload; transport only
+    // consumes broad-band pressure gains (the first optional band).
+    specular_pressure: f32,
+    rough_pressure: f32,
+    transmission_pressure: f32,
     roughness: f32,
 }
 
@@ -68,7 +68,7 @@ struct GpuDiffractionEdge {
     start: [f32; 3],
     diffraction_radius: f32,
     end: [f32; 3],
-    base_strength: f32,
+    pressure_gain: f32,
     edge_dir: [f32; 3],
     edge_length: f32,
     bisector_dir: [f32; 3],
@@ -272,6 +272,31 @@ fn upload_scene_buffers(
     })
 }
 
+// Preserve the authored energy budget at the scene/transport boundary.
+fn gpu_material(material: &super::types::Material) -> GpuMaterial {
+    let absorption = material
+        .absorption_bands
+        .first()
+        .copied()
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let transmission = material
+        .transmission
+        .as_ref()
+        .and_then(|bands| bands.first().copied())
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+        .min(1.0 - absorption);
+    let reflection = (1.0 - absorption - transmission).max(0.0);
+    let scattering = material.scattering.clamp(0.0, 1.0);
+    GpuMaterial {
+        specular_pressure: (reflection * (1.0 - scattering)).sqrt(),
+        rough_pressure: (reflection * scattering).sqrt(),
+        transmission_pressure: transmission.sqrt(),
+        roughness: material.roughness.clamp(0.0, 1.0),
+    }
+}
+
 fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u32>) {
     let mut source_materials = store.materials().collect::<Vec<_>>();
     source_materials.sort_by_key(|material| material.id);
@@ -281,29 +306,15 @@ fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u
     for material in source_materials {
         let material_index = materials.len() as u32;
         material_indices.insert(material.id, material_index);
-        materials.push(GpuMaterial {
-            absorption: material
-                .absorption_bands
-                .first()
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 1.0),
-            scattering: material.scattering,
-            transmission: material
-                .transmission
-                .as_ref()
-                .and_then(|bands| bands.first().copied())
-                .unwrap_or(0.0),
-            roughness: material.roughness.clamp(0.0, 1.0),
-        });
+        materials.push(gpu_material(material));
     }
     if materials.is_empty() {
         // Descriptor binding 3 must remain valid even for an empty scene. The
         // absorbing fallback cannot be indexed unless malformed geometry exists.
         materials.push(GpuMaterial {
-            absorption: 1.0,
-            scattering: 0.0,
-            transmission: 0.0,
+            specular_pressure: 0.0,
+            rough_pressure: 0.0,
+            transmission_pressure: 0.0,
             roughness: 0.0,
         });
     }
@@ -326,7 +337,7 @@ fn upload_diffraction_edges(
             start: [0.0; 3],
             diffraction_radius: 1.0,
             end: [0.0, 1.0, 0.0],
-            base_strength: 0.0,
+            pressure_gain: 0.0,
             edge_dir: [0.0, 1.0, 0.0],
             edge_length: 1.0,
             bisector_dir: [1.0, 0.0, 0.0],
@@ -414,7 +425,7 @@ fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {
         start: edge.start.to_array(),
         diffraction_radius: edge.diffraction_radius,
         end: edge.end.to_array(),
-        base_strength: edge.base_strength,
+        pressure_gain: edge.base_strength.clamp(0.0, 1.0).sqrt(),
         edge_dir: edge_dir.to_array(),
         edge_length,
         bisector_dir: bisector_dir.to_array(),
@@ -444,6 +455,30 @@ fn upload_gpu_slice<T: bytemuck::Pod>(gpu: &VkBackend, values: &[T]) -> SoundRes
 mod tests {
     use super::*;
     use std::mem::{align_of, size_of};
+
+    #[test]
+    fn uploaded_pressure_gains_preserve_authored_energy_budget() {
+        for absorption in [0.0_f32, 0.2, 0.75, 1.0] {
+            for transmission in [0.0_f32, 0.3, 1.0] {
+                for scattering in [0.0_f32, 0.4, 1.0] {
+                    let material = super::super::types::Material {
+                        id: 1,
+                        absorption_bands: vec![absorption],
+                        scattering,
+                        roughness: 0.2,
+                        transmission: Some(vec![transmission]),
+                    };
+                    let gpu = gpu_material(&material);
+                    let reflected = gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
+                    assert!((reflected + gpu.transmission_pressure.powi(2) - (1.0 - absorption)).abs() < 1e-6);
+                    assert!((gpu.transmission_pressure.powi(2) - transmission.min(1.0 - absorption)).abs() < 1e-6);
+                    assert!((gpu.rough_pressure.powi(2) - reflected * scattering).abs() < 1e-6);
+                }
+            }
+        }
+        assert_eq!(size_of::<GpuMaterial>(), 16);
+        assert_eq!(gpu_diffraction_edge(&test_edge()).pressure_gain, 0.5);
+    }
 
     #[test]
     fn diffraction_edge_gpu_record_matches_std430_layout() {

@@ -197,7 +197,7 @@ void main() {
                 float density_ratio = proxy_leg_length / edge_leg_length;
                 path_throughput *= density_ratio * density_ratio * density_ratio;
             }
-            path_throughput *= sqrt(clamp(edge.base_strength, 0.0, 1.0));
+            path_throughput *= edge.pressure_gain;
             if (bounce == 0u) {
                 initial_direction = direction;
             }

@@ -280,7 +280,7 @@ void traceZeroAndOneEdge(bool source_launched) {
         // Inverse solid-angle/strip-area Jacobian, then normalized radial
         // capture kernel. No arbitrary edge gain or measured-peak fit appears.
         float radial_kernel = 2.0*max(1.0-radial/edge.diffraction_radius, 0.0)/edge.diffraction_radius;
-        pressure *= sqrt(clamp(edge.base_strength, 0.0, 1.0))*normalization
+        pressure *= edge.pressure_gain*normalization
             * proxy_distance*proxy_distance/proxy_cosine*radial_kernel*delta*derivative;
         float spreading = inversesqrt(r*rho*(r+rho));
         float n = edge.edge_angle_radians/PI;

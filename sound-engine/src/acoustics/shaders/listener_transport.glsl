@@ -54,9 +54,9 @@ layout(std430, set = 0, binding = 1) buffer IrBuffer {
 } ir;
 
 struct SceneMaterial {
-    float absorption;
-    float scattering;
-    float transmission;
+    float specular_pressure;
+    float rough_pressure;
+    float transmission_pressure;
     float roughness;
 };
 
@@ -68,7 +68,7 @@ struct DiffractionEdge {
     vec3 start;
     float diffraction_radius;
     vec3 end;
-    float base_strength;
+    float pressure_gain;
     vec3 edge_dir;
     float edge_length;
     vec3 bisector_dir;
@@ -266,23 +266,6 @@ float roughExponent(float roughness) {
     // The rough branch stays much wider than the specular branch at every
     // roughness, reaching a cosine-weighted shape at roughness one.
     return mix(64.0, 1.0, clamp(roughness, 0.0, 1.0));
-}
-
-// Material coefficients are authored as energy fractions. Reflection is the
-// energy remaining after absorption and straight transmission; scattering
-// divides only that reflected portion into specular and rough components.
-void materialEnergies(
-    SceneMaterial material,
-    out float specular_energy,
-    out float rough_energy,
-    out float transmission_energy
-) {
-    float absorption = clamp(material.absorption, 0.0, 1.0);
-    transmission_energy = min(clamp(material.transmission, 0.0, 1.0), 1.0 - absorption);
-    float reflection_energy = max(0.0, 1.0 - absorption - transmission_energy);
-    float rough_fraction = clamp(material.scattering, 0.0, 1.0);
-    specular_energy = reflection_energy * (1.0 - rough_fraction);
-    rough_energy = reflection_energy * rough_fraction;
 }
 
 // -----------------------------------------------------------------------------
@@ -585,13 +568,9 @@ void evaluateDirectPath() {
 // This is evaluation, not sampling, so valid specular and rough reflection
 // responses are summed. Transmission is evaluated on the opposite hemisphere.
 float surfaceSourceResponse(SceneMaterial material, vec3 incoming_direction, vec3 normal, vec3 source_direction, float source_fraction) {
-    float specular_energy;
-    float rough_energy;
-    float transmission_energy;
-    materialEnergies(material, specular_energy, rough_energy, transmission_energy);
 
     // These are pressure-domain local responses. The normalized lobe value
-    // includes directional density, while sqrt converts energy to pressure.
+    // includes directional density, with pressure gains converted before scene upload.
     float response = 0.0;
     // Because incoming_direction points toward the surface, reflect() produces
     // the backward path's ideal outgoing reflection direction.
@@ -603,14 +582,14 @@ float surfaceSourceResponse(SceneMaterial material, vec3 incoming_direction, vec
         ? clamp(16384.0 * source_fraction * source_fraction, 64.0, 1024.0)
         : specularExponent(material.roughness);
     if (dot(source_direction, normal) > DIRECTION_EPSILON) {
-        response += sqrt(specular_energy)
+        response += material.specular_pressure
             * foldedPowerCosinePdf(
                 source_direction,
                 reflection_axis,
                 normal,
                 connection_exponent
             );
-        response += sqrt(rough_energy)
+        response += material.rough_pressure
             * foldedPowerCosinePdf(
                 source_direction,
                 reflection_axis,
@@ -621,7 +600,7 @@ float surfaceSourceResponse(SceneMaterial material, vec3 incoming_direction, vec
     if (dot(source_direction, normal) < -DIRECTION_EPSILON) {
         // Straight transmission remains centered on incoming_direction: the
         // backward path continues through the surface without refraction.
-        response += sqrt(transmission_energy)
+        response += material.transmission_pressure
             * foldedPowerCosinePdf(
                 source_direction,
                 normalizeOrZero(incoming_direction),
@@ -705,11 +684,9 @@ bool sampleSurfaceContinuation(
     inout float path_throughput,
     out vec3 continuation_direction
 ) {
-    float energies[3];
-    materialEnergies(material, energies[0], energies[1], energies[2]);
     // Branch selection operates in the pressure domain. Choosing one branch,
     // rather than emitting all three, keeps one continuation ray per invocation.
-    float weights[3] = float[3](sqrt(energies[0]), sqrt(energies[1]), sqrt(energies[2]));
+    float weights[3] = float[3](material.specular_pressure, material.rough_pressure, material.transmission_pressure);
     float weight_sum = weights[0] + weights[1] + weights[2];
     if (!finiteFloat(weight_sum) || weight_sum <= 0.0) {
         return false;
@@ -757,7 +734,7 @@ bool sampleSurfaceContinuation(
     if (direction_pdf <= 0.0 || !finiteFloat(direction_pdf)) {
         return false;
     }
-    float response = sqrt(energies[branch]) * direction_pdf;
+    float response = weights[branch] * direction_pdf;
     path_throughput *= response / (branch_probability * direction_pdf);
     return finiteFloat(path_throughput) && finiteVector(continuation_direction);
 }

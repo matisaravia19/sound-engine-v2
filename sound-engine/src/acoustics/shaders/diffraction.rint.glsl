@@ -11,7 +11,7 @@ struct DiffractionEdge {
     vec3 start;
     float diffraction_radius;
     vec3 end;
-    float base_strength;
+    float pressure_gain;
     vec3 edge_dir;
     float edge_length;
     vec3 bisector_dir;
@@ -38,7 +38,7 @@ void main() {
     // A disabled edge must not intercept ordinary transport. Skipping the
     // procedural intersection removes it from both next-event evaluation and
     // continuation without requiring a special branch in ray generation.
-    if (edge.base_strength <= 0.0 || edge.diffraction_radius <= 0.0) {
+    if (edge.pressure_gain <= 0.0 || edge.diffraction_radius <= 0.0) {
         return;
     }
 

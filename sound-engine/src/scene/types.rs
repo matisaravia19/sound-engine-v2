@@ -33,9 +33,9 @@ pub struct MeshAsset {
 pub struct Material {
     /// Application-provided material identifier.
     pub id: MaterialId,
-    /// Absorption coefficients, initially interpreted as broad frequency bands.
+    /// Absorbed energy fractions; the first band currently controls broad-band transport.
     pub absorption_bands: Vec<f32>,
-    /// Scattering coefficient in `[0, 1]`.
+    /// Fraction of reflected energy assigned to rough reflection in `[0, 1]`.
     pub scattering: f32,
     /// Width control for finite glossy reflection and transmission lobes in `[0, 1]`.
     pub roughness: f32,
@@ -81,7 +81,7 @@ pub struct DiffractionEdge {
     /// controls discovery and sampling variance, not the diffraction vertex.
     pub diffraction_radius: f32,
     /// Designer-authored energy scale applied to the ray-traced response.
-    /// The square root is used as a pressure multiplier.
+    /// Converted once to a pressure gain when preparing the GPU scene.
     pub base_strength: f32,
 }
 
