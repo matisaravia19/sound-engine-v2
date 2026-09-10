@@ -987,7 +987,7 @@ void connectDiffractionToSource(
 #ifdef SPECTRAL_TRACE
     depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
 #else
-    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 2);
+    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 4);
 #endif
 }
 
