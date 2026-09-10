@@ -1164,9 +1164,7 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
                 d.draw_line_3D(b, c, Color::new(108, 122, 132, 255));
                 d.draw_line_3D(c, a, Color::new(108, 122, 132, 255));
             } else {
-                // Thin benchmark screens are visible from either side.
-                d.draw_triangle3D(a, b, c, Color::new(108, 122, 132, 255));
-                d.draw_triangle3D(c, b, a, Color::new(92, 108, 120, 255));
+                draw_lit_triangle(d, *triangle, Color::new(164, 177, 186, 255));
             }
         }
         draw_marker(d, state.source_position(), 0.12, Color::GREEN);
@@ -1180,7 +1178,7 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
     d.draw_plane(
         Vector3::new(0.0, 0.0, 0.0),
         Vector2::new(ROOM_HALF_X * 2.0, ROOM_HALF_Z * 2.0),
-        Color::new(38, 44, 48, 255),
+        lit_surface_color(Vec3::Y, Color::new(65, 74, 80, 255)),
     );
     d.draw_grid(20, 1.0);
 
@@ -1197,8 +1195,63 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
 }
 
 fn draw_block(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, block: &Block) {
-    d.draw_cube_v(block.center, block.size, block.color);
-    d.draw_cube_wires_v(block.center, block.size, Color::new(190, 198, 204, 255));
+    let center = to_glam(block.center);
+    let half_size = to_glam(block.size) * 0.5;
+    let corners = [
+        vec3(-1.0, -1.0, -1.0),
+        vec3(1.0, -1.0, -1.0),
+        vec3(1.0, 1.0, -1.0),
+        vec3(-1.0, 1.0, -1.0),
+        vec3(-1.0, -1.0, 1.0),
+        vec3(1.0, -1.0, 1.0),
+        vec3(1.0, 1.0, 1.0),
+        vec3(-1.0, 1.0, 1.0),
+    ]
+    .map(|corner| center + corner * half_size);
+
+    for [a, b, c, e] in [
+        [0, 3, 2, 1],
+        [4, 5, 6, 7],
+        [0, 4, 7, 3],
+        [1, 2, 6, 5],
+        [3, 7, 6, 2],
+        [0, 1, 5, 4],
+    ] {
+        draw_lit_triangle(d, [corners[a], corners[b], corners[c]], block.color);
+        draw_lit_triangle(d, [corners[a], corners[c], corners[e]], block.color);
+    }
+
+    d.draw_cube_wires_v(block.center, block.size, Color::new(78, 91, 102, 255));
+}
+
+// A fixed world-space light makes differently oriented walls readable while moving.
+// Ambient fill keeps enclosed and back-facing surfaces visible without shadow passes.
+fn lit_surface_color(normal: Vec3, base: Color) -> Color {
+    let toward_light = vec3(-0.45, 0.82, 0.35).normalize();
+    let direct = normal.dot(toward_light).max(0.0);
+    let sky = (normal.y + 1.0) * 0.5;
+    let brightness = 0.38 + 0.52 * direct + 0.10 * sky;
+
+    Color::new(
+        (base.r as f32 * brightness) as u8,
+        (base.g as f32 * brightness) as u8,
+        (base.b as f32 * brightness) as u8,
+        base.a,
+    )
+}
+
+fn draw_lit_triangle(
+    d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>,
+    triangle: [Vec3; 3],
+    base: Color,
+) {
+    let [a, b, c] = triangle;
+    let normal = (b - a).cross(c - a).normalize_or_zero();
+    let [a, b, c] = triangle.map(from_glam);
+
+    // Benchmark screens have no thickness; shade each visible side with its own normal.
+    d.draw_triangle3D(a, b, c, lit_surface_color(normal, base));
+    d.draw_triangle3D(c, b, a, lit_surface_color(-normal, base));
 }
 
 fn draw_marker(
