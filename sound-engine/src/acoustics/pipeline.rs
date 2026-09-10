@@ -39,6 +39,8 @@ pub struct AcousticQuery {
     pub listener_up: Vec3,
     /// Reference source pressure amplitude.
     pub source_amplitude: f32,
+    /// Engine-local source radiation profile and physical source orientation.
+    pub source_radiation: super::SourceRadiation,
 }
 
 /// Listener-originated acoustic path tracer that deposits pressure paths directly into a GPU IR.
@@ -52,6 +54,21 @@ pub struct AcousticPipeline {
     /// Triangle storage kept alive for the mask-zero empty-scene sentinel BLAS.
     _empty_scene_mesh: RtMeshBuffers,
     empty_scene_blas: BlasId,
+    cone_width: f32,
+    maximum_frequency_hz: f32,
+    /// Stores broadband surface pressure in a separate time-domain suffix.
+    time_domain_surfaces: bool,
+    /// Number of complex pressure samples carried by each band-model ray.
+    band_count: u32,
+    /// Reusable band accumulation storage, allocated during setup. Queries are
+    /// synchronous; reuse is allowed only when no raw snapshot retains it.
+    band_accumulator: Option<Arc<crate::gpu::memory::BufferHandle>>,
+    /// Enables the disjoint source-to-surface-to-edge family in the two-edge shader.
+    source_surface_paths: bool,
+    /// Enables the paired one-surface/two-edge research path families.
+    surface_two_edge_paths: bool,
+    /// Immutable engine-owned source tables; index zero is the unity sentinel.
+    source_profiles: Vec<Arc<crate::gpu::memory::BufferHandle>>,
 }
 
 #[repr(C)]
@@ -72,7 +89,20 @@ struct ListenerTracePushConstants {
     minimum_throughput: f32,
     head_radius_meters: f32,
     max_ild_db: f32,
-    _pad0: u32,
+    cone_width: f32,
+    maximum_frequency_hz: f32,
+    band_count: u32,
+    /// Global launch offset keeps directions, seeds and normalization invariant
+    /// when one query is traced in disjoint batches across audio blocks.
+    ray_offset: u32,
+    /// Bit 0 enables source-surface-edge; bit 1 enables both surface/two-edge orders.
+    source_surface_paths: u32,
+    /// Uniform branch selecting the immutable directional source table.
+    source_profile_enabled: u32,
+    /// Explicit padding keeps the quaternion at the std430 vec4 offset.
+    source_pad: u32,
+    /// Unit quaternion rotating world directions into the source frame.
+    source_inverse_rotation: [f32; 4],
 }
 
 unsafe impl bytemuck::Zeroable for ListenerTracePushConstants {}
@@ -81,9 +111,13 @@ unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 impl AcousticPipeline {
     /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
     pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
+        Self::with_shader(gpu, config, "listener_backward.rgen.glsl", 0.0)
+    }
+
+    fn with_shader(gpu: &VkBackend, config: EngineConfig, shader: &str, cone_width: f32) -> SoundResult<Self> {
         validate_config(config)?;
 
-        let raygen = load_shader(gpu, ShaderStage::RayGeneration, "listener_backward.rgen.glsl")?;
+        let raygen = load_shader(gpu, ShaderStage::RayGeneration, shader)?;
         let continuation_miss = load_shader(gpu, ShaderStage::RayMiss, "continuation.rmiss.glsl")?;
         let visibility_miss = load_shader(gpu, ShaderStage::RayMiss, "visibility.rmiss.glsl")?;
         let surface_closest_hit = load_shader(gpu, ShaderStage::RayClosestHit, "listener_backward_surface.rchit.glsl")?;
@@ -126,6 +160,7 @@ impl AcousticPipeline {
                 RtDescriptorBindingSpec::storage_buffer(2),
                 RtDescriptorBindingSpec::storage_buffer(3),
                 RtDescriptorBindingSpec::storage_buffer(4),
+                RtDescriptorBindingSpec::storage_buffer(5),
             ],
             push_constant_ranges: vec![RtPushConstantSpec::new(
                 0,
@@ -148,11 +183,21 @@ impl AcousticPipeline {
             mesh: &empty_scene_mesh,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         })?;
+        let unity_profile = Arc::new(gpu.memory().create_storage_buffer(16)?);
+        gpu.memory().upload_typed(&unity_profile, &[0u32; 4])?;
         Ok(Self {
             config,
             listener_pipeline,
             _empty_scene_mesh: empty_scene_mesh,
             empty_scene_blas,
+            cone_width,
+            maximum_frequency_hz: 0.0,
+            time_domain_surfaces: false,
+            band_count: 0,
+            band_accumulator: None,
+            source_surface_paths: false,
+            surface_two_edge_paths: false,
+            source_profiles: vec![unity_profile],
         })
     }
 
@@ -174,17 +219,88 @@ impl AcousticPipeline {
         scene: &mut SceneManager,
         query: AcousticQuery,
     ) -> SoundResult<GpuIrSnapshot> {
+        self.build_ir_range_gpu(gpu, scene, query, 0, self.ray_count(query), None)
+    }
+
+    /// Effective launch count, including the sole direct-visibility invocation.
+    fn ray_count(&self, query: AcousticQuery) -> u32 {
+        if self.config.acoustics.max_bounces == 0 || query.source_amplitude == 0.0 {
+            1
+        } else {
+            self.config.acoustics.listener_ray_count
+        }
+    }
+
+    /// Accumulates a disjoint range of a fixed query. The previous pressure is
+    /// exclusively retained by the caller; every submission completes here.
+    fn build_ir_range_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+        ray_offset: u32,
+        ray_count: u32,
+        previous: Option<GpuIrSnapshot>,
+    ) -> SoundResult<GpuIrSnapshot> {
         validate_query(query)?;
+        let source_profile = self
+            .source_profiles
+            .get(query.source_radiation.profile as usize)
+            .ok_or_else(|| SoundError::invalid_argument("source directivity is not registered in this engine"))?
+            .clone();
+        if ray_count == 0
+            || ray_offset
+                .checked_add(ray_count)
+                .is_none_or(|end| end > self.ray_count(query))
+        {
+            return Err(SoundError::invalid_argument("invalid acoustic ray range"));
+        }
+        let profile = std::env::var_os("SOUND_ENGINE_TRACE_PROFILE").is_some();
+        let started = std::time::Instant::now();
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
         let tlas_id = self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
-        let ir_buffer = Arc::new(
-            gpu.memory()
-                .create_storage_buffer(ir_buffer_size(self.config.sound.ir_num_samples) as u64)?,
-        );
-        // Every query receives independent zeroed pressure storage. Atomic
-        // accumulation cannot inherit data from allocator memory reused by a
-        // previous query.
-        gpu.memory().clear_buffer(&ir_buffer)?;
+        let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // A spectral bin stores one complex pair per ear; time-domain IRs
+        // retain the existing one-pair-per-frame layout.
+        let storage_count = if self.band_count > 0 {
+            (self.band_count * self.config.sound.output_channels.count() as u32 + 1)
+                * 2
+                * (self.config.sound.ir_num_samples - 1)
+        } else {
+            self.config.sound.ir_num_samples
+                * if self.maximum_frequency_hz > 0.0 {
+                    self.config.sound.output_channels.count() as u32
+                } else {
+                    1
+                }
+                + if self.time_domain_surfaces {
+                    2 * (self.config.sound.ir_num_samples - 1)
+                } else {
+                    0
+                }
+        };
+        let bytes = ir_buffer_size(storage_count) as u64;
+        let ir_buffer = if let Some(previous) = previous {
+            if previous.byte_size != bytes as usize || previous.scene_version != gpu_scene.version() {
+                return Err(SoundError::invalid_state(
+                    "partial ray pressure does not match the current scene/storage",
+                ));
+            }
+            previous
+                .buffer
+                .ok_or_else(|| SoundError::invalid_state("partial ray pressure is missing"))?
+        } else {
+            match self.band_accumulator.as_ref() {
+                Some(buffer) if Arc::strong_count(buffer) == 1 && buffer.size == bytes => buffer.clone(),
+                _ => Arc::new(gpu.memory().create_storage_buffer(bytes)?),
+            }
+        };
+        // Every query starts with zero pressure. Band scratch may be reused
+        // after synchronous synthesis; escaped raw snapshots never alias a writer.
+        if ray_offset == 0 {
+            gpu.memory().clear_buffer(&ir_buffer)?;
+        }
+        let clear_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         let constants = ListenerTracePushConstants {
             source_position: query.source_position.to_array(),
@@ -207,9 +323,18 @@ impl AcousticPipeline {
             minimum_throughput: self.config.acoustics.minimum_throughput,
             head_radius_meters: self.config.binaural.head_radius_meters,
             max_ild_db: self.config.binaural.max_ild_db,
-            _pad0: 0,
+            cone_width: self.cone_width,
+            maximum_frequency_hz: self.maximum_frequency_hz,
+            band_count: self.band_count,
+            ray_offset,
+            source_surface_paths: u32::from(self.source_surface_paths) | (u32::from(self.surface_two_edge_paths) << 1),
+            source_profile_enabled: u32::from(query.source_radiation.profile != 0),
+            source_pad: 0,
+            source_inverse_rotation: query.source_radiation.orientation.normalize().conjugate().to_array(),
         };
-        gpu.compute().submit_compute_and_wait(|command_buffer| {
+        let mut record_ms = 0.0;
+        let token = gpu.compute().submit_compute(|command_buffer| {
+            let record_started = profile.then(std::time::Instant::now);
             gpu.rt().record_trace(
                 command_buffer,
                 &RtTraceSpec {
@@ -220,10 +345,13 @@ impl AcousticPipeline {
                         RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
                         RtDescriptorWrite::storage_buffer(4, gpu_scene.diffraction_edge_buffer().buffer),
+                        RtDescriptorWrite::storage_buffer(5, source_profile.buffer),
                     ],
                     push_constants: bytemuck::bytes_of(&constants).to_vec(),
                     push_constant_offset: 0,
-                    dimensions: [self.config.acoustics.listener_ray_count, 1, 1],
+                    // Invocation zero owns direct visibility. No other lane
+                    // contributes when vertex paths are disabled or silent.
+                    dimensions: [ray_count, 1, 1],
                     barrier_after_trace: false,
                 },
             )?;
@@ -233,19 +361,40 @@ impl AcousticPipeline {
                 command_buffer,
                 &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(ir_buffer.buffer),
             );
+            if let Some(record_started) = record_started {
+                record_ms = record_started.elapsed().as_secs_f64() * 1000.0;
+            }
             Ok(())
         })?;
+        let submitted_ms = if profile {
+            started.elapsed().as_secs_f64() * 1000.0
+        } else {
+            0.0
+        };
+        gpu.compute().wait_for(token)?;
+        let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
         // The submission above is synchronous, so no descriptor or command
         // buffer can still reference this per-query TLAS. Releasing it here
         // prevents moving sources/listeners from retaining one acceleration
         // structure and backing allocation per acoustic update.
         gpu.rt().destroy_tlas(tlas_id)?;
+        if profile {
+            eprintln!(
+                "Trace stages: scene={scene_ms:.3}, clear={:.3}, rays={:.3}, release={:.3}, record={record_ms:.3}, submit={:.3}, wait={:.3}, offset={ray_offset}, count={ray_count}, query={}",
+                clear_ms - scene_ms,
+                trace_ms - clear_ms,
+                started.elapsed().as_secs_f64() * 1000.0 - trace_ms,
+                submitted_ms - clear_ms - record_ms,
+                trace_ms - submitted_ms,
+                query.query_id,
+            );
+        }
 
         Ok(GpuIrSnapshot {
             buffer: Some(ir_buffer),
-            byte_size: ir_buffer_size(self.config.sound.ir_num_samples),
+            byte_size: ir_buffer_size(storage_count),
             sample_rate: self.config.sound.sample_rate,
-            sample_count: self.config.sound.ir_num_samples,
+            sample_count: storage_count,
             energy: None,
             scene_version: gpu_scene.version(),
             query_id: query.query_id,
@@ -327,6 +476,364 @@ impl AcousticPipeline {
     }
 }
 
+/// Experimental spatial UTD tracer with configurable bounded edge orders.
+///
+/// Each ray owns its local complex pressure; only completed, visible paths write
+/// the spectrum. Stereo gains and binaural delays act on each ray's arrival.
+/// Frequencies above the selected bandwidth and DC are omitted. Reflection
+/// after diffraction remains incomplete; the band variant optionally adds
+/// consecutive two-edge paths. It does not implement all mixed interaction orders.
+pub struct ExperimentalUtdPipeline {
+    pipeline: AcousticPipeline,
+    inverse: Arc<dyn realfft::ComplexToReal<f32>>,
+    spectrum: Vec<realfft::num_complex::Complex32>,
+    scratch: Vec<realfft::num_complex::Complex32>,
+    /// Optional GPU reconstruction of interpolated ray-carried complex bands.
+    bands: Option<super::utd_bands::BandSynthesis>,
+    /// Adaptive launch granularity; total query rays and sample indices stay fixed.
+    ray_budget: Option<super::ray_budget::RayBatchBudget>,
+}
+
+impl ExperimentalUtdPipeline {
+    /// Creates a spectral tracer. `ir_num_samples` is an even FFT length and
+    /// `cone_width` is the regularized Keller-cone half-width in axial cosine.
+    /// GPU resources follow the same ownership and synchronous submission rules
+    /// as `AcousticPipeline`; assess width/ray convergence for the target scene.
+    pub fn new(gpu: &VkBackend, config: EngineConfig, cone_width: f32) -> SoundResult<Self> {
+        Self::with_bandwidth(gpu, config, cone_width, 2000.0)
+    }
+
+    /// Creates the experimental tracer with a specified upper frequency below
+    /// Nyquist. Wider bandwidth increases per-ray coefficient/accumulation work;
+    /// it does not imply measured validation outside the benchmark's frequency range.
+    pub fn with_bandwidth(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        cone_width: f32,
+        maximum_frequency_hz: f32,
+    ) -> SoundResult<Self> {
+        Self::create(gpu, config, cone_width, maximum_frequency_hz, false)
+    }
+
+    /// Keeps frequency-independent direct/reflected ray pressure in the time
+    /// domain, avoiding a full spectral loop at each ordinary surface hit.
+    pub fn with_time_domain_surfaces(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        cone_width: f32,
+        maximum_frequency_hz: f32,
+    ) -> SoundResult<Self> {
+        Self::create(gpu, config, cone_width, maximum_frequency_hz, true)
+    }
+
+    /// Uses logarithmically spaced complex pressure bands on each diffracted ray.
+    /// GPU reconstruction interpolates those coefficients without creating paths.
+    pub fn with_bands(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        cone_width: f32,
+        maximum_frequency_hz: f32,
+        band_count: u32,
+    ) -> SoundResult<Self> {
+        Self::with_band_orders(gpu, config, cone_width, maximum_frequency_hz, band_count, 1)
+    }
+
+    /// Selects one-edge transport or experimental consecutive two-edge transport.
+    /// The latter uses ray-discovered vertices and a coupled stationary-path
+    /// sampling Jacobian; mixed reflection/diffraction orders remain incomplete.
+    pub fn with_band_orders(
+        gpu: &VkBackend,
+        config: EngineConfig,
+        cone_width: f32,
+        maximum_frequency_hz: f32,
+        band_count: u32,
+        orders: u32,
+    ) -> SoundResult<Self> {
+        if !(1..=2).contains(&orders) {
+            return Err(SoundError::invalid_argument("UTD band orders must be 1 or 2"));
+        }
+        if !(4..=64).contains(&band_count) || maximum_frequency_hz <= 31.25 {
+            return Err(SoundError::invalid_argument(
+                "UTD bands require 4..64 bands and bandwidth > 31.25 Hz",
+            ));
+        }
+        let mut result = Self::create(gpu, config, cone_width, maximum_frequency_hz, true)?;
+        let shader = if orders == 2 {
+            "listener_utd_two_edges.rgen.glsl"
+        } else {
+            "listener_utd_bands.rgen.glsl"
+        };
+        let mut pipeline = AcousticPipeline::with_shader(gpu, result.pipeline.config, shader, cone_width)?;
+        pipeline.maximum_frequency_hz = maximum_frequency_hz;
+        pipeline.time_domain_surfaces = true;
+        pipeline.band_count = band_count;
+        // The optional family passes an isolated pressure check but worsens
+        // current BRAS box error. Keep the measured playback candidate unchanged.
+        pipeline.source_surface_paths = false;
+        let accumulator_bytes = (u64::from(band_count) * config.sound.output_channels.count() as u64 + 1)
+            * u64::from(config.sound.ir_num_samples)
+            * size_of::<IrSample>() as u64;
+        pipeline.band_accumulator = Some(Arc::new(gpu.memory().create_storage_buffer(accumulator_bytes)?));
+        result.pipeline = pipeline;
+        result.ray_budget = Some(super::ray_budget::RayBatchBudget::new(
+            config.acoustics.listener_ray_count,
+            config.sound.sample_rate,
+            config.auralization.block_size,
+        ));
+        result.bands = Some(super::utd_bands::BandSynthesis::new(
+            gpu,
+            config.sound.ir_num_samples,
+            config.sound.sample_rate,
+            config.sound.output_channels.count() as u32,
+            band_count,
+            maximum_frequency_hz,
+        )?);
+        Ok(result)
+    }
+
+    /// Enables or disables the source-launched surface/edge family for controlled
+    /// two-edge-model comparisons. This uncached pipeline applies the choice to
+    /// subsequent queries; other shader variants do not launch that family.
+    /// Finish or discard pending staged queries before changing this option.
+    pub fn set_source_surface_paths(&mut self, enabled: bool) {
+        self.pipeline.source_surface_paths = enabled;
+    }
+
+    /// Enables the disjoint R-D-D and D-D-R research families for subsequent
+    /// uncached queries. Only the two-edge shader with at least three interactions
+    /// traces them. Planar specular reflection defines the reference limit.
+    /// Finish or discard pending staged queries before changing this option.
+    pub fn set_surface_two_edge_paths(&mut self, enabled: bool) {
+        self.pipeline.surface_two_edge_paths = enabled;
+    }
+
+    /// Uploads an immutable source calibration to this band tracer. Registration
+    /// performs allocation/resampling and should precede realtime playback.
+    /// The returned id remains valid for this pipeline's lifetime; ids are never
+    /// reused, so pending ray batches cannot observe a replaced table.
+    pub fn register_source_directivity(
+        &mut self,
+        gpu: &VkBackend,
+        profile: &super::SourceDirectivity,
+    ) -> SoundResult<super::SourceDirectivityId> {
+        let p = &mut self.pipeline;
+        if p.band_count == 0 {
+            return Err(SoundError::invalid_argument(
+                "source directivity requires a UTD band pipeline",
+            ));
+        }
+        let samples = 2 * (p.config.sound.ir_num_samples - 1);
+        let minimum = p.config.sound.sample_rate as f32 / samples.next_power_of_two() as f32;
+        let nodes: Vec<_> = (0..p.band_count)
+            .map(|i| minimum * (p.maximum_frequency_hz / minimum).powf(i as f32 / (p.band_count - 1) as f32))
+            .collect();
+        let pressure = profile.resample(&nodes);
+        let id = u32::try_from(p.source_profiles.len())
+            .map_err(|_| SoundError::invalid_state("source profile id overflow"))?;
+        let mut bytes = bytemuck::cast_slice(&[profile.phi_count, profile.theta_count, p.band_count, 0]).to_vec();
+        bytes.extend_from_slice(bytemuck::cast_slice(&pressure));
+        let buffer = Arc::new(gpu.memory().create_storage_buffer(bytes.len() as u64)?);
+        gpu.memory().upload_bytes(&buffer, &bytes)?;
+        p.source_profiles.push(buffer);
+        Ok(id)
+    }
+
+    /// Checks immutable registry membership before a tracked source is mutated.
+    pub(crate) fn has_source_directivity(&self, id: super::SourceDirectivityId) -> bool {
+        (id as usize) < self.pipeline.source_profiles.len()
+    }
+
+    fn create(
+        gpu: &VkBackend,
+        mut config: EngineConfig,
+        cone_width: f32,
+        maximum_frequency_hz: f32,
+        time_domain_surfaces: bool,
+    ) -> SoundResult<Self> {
+        if config.sound.ir_num_samples < 4
+            || config.sound.ir_num_samples % 2 != 0
+            || !cone_width.is_finite()
+            || !(0.0..=0.25).contains(&cone_width)
+            || cone_width == 0.0
+            || !maximum_frequency_hz.is_finite()
+            || maximum_frequency_hz <= 0.0
+            || maximum_frequency_hz >= 0.5 * config.sound.sample_rate as f32
+        {
+            return Err(SoundError::invalid_argument(
+                "UTD requires an even FFT length >= 4, 0 < cone width <= 0.25, and a positive bandwidth below Nyquist",
+            ));
+        }
+        let inverse = realfft::RealFftPlanner::<f32>::new().plan_fft_inverse(config.sound.ir_num_samples as usize);
+        let spectrum = inverse.make_input_vec();
+        let scratch = inverse.make_scratch_vec();
+        config.sound.ir_num_samples = config.sound.ir_num_samples / 2 + 1;
+        let shader = if time_domain_surfaces {
+            "listener_utd_playground.rgen.glsl"
+        } else {
+            "listener_utd.rgen.glsl"
+        };
+        let mut pipeline = AcousticPipeline::with_shader(gpu, config, shader, cone_width)?;
+        pipeline.maximum_frequency_hz = maximum_frequency_hz;
+        pipeline.time_domain_surfaces = time_domain_surfaces;
+        Ok(Self {
+            pipeline,
+            inverse,
+            spectrum,
+            scratch,
+            bands: None,
+            ray_budget: None,
+        })
+    }
+
+    /// Returns the nonnegative-frequency complex transfer bins as [real, imaginary].
+    /// The first and last entries represent DC and Nyquist; no source calibration,
+    /// time alignment, inverse transform, or measurement fitting is performed here.
+    pub fn build_transfer(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<Vec<[f32; 2]>> {
+        if self.pipeline.config.sound.output_channels != OutputChannels::Mono || self.pipeline.time_domain_surfaces {
+            return Err(SoundError::invalid_argument(
+                "build_transfer requires mono; use build_ir_gpu for spatial output",
+            ));
+        }
+        let data = self.pipeline.build_ir(gpu, scene, query)?;
+        Ok(data.samples.iter().map(|s| [s.left, s.right]).collect())
+    }
+
+    /// Begins a band query with a bounded ray batch. The optional offset identifies
+    /// the next range; absence denotes a complete time-domain snapshot.
+    pub(super) fn begin_ir_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<(GpuIrSnapshot, Option<u32>)> {
+        if self.bands.is_some() {
+            let count = self.ray_budget.as_ref().unwrap().count(self.pipeline.ray_count(query));
+            let started = std::time::Instant::now();
+            let raw = self.pipeline.build_ir_range_gpu(gpu, scene, query, 0, count, None)?;
+            self.ray_budget
+                .as_mut()
+                .unwrap()
+                .observe(count, started.elapsed().as_secs_f64() * 1000.0);
+            Ok((raw, Some(count)))
+        } else {
+            self.build_ir_gpu(gpu, scene, query).map(|ir| (ir, None))
+        }
+    }
+
+    /// Advances the remaining ray range or reconstructs an already complete
+    /// accumulator. Neither phase observes a newer endpoint pose.
+    pub(super) fn advance_ir_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+        raw: GpuIrSnapshot,
+        next_ray: u32,
+    ) -> SoundResult<(GpuIrSnapshot, Option<u32>)> {
+        let total = self.pipeline.ray_count(query);
+        if next_ray < total {
+            let count = self.ray_budget.as_ref().unwrap().count(total - next_ray);
+            let started = std::time::Instant::now();
+            let raw = self
+                .pipeline
+                .build_ir_range_gpu(gpu, scene, query, next_ray, count, Some(raw))?;
+            self.ray_budget
+                .as_mut()
+                .unwrap()
+                .observe(count, started.elapsed().as_secs_f64() * 1000.0);
+            return Ok((raw, Some(next_ray + count)));
+        }
+        self.bands
+            .as_mut()
+            .ok_or_else(|| SoundError::invalid_state("band reconstruction is not configured"))?
+            .synthesize(gpu, &raw)
+            .map(|ir| (ir, None))
+    }
+
+    /// Builds a time-domain GPU snapshot compatible with the cache and convolver.
+    /// Each ear is transformed independently; synthesis only changes the signal
+    /// representation of traced pressure. Upload completes before ownership is shared.
+    pub fn build_ir_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        query: AcousticQuery,
+    ) -> SoundResult<GpuIrSnapshot> {
+        if let Some(bands) = &mut self.bands {
+            let raw = self.pipeline.build_ir_gpu(gpu, scene, query)?;
+            return bands.synthesize(gpu, &raw);
+        }
+        let raw = self.pipeline.build_ir(gpu, scene, query)?;
+        let bins = self.spectrum.len();
+        let channels = self.pipeline.config.sound.output_channels.count();
+        let mut samples = vec![IrSample::zero(); self.inverse.len()];
+        for channel in 0..channels {
+            let transfer: Vec<_> = raw.samples[channel * bins..(channel + 1) * bins]
+                .iter()
+                .map(|s| [s.left, s.right])
+                .collect();
+            let values = self.synthesize_ir(&transfer)?;
+            for (sample, value) in samples.iter_mut().zip(values) {
+                if channel == 0 {
+                    sample.left = value;
+                } else {
+                    sample.right = value;
+                }
+            }
+        }
+        if self.pipeline.time_domain_surfaces {
+            for (sample, surface) in samples.iter_mut().zip(&raw.samples[channels * bins..]) {
+                sample.left += surface.left;
+                sample.right += surface.right;
+            }
+        }
+        let byte_size = samples.len() * size_of::<IrSample>();
+        let buffer = Arc::new(gpu.memory().create_storage_buffer(byte_size as u64)?);
+        gpu.memory().upload_typed(&buffer, &samples)?;
+        Ok(GpuIrSnapshot {
+            buffer: Some(buffer),
+            byte_size,
+            sample_rate: raw.sample_rate,
+            sample_count: samples.len() as u32,
+            energy: Some(samples.iter().map(|s| s.left * s.left + s.right * s.right).sum()),
+            scene_version: raw.scene_version,
+            query_id: raw.query_id,
+        })
+    }
+
+    /// Downloads synthesized stereo frames using the shared snapshot layout.
+    pub fn download_gpu_ir(&self, gpu: &VkBackend, snapshot: &GpuIrSnapshot) -> SoundResult<IrSnapshot> {
+        self.pipeline.download_gpu_ir(gpu, snapshot)
+    }
+
+    /// Synthesizes mono pressure samples from this tracer's complex transfer bins.
+    /// The cached inverse plan and scratch storage are exclusively borrowed during
+    /// the call. This linear transform adds no propagation paths or calibration.
+    /// The returned IR has the configured FFT length and includes band-limit ringing.
+    pub fn synthesize_ir(&mut self, transfer: &[[f32; 2]]) -> SoundResult<Vec<f32>> {
+        if transfer.len() != self.spectrum.len() || transfer.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(SoundError::invalid_argument(
+                "UTD transfer bins must match the FFT length and be finite",
+            ));
+        }
+        for (target, value) in self.spectrum.iter_mut().zip(transfer) {
+            *target = realfft::num_complex::Complex32::new(value[0], value[1]);
+        }
+        let mut output = self.inverse.make_output_vec();
+        self.inverse
+            .process_with_scratch(&mut self.spectrum, &mut output, &mut self.scratch)
+            .map_err(|e| SoundError::invalid_argument(format!("UTD inverse FFT: {e}")))?;
+        let normalization = 1.0 / output.len() as f32;
+        output.iter_mut().for_each(|v| *v *= normalization);
+        Ok(output)
+    }
+}
+
 fn load_shader(gpu: &VkBackend, stage: ShaderStage, file: &str) -> SoundResult<crate::gpu::shader::ShaderId> {
     gpu.shaders().load_glsl_file(stage, shader_path(file))
 }
@@ -368,6 +875,7 @@ fn validate_config(config: EngineConfig) -> SoundResult<()> {
 }
 
 fn validate_query(query: AcousticQuery) -> SoundResult<()> {
+    query.source_radiation.validate()?;
     if !query.source_position.is_finite()
         || !query.listener_position.is_finite()
         || !query.listener_forward.is_finite()
@@ -484,63 +992,24 @@ fn folded_power_cosine_pdf(direction: Vec3, axis: Vec3, normal: Vec3, exponent: 
 
 #[cfg(test)]
 fn diffraction_radial_kernel(distance_to_edge: f32, radius: f32) -> f32 {
-    (1.0 - distance_to_edge.abs() / radius).clamp(0.0, 1.0) / radius
+    if distance_to_edge < 0.0 {
+        return 0.0;
+    }
+    2.0 * (1.0 - distance_to_edge / radius).clamp(0.0, 1.0) / radius
 }
 
 #[cfg(test)]
-fn diffraction_forward_angle_measure(solid_center_angle: f32, solid_half_angle: f32) -> f32 {
-    let half_pi = std::f32::consts::FRAC_PI_2;
-    let mut solid_overlap = 0.0;
-    for wrap in -1..=1 {
-        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
-        let overlap_start = (-half_pi).max(center - solid_half_angle);
-        let overlap_end = half_pi.min(center + solid_half_angle);
-        solid_overlap += (overlap_end - overlap_start).max(0.0);
+fn diffraction_shadow_interval(incident_angle: f64, air_angle: f64) -> Option<(f64, f64)> {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    if !(0.0..=air_angle).contains(&incident_angle) {
+        None
+    } else if incident_angle < air_angle - PI {
+        Some((0.0, FRAC_PI_2.min(air_angle - PI - incident_angle)))
+    } else if incident_angle > PI {
+        Some(((-FRAC_PI_2).max(PI - incident_angle), 0.0))
+    } else {
+        None
     }
-    std::f32::consts::PI - solid_overlap
-}
-
-#[cfg(test)]
-fn diffraction_forward_cosine_integral(solid_center_angle: f32, solid_half_angle: f32) -> f32 {
-    let half_pi = std::f32::consts::FRAC_PI_2;
-    let mut solid_overlap = 0.0;
-    for wrap in -1..=1 {
-        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
-        let overlap_start = (-half_pi).max(center - solid_half_angle);
-        let overlap_end = half_pi.min(center + solid_half_angle);
-        if overlap_end > overlap_start {
-            solid_overlap += overlap_end.sin() - overlap_start.sin();
-        }
-    }
-    2.0 - solid_overlap
-}
-
-#[cfg(test)]
-fn diffraction_forward_forbidden_interval(solid_center_angle: f32, solid_half_angle: f32) -> (f32, f32) {
-    let half_pi = std::f32::consts::FRAC_PI_2;
-    let mut forbidden = None::<(f32, f32)>;
-    for wrap in -1..=1 {
-        let center = solid_center_angle + wrap as f32 * std::f32::consts::TAU;
-        let start = (-half_pi).max(center - solid_half_angle);
-        let end = half_pi.min(center + solid_half_angle);
-        if end > start {
-            forbidden = Some(match forbidden {
-                Some((old_start, old_end)) => (old_start.min(start), old_end.max(end)),
-                None => (start, end),
-            });
-        }
-    }
-    forbidden.unwrap_or((half_pi, half_pi))
-}
-
-#[cfg(test)]
-fn diffraction_forward_angle_is_valid(angle: f32, solid_center_angle: f32, solid_half_angle: f32) -> bool {
-    if angle.abs() > std::f32::consts::FRAC_PI_2 {
-        return false;
-    }
-    let wrapped_delta =
-        (angle - solid_center_angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-    wrapped_delta.abs() >= solid_half_angle
 }
 
 #[cfg(test)]
@@ -614,6 +1083,7 @@ mod tests {
             listener_forward: -Vec3::Z,
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
+            source_radiation: Default::default(),
         }
     }
 
@@ -655,85 +1125,72 @@ mod tests {
     fn diffraction_strip_kernel_is_finite_normalized_and_bounded() {
         for radius in [0.05, 0.2, 1.0, 4.0] {
             let steps = 100_000;
-            let width = 2.0 * radius / steps as f32;
+            let width = radius / steps as f32;
             let integral = (0..steps)
                 .map(|index| {
-                    let distance = -radius + (index as f32 + 0.5) * width;
+                    let distance = (index as f32 + 0.5) * width;
                     diffraction_radial_kernel(distance, radius) * width
                 })
                 .sum::<f32>();
             assert!((integral - 1.0).abs() < 1.0e-4);
-            assert_eq!(diffraction_radial_kernel(0.0, radius), radius.recip());
+            assert_eq!(diffraction_radial_kernel(0.0, radius), 2.0 / radius);
+            assert_eq!(diffraction_radial_kernel(-0.5 * radius, radius), 0.0);
             assert_eq!(diffraction_radial_kernel(radius, radius), 0.0);
             assert_eq!(diffraction_radial_kernel(2.0 * radius, radius), 0.0);
         }
     }
 
     #[test]
-    fn diffraction_forward_domain_is_normalized_bounded_and_excludes_the_wall() {
-        let steps = 200_000;
-        for solid_half_angle in [0.0, 0.25 * std::f32::consts::PI, std::f32::consts::FRAC_PI_2] {
-            for center_step in 0..32 {
-                let solid_center_angle =
-                    -std::f32::consts::PI + (center_step as f32 + 0.5) * std::f32::consts::TAU / 32.0;
-                // Incidence at angle zero must originate in free space.
-                if solid_center_angle.abs() < solid_half_angle {
+    fn diffraction_shadow_sampler_stays_in_air_and_preserves_the_keller_cone() {
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+        for air_angle in [PI, 1.1 * PI, 1.5 * PI, 1.9 * PI, TAU] {
+            for incidence in 0..64 {
+                let incident = (incidence as f64 + 0.5) * air_angle / 64.0;
+                let Some((start, end)) = diffraction_shadow_interval(incident, air_angle) else {
+                    assert!(incident >= air_angle - PI && incident <= PI);
                     continue;
+                };
+                let integral = end.sin() - start.sin();
+                let mut numerical_integral = 0.0;
+                for step in 0..1024 {
+                    let u = (step as f64 + 0.5) / 1024.0;
+                    let angle = (start.sin() + u * integral).asin();
+                    let outgoing = (incident + PI + angle).rem_euclid(TAU);
+                    assert!(outgoing <= air_angle + 1e-12);
+                    assert!((outgoing - incident).abs() >= PI - 1e-12);
+                    assert!(angle.abs() <= FRAC_PI_2);
+                    for axial in [-0.9_f64, 0.0, 0.9] {
+                        let radial = (1.0 - axial * axial).sqrt();
+                        let length_squared =
+                            (radial * angle.cos()).powi(2) + (radial * angle.sin()).powi(2) + axial * axial;
+                        assert!((length_squared - 1.0).abs() < 1e-12);
+                    }
+                    let uniform_angle = start + u * (end - start);
+                    numerical_integral += uniform_angle.cos() / integral * (end - start) / 1024.0;
                 }
-                let measure = diffraction_forward_angle_measure(solid_center_angle, solid_half_angle);
-                assert!(measure.is_finite());
-                assert!(measure >= std::f32::consts::FRAC_PI_2 - 1.0e-5);
-                assert!(measure <= std::f32::consts::PI + 1.0e-5);
-                let cosine_integral = diffraction_forward_cosine_integral(solid_center_angle, solid_half_angle);
-                assert!(cosine_integral.is_finite() && cosine_integral > 0.0);
-                let (forbidden_start, forbidden_end) =
-                    diffraction_forward_forbidden_interval(solid_center_angle, solid_half_angle);
+                assert!((numerical_integral - 1.0).abs() < 1e-6);
+            }
+        }
+    }
 
-                let width = std::f64::consts::PI / steps as f64;
-                let integral = (0..steps)
-                    .map(|index| {
-                        let angle = -std::f32::consts::FRAC_PI_2 + (index as f32 + 0.5) * width as f32;
-                        if diffraction_forward_angle_is_valid(angle, solid_center_angle, solid_half_angle) {
-                            width / measure as f64
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum::<f64>();
-                assert!(
-                    (integral - 1.0).abs() < 2.0e-4,
-                    "forward diffraction integral was {integral}"
-                );
-
-                let cosine_integral_numeric = (0..steps)
-                    .map(|index| {
-                        let angle = -std::f32::consts::FRAC_PI_2 + (index as f32 + 0.5) * width as f32;
-                        if diffraction_forward_angle_is_valid(angle, solid_center_angle, solid_half_angle) {
-                            width * angle.cos() as f64 / cosine_integral as f64
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum::<f64>();
-                assert!(
-                    (cosine_integral_numeric - 1.0).abs() < 2.0e-4,
-                    "cosine diffraction integral was {cosine_integral_numeric}"
-                );
-
-                let left_mass = (forbidden_start.sin() + 1.0).max(0.0);
-                for sample_index in 0..10_000 {
-                    let mass_sample = (sample_index as f32 + 0.5) / 10_000.0 * cosine_integral;
-                    let sine_angle = if mass_sample < left_mass {
-                        -1.0 + mass_sample
-                    } else {
-                        forbidden_end.sin() + (mass_sample - left_mass)
-                    };
-                    let angle = sine_angle.clamp(-1.0, 1.0).asin();
-                    assert!(diffraction_forward_angle_is_valid(
-                        angle,
-                        solid_center_angle,
-                        solid_half_angle
-                    ));
+    #[test]
+    fn projected_strip_density_is_radius_independent_for_uniform_launches() {
+        // Independent area-to-solid-angle integration. Relocating proxy samples
+        // must recover the edge density for both approaching and receding strips.
+        for normal_distance in [0.1_f64, 1.0, 3.0] {
+            for lateral in [-1.0_f64, 0.0, 1.0] {
+                for radius in [0.05_f64, 0.2, 0.9] {
+                    let edge_distance = normal_distance.hypot(lateral);
+                    let expected = normal_distance / edge_distance.powi(3);
+                    let mut measured = 0.0;
+                    for step in 0..4096 {
+                        let r = (step as f64 + 0.5) * radius / 4096.0;
+                        let proxy_distance = normal_distance.hypot(lateral + r);
+                        let density = normal_distance / proxy_distance.powi(3);
+                        let weight = (proxy_distance / edge_distance).powi(3);
+                        measured += density * weight * 2.0 * (1.0 - r / radius) / 4096.0;
+                    }
+                    assert!((measured / expected - 1.0).abs() < 1e-10);
                 }
             }
         }
@@ -840,7 +1297,20 @@ mod tests {
 
     #[test]
     fn push_constants_match_shader_layout() {
-        assert_eq!(size_of::<ListenerTracePushConstants>(), 88);
+        assert_eq!(size_of::<ListenerTracePushConstants>(), 128);
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, source_profile_enabled),
+            104
+        );
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, source_inverse_rotation),
+            112
+        );
+        assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, band_count), 92);
+        assert_eq!(
+            std::mem::offset_of!(ListenerTracePushConstants, maximum_frequency_hz),
+            88
+        );
         assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, minimum_throughput), 72);
         assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, head_radius_meters), 76);
         assert_eq!(std::mem::offset_of!(ListenerTracePushConstants, max_ild_db), 80);

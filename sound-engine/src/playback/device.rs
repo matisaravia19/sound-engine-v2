@@ -155,6 +155,10 @@ fn write_output<T>(
     }
 
     let frames = data.len() / device_channels;
+    if !state.ready_to_play() || state.is_stop_requested() {
+        silence_output(data);
+        return;
+    }
     let required_samples = frames * output_channels;
 
     // The queue is packed as engine-channel samples only; scratch mirrors that
@@ -181,6 +185,7 @@ fn write_output<T>(
     }
 
     let rendered_frame_count = drained / output_channels;
+    state.record_callback(rendered_frame_count, frames);
     let mut device_frames = data.chunks_exact_mut(device_channels);
     let engine_frames = scratch[..drained].chunks_exact(output_channels);
 

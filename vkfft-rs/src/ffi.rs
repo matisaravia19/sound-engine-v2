@@ -137,6 +137,8 @@ pub struct VkFFTConfiguration {
     pub normalize: u64,
     pub perform_convolution: u64,
     pub kernel_convolution: u64,
+    /// Contiguous independent transforms; zero retains VkFFT's default of one.
+    pub number_batches: u64,
 }
 
 #[repr(C)]

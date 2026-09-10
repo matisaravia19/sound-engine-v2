@@ -28,6 +28,7 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
+        source_radiation: Default::default(),
     };
     let low = trace(gpu, empty_scene(), config(64, 0), query)?;
     let high = trace(gpu, empty_scene(), config(16_384, 0), query)?;
@@ -60,6 +61,7 @@ fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
+        source_radiation: Default::default(),
     };
     let ir = trace(gpu, occluding_wall_scene(), config(4_096, 0), query)?;
     require(channel_sum(&ir) == 0.0, "occluding wall must remove the direct path")
@@ -75,6 +77,7 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
+        source_radiation: Default::default(),
     };
     let ir = trace(gpu, reflection_scene(), config(262_144, 1), query)?;
     let image_source = vec3(4.0, 0.0, 0.0);
@@ -99,6 +102,7 @@ fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<(
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: 1.0,
+        source_radiation: Default::default(),
     };
     let baseline = trace(gpu, diffraction_scene(None), config(65_536, 1), query)?;
     require(

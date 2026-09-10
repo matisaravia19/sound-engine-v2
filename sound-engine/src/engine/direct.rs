@@ -1,7 +1,7 @@
 //! Direct, synchronous engine implementation.
 
 use super::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request};
-use crate::acoustics::{AcousticsEngine, GpuIrSnapshot, IrSnapshot};
+use crate::acoustics::{AcousticsEngine, GpuIrProgress, GpuIrSnapshot, IrSnapshot, PendingGpuIr};
 use crate::auralization::{AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
@@ -11,6 +11,10 @@ use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+
+#[cfg(test)]
+#[path = "direct_tests.rs"]
+mod tests;
 
 /// Private owner of GPU, scene, acoustic cache, assets, voices, and block rendering.
 pub(super) struct EngineCore {
@@ -22,6 +26,14 @@ pub(super) struct EngineCore {
     sound_sources: HashMap<SoundSourceId, SoundSourceRecord>,
     /// Spatial metadata for voices that should react to acoustic updates.
     spatial_voices: HashMap<VoiceId, SpatialVoice>,
+    /// At most one coherent query retains ray pressure between audio blocks.
+    pending_ir: Option<PendingSpatialIr>,
+    /// Round-robin cursor prevents a moving voice from starving other dirty voices.
+    last_spatial_voice: VoiceId,
+    /// Number of complete spatial IR replacements published to active voices.
+    spatial_updates: u64,
+    /// Age of the last replaced IR's endpoint request at crossfade registration.
+    spatial_update_age_ms: f64,
     /// Listener pose used by spatial play requests that do not supply one directly.
     listener: ListenerPose,
     /// Monotonic id assigned to tracked sound sources.
@@ -56,13 +68,36 @@ struct SpatialVoice {
     acoustic_ir_buffer: Arc<BufferHandle>,
     /// Whether the voice should refresh its IR before the next rendered block.
     dirty: bool,
+    /// Incremented when endpoints or scene change, including during reconstruction.
+    revision: u64,
+    /// Acceptance time of this revision, before any scheduling or tracing delay.
+    changed_at: std::time::Instant,
+}
+
+/// A coherent ray query retained while audio continues through the previous IR.
+struct PendingSpatialIr {
+    /// Voice that requested this query; stopping it cancels the pending update.
+    voice_id: VoiceId,
+    /// Voice revision captured before tracing, used to preserve newer updates.
+    revision: u64,
+    /// Acceptance time of the captured revision, unaffected by newer poses.
+    requested_at: std::time::Instant,
+    /// Owns ray-carried pressure until the next trace or reconstruction step.
+    pressure: PendingGpuIr,
 }
 
 impl EngineCore {
+    /// Uploads immutable source data while the core is in setup/direct mode.
+    pub(super) fn register_source_directivity(
+        &mut self,
+        profile: &crate::acoustics::SourceDirectivity,
+    ) -> SoundResult<crate::acoustics::SourceDirectivityId> {
+        self.acoustics.register_source_directivity(self.gpu.as_ref(), profile)
+    }
     /// Creates a direct engine core with an empty scene and sound bank.
-    pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
+    pub(super) fn new(config: EngineConfig, model: crate::acoustics::AcousticModel) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
-        let acoustics = AcousticsEngine::new(gpu.as_ref(), config)?;
+        let acoustics = AcousticsEngine::with_model(gpu.as_ref(), config, model)?;
         let auralization = AuralizationEngine::new(gpu.clone(), config)?;
 
         Ok(Self {
@@ -70,6 +105,10 @@ impl EngineCore {
             auralization,
             sound_sources: HashMap::new(),
             spatial_voices: HashMap::new(),
+            pending_ir: None,
+            last_spatial_voice: 0,
+            spatial_updates: 0,
+            spatial_update_age_ms: 0.0,
             listener: ListenerPose::default(),
             next_sound_source_id: 1,
             next_impulse_response_id: 1,
@@ -79,6 +118,7 @@ impl EngineCore {
 
     /// Replaces the scene and clears IR cache entries tied to prior geometry.
     pub(super) fn load_scene(&mut self, scene: SceneDescription) -> SoundResult<SceneVersion> {
+        self.pending_ir = None;
         let version = self.acoustics.load_scene(scene)?;
         self.mark_all_spatial_voices_dirty();
         Ok(version)
@@ -87,6 +127,9 @@ impl EngineCore {
     /// Applies scene edits and clears cached IRs when scene contents changed.
     pub(super) fn apply_scene_updates(&mut self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
         let changed = !updates.updates.is_empty();
+        if changed {
+            self.pending_ir = None;
+        }
         let version = self.acoustics.apply_scene_updates(updates)?;
         if changed {
             self.mark_all_spatial_voices_dirty();
@@ -110,13 +153,13 @@ impl EngineCore {
 
     /// Creates a movable sound source and returns its public handle.
     pub(super) fn create_sound_source(&mut self, source: PointSource) -> SoundResult<SoundSourceId> {
-        crate::acoustics::validate_source(source)?;
+        self.acoustics.validate_source_reference(source)?;
         Ok(self.insert_sound_source(source, false))
     }
 
     /// Updates a tracked sound source and marks bound voices for IR refresh.
     pub(super) fn update_sound_source(&mut self, id: SoundSourceId, source: PointSource) -> SoundResult<()> {
-        crate::acoustics::validate_source(source)?;
+        self.acoustics.validate_source_reference(source)?;
         let record = self
             .sound_sources
             .get_mut(&id)
@@ -153,7 +196,7 @@ impl EngineCore {
     /// Builds or reuses an acoustic IR and starts a convolved voice.
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
-        crate::acoustics::validate_source(request.source)?;
+        self.acoustics.validate_source_reference(request.source)?;
         let source_id = self.insert_sound_source(request.source, true);
         match self.play_sound_from_source(request.sound_id, source_id, request.volume) {
             Ok(voice_id) => Ok(voice_id),
@@ -200,6 +243,8 @@ impl EngineCore {
                 impulse_response_id,
                 acoustic_ir_buffer,
                 dirty: false,
+                revision: 0,
+                changed_at: std::time::Instant::now(),
             },
         );
         Ok(voice_id)
@@ -222,10 +267,106 @@ impl EngineCore {
 
     /// Renders one interleaved block through the auralizer.
     pub(super) fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
+        self.pending_ir = None;
         self.refresh_dirty_spatial_voices()?;
         self.auralization.render_block(output_block)?;
         self.cleanup_finished_spatial_voices();
         Ok(())
+    }
+
+    /// Renders with at most one spatial phase per block. Tracing and band
+    /// reconstruction run on separate blocks; the previous stereo IR remains
+    /// active until the complete new IR can enter the normal crossfade. Passing
+    /// `advance_spatial=false` produces audio while retaining the pending query.
+    pub(super) fn render_realtime_block(
+        &mut self,
+        output_block: &mut [f32],
+        advance_spatial: bool,
+    ) -> SoundResult<[f64; 3]> {
+        let (trace_ms, prepare_ms) = if advance_spatial {
+            self.advance_spatial_update()?
+        } else {
+            (0.0, 0.0)
+        };
+        let started = std::time::Instant::now();
+        self.auralization.render_block(output_block)?;
+        self.cleanup_finished_spatial_voices();
+        Ok([trace_ms, prepare_ms, started.elapsed().as_secs_f64() * 1000.0])
+    }
+
+    /// Advances one coherent query without restarting it for each incoming pose.
+    /// Newer pose/source revisions remain dirty after the older result is applied.
+    fn advance_spatial_update(&mut self) -> SoundResult<(f64, f64)> {
+        if let Some(pending) = self.pending_ir.take() {
+            if !self.auralization.has_voice(pending.voice_id) {
+                self.remove_spatial_voice(pending.voice_id);
+                return Ok((0.0, 0.0));
+            }
+            let started = std::time::Instant::now();
+            let progress = self
+                .acoustics
+                .advance_impulse_response_gpu(self.gpu.as_ref(), pending.pressure)?;
+            let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
+            return match progress {
+                GpuIrProgress::Pending(pressure) => {
+                    self.pending_ir = Some(PendingSpatialIr { pressure, ..pending });
+                    Ok((trace_ms, 0.0))
+                }
+                GpuIrProgress::Ready(snapshot) => {
+                    let started = std::time::Instant::now();
+                    self.apply_spatial_ir(pending.voice_id, pending.revision, pending.requested_at, &snapshot)?;
+                    Ok((trace_ms, started.elapsed().as_secs_f64() * 1000.0))
+                }
+            };
+        }
+        let dirty = || {
+            self.spatial_voices
+                .iter()
+                .filter_map(|(&id, voice)| voice.dirty.then_some(id))
+        };
+        let Some(voice_id) = dirty()
+            .filter(|&id| id > self.last_spatial_voice)
+            .min()
+            .or_else(|| dirty().min())
+        else {
+            return Ok((0.0, 0.0));
+        };
+        self.last_spatial_voice = voice_id;
+        if !self.auralization.has_voice(voice_id) {
+            self.remove_spatial_voice(voice_id);
+            return Ok((0.0, 0.0));
+        }
+        let voice = &self.spatial_voices[&voice_id];
+        let revision = voice.revision;
+        let requested_at = voice.changed_at;
+        let source = self.source(voice.source_id)?;
+        let started = std::time::Instant::now();
+        let progress = self
+            .acoustics
+            .begin_impulse_response_gpu(self.gpu.as_ref(), source, self.listener)?;
+        let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
+        match progress {
+            GpuIrProgress::Pending(pressure) => {
+                self.pending_ir = Some(PendingSpatialIr {
+                    voice_id,
+                    revision,
+                    requested_at,
+                    pressure,
+                });
+                Ok((trace_ms, 0.0))
+            }
+            GpuIrProgress::Ready(snapshot) => {
+                let started = std::time::Instant::now();
+                self.apply_spatial_ir(voice_id, revision, requested_at, &snapshot)?;
+                Ok((trace_ms, started.elapsed().as_secs_f64() * 1000.0))
+            }
+        }
+    }
+
+    /// Returns replacement count and request-to-registration age for diagnostics.
+    /// This excludes time in the device queue and the subsequent crossfade.
+    pub(super) fn spatial_update_status(&self) -> (u64, f64) {
+        (self.spatial_updates, self.spatial_update_age_ms)
     }
 
     /// Returns whether any voices are still active or flushing tails.
@@ -290,6 +431,8 @@ impl EngineCore {
     fn mark_all_spatial_voices_dirty(&mut self) {
         for voice in self.spatial_voices.values_mut() {
             voice.dirty = true;
+            voice.revision = voice.revision.wrapping_add(1);
+            voice.changed_at = std::time::Instant::now();
         }
     }
 
@@ -298,12 +441,16 @@ impl EngineCore {
         for voice in self.spatial_voices.values_mut() {
             if voice.source_id == source_id {
                 voice.dirty = true;
+                voice.revision = voice.revision.wrapping_add(1);
+                voice.changed_at = std::time::Instant::now();
             }
         }
     }
 
     /// Refreshes dirty active voices with IRs for their current source/listener state.
-    fn refresh_dirty_spatial_voices(&mut self) -> SoundResult<()> {
+    fn refresh_dirty_spatial_voices(&mut self) -> SoundResult<(f64, f64)> {
+        let mut trace_ms = 0.0;
+        let mut prepare_ms = 0.0;
         let dirty_voice_ids: Vec<_> = self
             .spatial_voices
             .iter()
@@ -322,38 +469,54 @@ impl EngineCore {
                 .map(|voice| voice.source_id)
                 .ok_or_else(|| SoundError::not_found(format!("Unknown spatial voice id {}", voice_id)))?;
             let source = self.source(source_id)?;
+            let started = std::time::Instant::now();
             let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
-            let next_acoustic_ir_buffer = snapshot
-                .buffer
-                .as_ref()
-                .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
-                .clone();
-            let reuses_registered_ir = self
-                .spatial_voices
-                .get(&voice_id)
-                .is_some_and(|voice| Arc::ptr_eq(&voice.acoustic_ir_buffer, &next_acoustic_ir_buffer));
-            if reuses_registered_ir {
-                if let Some(voice) = self.spatial_voices.get_mut(&voice_id) {
-                    voice.dirty = false;
-                }
-                continue;
-            }
-
-            let next_ir_id = self.register_gpu_impulse_response(&snapshot)?;
-            if let Err(error) = self.auralization.update_voice_impulse_response(voice_id, next_ir_id) {
-                self.auralization.forget_impulse_response(next_ir_id);
-                return Err(error);
-            }
-
-            if let Some(voice) = self.spatial_voices.get_mut(&voice_id) {
-                let previous_ir_id = voice.impulse_response_id;
-                voice.impulse_response_id = next_ir_id;
-                voice.acoustic_ir_buffer = next_acoustic_ir_buffer;
-                voice.dirty = false;
-                self.auralization.forget_impulse_response(previous_ir_id);
-            }
+            trace_ms += started.elapsed().as_secs_f64() * 1000.0;
+            let started = std::time::Instant::now();
+            let revision = self.spatial_voices[&voice_id].revision;
+            let requested_at = self.spatial_voices[&voice_id].changed_at;
+            self.apply_spatial_ir(voice_id, revision, requested_at, &snapshot)?;
+            prepare_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
 
+        Ok((trace_ms, prepare_ms))
+    }
+
+    /// Publishes complete pressure through the shared crossfade path. A newer
+    /// endpoint revision stays dirty, even if this result reuses a cached IR.
+    fn apply_spatial_ir(
+        &mut self,
+        voice_id: VoiceId,
+        revision: u64,
+        requested_at: std::time::Instant,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<()> {
+        let next_buffer = snapshot
+            .buffer
+            .as_ref()
+            .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
+            .clone();
+        let Some(voice) = self.spatial_voices.get_mut(&voice_id) else {
+            return Ok(());
+        };
+        if Arc::ptr_eq(&voice.acoustic_ir_buffer, &next_buffer) {
+            voice.dirty = voice.revision != revision;
+            return Ok(());
+        }
+        let next_ir_id = self.register_gpu_impulse_response(snapshot)?;
+        if let Err(error) = self.auralization.update_voice_impulse_response(voice_id, next_ir_id) {
+            self.auralization.forget_impulse_response(next_ir_id);
+            return Err(error);
+        }
+        if let Some(voice) = self.spatial_voices.get_mut(&voice_id) {
+            let previous = voice.impulse_response_id;
+            voice.impulse_response_id = next_ir_id;
+            voice.acoustic_ir_buffer = next_buffer;
+            voice.dirty = voice.revision != revision;
+            self.auralization.forget_impulse_response(previous);
+            self.spatial_updates += 1;
+            self.spatial_update_age_ms = requested_at.elapsed().as_secs_f64() * 1000.0;
+        }
         Ok(())
     }
 
@@ -373,6 +536,13 @@ impl EngineCore {
 
     /// Removes spatial tracking and any internal source owned only by this voice.
     fn remove_spatial_voice(&mut self, voice_id: VoiceId) {
+        if self
+            .pending_ir
+            .as_ref()
+            .is_some_and(|pending| pending.voice_id == voice_id)
+        {
+            self.pending_ir = None;
+        }
         let Some(voice) = self.spatial_voices.remove(&voice_id) else {
             return;
         };

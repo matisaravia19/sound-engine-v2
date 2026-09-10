@@ -221,6 +221,7 @@ fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult
                 listener_forward: -Vec3::X,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
+                source_radiation: Default::default(),
             },
         )?;
         if !ir.energy.is_finite()
@@ -294,6 +295,7 @@ fn doorway_position_sweep(gpu: &VkBackend, source_position: Vec3) -> SoundResult
                 listener_forward: -Vec3::X,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
+                source_radiation: Default::default(),
             },
         )?;
         boundary_levels.push(10.0 * (ir.energy as f64).max(1.0e-24).log10());
@@ -352,6 +354,7 @@ fn trace_scene_with_bounces(
             listener_forward: -Vec3::Z,
             listener_up: Vec3::Y,
             source_amplitude: 2_000.0,
+            source_radiation: Default::default(),
         },
     )
 }

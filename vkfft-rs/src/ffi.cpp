@@ -27,6 +27,7 @@ struct FFIVkFFTConfiguration
     uint64_t normalize;
     uint64_t performConvolution;
     uint64_t kernelConvolution;
+    uint64_t numberBatches;
 };
 
 struct FFIVkFFTLaunchParams
@@ -69,6 +70,7 @@ extern "C"
         config.normalize = config_in->normalize;
         config.performConvolution = config_in->performConvolution;
         config.kernelConvolution = config_in->kernelConvolution;
+        config.numberBatches = config_in->numberBatches;
 
         return initializeVkFFT(reinterpret_cast<VkFFTApplication *>(app), config);
     }

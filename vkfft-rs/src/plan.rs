@@ -106,6 +106,14 @@ impl FFTPlanBuilder {
         self
     }
 
+    /// Transforms `count` contiguous arrays with the configured dimensions.
+    /// The supplied buffer must hold every batch. Panics if `count` is zero.
+    pub fn with_batch_count(mut self, count: u64) -> Self {
+        assert!(count > 0, "FFT batch count must be positive");
+        self.config.number_batches = count;
+        self
+    }
+
     pub fn with_normalization(mut self) -> Self {
         self.config.normalize = 1;
         self

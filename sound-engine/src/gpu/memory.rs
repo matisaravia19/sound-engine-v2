@@ -175,13 +175,11 @@ impl GpuAllocator {
         )
     }
 
-    /// Destroys a buffer immediately instead of waiting for `Drop`.
+    /// Consumes a buffer and releases its allocation exactly once through `Drop`.
     ///
     /// Callers must ensure no queued GPU work still uses the buffer.
-    pub fn destroy_buffer(&self, mut handle: BufferHandle) {
-        unsafe {
-            self.allocator.destroy_buffer(handle.buffer, &mut handle.allocation);
-        }
+    pub fn destroy_buffer(&self, handle: BufferHandle) {
+        drop(handle);
     }
 
     /// Fills the whole buffer with zero using the compute queue transfer path.
@@ -345,14 +343,14 @@ impl GpuAllocator {
 
         // Preserve amortized growth while still handling a single very large upload.
         let new_size = std::cmp::max(transfer.staging_buffer.size * 2, required_size);
-        let mut old = std::mem::replace(
+        let old = std::mem::replace(
             &mut transfer.staging_buffer,
             Self::create_staging_buffer(&self.allocator, new_size)?,
         );
 
-        unsafe {
-            self.allocator.destroy_buffer(old.buffer, &mut old.allocation);
-        }
+        // BufferHandle owns the VMA allocation. An explicit VMA free followed
+        // by its destructor would free it twice when the staging buffer grows.
+        drop(old);
 
         Ok(())
     }
@@ -448,6 +446,29 @@ impl Drop for BufferHandle {
     fn drop(&mut self) {
         unsafe {
             self.allocator.destroy_buffer(self.buffer, &mut self.allocation);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::backend::VkBackend;
+
+    #[test]
+    #[ignore = "requires Vulkan; run hardware tests serially"]
+    fn staging_growth_and_explicit_release_preserve_transfers() {
+        let gpu = VkBackend::new().unwrap();
+        // Cross both the initial capacity and its first doubling. Round-trip
+        // every word so a freed/reused allocation cannot pass by checking a prefix.
+        for bytes in [STAGING_BUFFER_INITIAL_SIZE+64, 2*STAGING_BUFFER_INITIAL_SIZE+64] {
+            let input: Vec<u32> = (0..bytes as usize/4).map(|i| i as u32 ^ 0xa55a_5aa5).collect();
+            let buffer = gpu.memory().create_storage_buffer(bytes).unwrap();
+            gpu.memory().upload_typed(&buffer, &input).unwrap();
+            let mut output = vec![0_u32; input.len()];
+            gpu.memory().download_typed(&buffer, output.len(), &mut output).unwrap();
+            assert_eq!(input, output);
+            gpu.memory().destroy_buffer(buffer);
         }
     }
 }

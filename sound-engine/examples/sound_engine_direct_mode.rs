@@ -30,6 +30,7 @@ fn main() -> SoundResult<()> {
         source: PointSource {
             position: vec3(-3.0, 0.5, 2.0),
             amplitude: 1_000.0,
+            radiation: Default::default(),
         },
         volume: 0.8,
     })?;

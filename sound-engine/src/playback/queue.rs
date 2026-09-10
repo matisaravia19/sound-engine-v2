@@ -27,6 +27,15 @@ impl SampleQueue {
         }
     }
 
+    /// Returns queued engine samples while the producer is filling its prebuffer.
+    pub(super) fn queued_samples(&self) -> SoundResult<usize> {
+        Ok(self
+            .samples
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("sample queue lock poisoned"))?
+            .len())
+    }
+
     /// Pushes one complete rendered block, blocking until enough capacity exists.
     ///
     /// Returns `false` if playback is stopped before the block is enqueued. The

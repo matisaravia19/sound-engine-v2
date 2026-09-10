@@ -3,7 +3,8 @@
 
 // The procedural intersection stage has already found the virtual strip hit.
 // This closest-hit stage labels the event and forwards its radial distance and
-// finite-edge coordinate. Ray generation keeps the interaction at the hit.
+// finite-edge coordinate. Ray generation verifies and advances the incoming
+// segment to the physical edge before updating the ray's pressure weight.
 
 struct HitPayload {
     uint hit_type;

@@ -241,6 +241,7 @@ fn trace_case(gpu: &VkBackend, options: &Options, case: &BenchmarkCase) -> Sound
         listener_forward: -Vec3::Z,
         listener_up: Vec3::Y,
         source_amplitude: SOURCE_AMPLITUDE,
+        source_radiation: Default::default(),
     };
 
     let cold_start = Instant::now();

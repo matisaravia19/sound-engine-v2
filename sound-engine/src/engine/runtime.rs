@@ -8,6 +8,7 @@ use crate::playback::{PlaybackConfig, SoundPlayer};
 use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 /// Commands sent from the public handle to the runtime-owned engine core.
@@ -52,6 +53,8 @@ pub(super) struct EngineRuntime {
     block_size: usize,
     /// Output channel count copied from the core before it moved to the worker thread.
     output_channels: usize,
+    /// Capacity-one pose mailbox; stale game frames are replaced before rendering.
+    pending_listener: Arc<Mutex<Option<ListenerPose>>>,
 }
 
 /// Startup failure that preserves [`EngineCore`] when the worker can return it safely.
@@ -70,6 +73,8 @@ impl EngineRuntime {
         let output_channels = core.output_channels();
         let (sender, receiver) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::sync_channel(1);
+        let pending_listener = Arc::new(Mutex::new(None));
+        let worker_listener = pending_listener.clone();
 
         let worker = thread::spawn(move || {
             let player = match SoundPlayer::new(sample_rate, output_channels, block_size, playback_config) {
@@ -82,7 +87,7 @@ impl EngineRuntime {
                     return (core, Ok(()));
                 }
             };
-            runtime_loop(core, player, receiver)
+            runtime_loop(core, player, receiver, worker_listener)
         });
 
         match init_rx
@@ -107,6 +112,7 @@ impl EngineRuntime {
             sample_rate,
             block_size,
             output_channels,
+            pending_listener,
         })
     }
 
@@ -122,7 +128,24 @@ impl EngineRuntime {
 
     /// Sends a listener pose update command to the runtime.
     pub(super) fn set_listener_pose(&self, listener: ListenerPose) -> SoundResult<()> {
+        self.pending_listener
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("listener mailbox"))?
+            .take();
         self.request(|reply| EngineCommand::SetListenerPose(listener, reply))
+    }
+
+    /// Replaces an unapplied listener pose without waiting for the audio worker.
+    pub(super) fn update_listener_pose(&self, listener: ListenerPose) -> SoundResult<()> {
+        if self.worker.as_ref().is_none_or(|worker| worker.is_finished()) {
+            return Err(SoundError::invalid_state("sound player worker is not running"));
+        }
+        let listener = crate::acoustics::canonicalize_listener(listener)?;
+        *self
+            .pending_listener
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("listener mailbox"))? = Some(listener);
+        Ok(())
     }
 
     /// Sends a WAV loading command to the runtime.
@@ -230,12 +253,29 @@ fn runtime_loop(
     mut core: EngineCore,
     player: SoundPlayer,
     receiver: Receiver<EngineCommand>,
+    pending_listener: Arc<Mutex<Option<ListenerPose>>>,
 ) -> (EngineCore, SoundResult<()>) {
     let mut output_block = vec![0.0; core.block_size() * core.output_channels()];
+    let block_duration = std::time::Duration::from_secs_f64(core.block_size() as f64 / core.sample_rate() as f64);
+    // Repay expensive spatial work by producing audio before the next phase.
+    // This preserves the configured queue capacity and the complete ray budget.
+    let mut render_debt = std::time::Duration::ZERO;
+    let mut measurements = RuntimeMeasurements {
+        player: &player,
+        path: std::env::var_os("SOUND_ENGINE_TIMING_CSV").map(PathBuf::from),
+        blocks: Vec::new(),
+        started: std::time::Instant::now(),
+        capture_path: std::env::var_os("SOUND_ENGINE_CAPTURE_WAV").map(PathBuf::from),
+        capture: Vec::new(),
+        sample_rate: core.sample_rate(),
+        channels: core.output_channels(),
+    };
 
     loop {
+        player.set_expects_audio(core.has_active_voices());
         // If there are no active voices, block and wait for a command.
         if !core.has_active_voices() {
+            render_debt = std::time::Duration::ZERO;
             match receiver.recv() {
                 Ok(EngineCommand::Shutdown) => {
                     let result = player.finish();
@@ -263,10 +303,51 @@ fn runtime_loop(
         }
 
         if core.has_active_voices() {
+            player.set_expects_audio(true);
+            let started = std::time::Instant::now();
+            let pose = match pending_listener.lock() {
+                Ok(mut pending) => pending.take(),
+                Err(_) => return (core, Err(SoundError::poisoned_lock("listener mailbox"))),
+            };
+            if let Some(pose) = pose {
+                if let Err(error) = core.set_listener_pose(pose) {
+                    return (core, Err(error));
+                }
+            }
             output_block.fill(0.0);
-            if let Err(error) = core.render_block(&mut output_block) {
-                let _ = player.stop();
-                return (core, Err(error));
+            let spatial_deferred = !render_debt.is_zero();
+            let rendered = core.render_realtime_block(&mut output_block, !spatial_deferred);
+            let stages = match rendered {
+                Ok(stages) => stages,
+                Err(error) => {
+                    let _ = player.stop();
+                    return (core, Err(error));
+                }
+            };
+            render_debt = (render_debt + started.elapsed()).saturating_sub(block_duration);
+            if measurements.path.is_some() {
+                let time = measurements.started.elapsed().as_secs_f64();
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                let mut squares = [0.0_f64; 2];
+                for frame in output_block.chunks_exact(core.output_channels()) {
+                    for (channel, &sample) in frame.iter().enumerate() {
+                        squares[channel] += (sample as f64).powi(2);
+                    }
+                }
+                let (spatial_updates, spatial_update_age_ms) = core.spatial_update_status();
+                measurements.blocks.push(RuntimeBlockMeasurement {
+                    time,
+                    ms,
+                    left: (squares[0] / core.block_size() as f64).sqrt(),
+                    right: (squares[1] / core.block_size() as f64).sqrt(),
+                    stages,
+                    spatial_updates,
+                    spatial_update_age_ms,
+                    spatial_deferred,
+                });
+            }
+            if measurements.capture_path.is_some() {
+                measurements.capture.extend_from_slice(&output_block);
             }
 
             match player.push_block(&output_block) {
@@ -274,11 +355,120 @@ fn runtime_loop(
                 Ok(false) => return (core, Ok(())),
                 Err(error) => return (core, Err(error)),
             }
+            if !core.has_active_voices() {
+                player.release_prebuffer();
+            }
         } else if player.is_stop_requested() {
             // With no active voices, no push_block call remains to observe the
             // stop flag, so the idle loop must exit explicitly.
             let result = player.stop();
             return (core, result);
+        }
+    }
+}
+
+/// One producer block's timing and coherent IR update diagnostics.
+struct RuntimeBlockMeasurement {
+    /// Seconds since worker startup, including initialization.
+    time: f64,
+    /// Producer wall time, excluding waiting for queue capacity.
+    ms: f64,
+    /// Left channel RMS before queuing.
+    left: f64,
+    /// Right channel RMS before queuing.
+    right: f64,
+    /// Ray/synthesis, IR registration and convolution wall times in milliseconds.
+    stages: [f64; 3],
+    /// Cumulative count of replaced IRs; cache reuse does not increment it.
+    spatial_updates: u64,
+    /// Last replacement's request-to-registration age, excluding device queuing.
+    spatial_update_age_ms: f64,
+    /// Whether this block repaid prior render work without advancing the IR.
+    spatial_deferred: bool,
+}
+
+/// Optional in-memory measurements, flushed only after the playback loop stops.
+struct RuntimeMeasurements<'a> {
+    /// Borrowed player remains alive until diagnostics have been captured.
+    player: &'a SoundPlayer,
+    /// Explicit output destination; absence disables sample retention.
+    path: Option<PathBuf>,
+    /// Elapsed seconds, render time, ear RMS and trace/prepare/convolve times.
+    blocks: Vec<RuntimeBlockMeasurement>,
+    /// Monotonic origin for correlating updates and frame times.
+    started: std::time::Instant,
+    /// Optional capture of rendered blocks before the device queue (not loopback).
+    capture_path: Option<PathBuf>,
+    /// Interleaved rendered frames, retained only when capture is requested.
+    capture: Vec<f32>,
+    /// WAV sample rate copied before the core moves or shuts down.
+    sample_rate: u32,
+    /// Engine channel count stored in the capture header.
+    channels: usize,
+}
+
+impl Drop for RuntimeMeasurements<'_> {
+    fn drop(&mut self) {
+        // Snapshot before diagnostic file I/O; callbacks may still arrive until
+        // the device stream is dropped after this diagnostics owner.
+        let (underruns, missing) = self.player.starvation_counts();
+        let starvation_times = self.player.starvation_time_range_seconds();
+        if let Some(path) = &self.capture_path {
+            let result = (|| -> Result<(), hound::Error> {
+                let spec = hound::WavSpec {
+                    channels: self.channels as u16,
+                    sample_rate: self.sample_rate,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                };
+                let mut writer = hound::WavWriter::create(path, spec)?;
+                for &sample in &self.capture {
+                    writer.write_sample(sample)?;
+                }
+                writer.finalize()
+            })();
+            if let Err(error) = result {
+                eprintln!("Could not save rendered audio: {error}");
+            }
+        }
+        let Some(path) = &self.path else {
+            return;
+        };
+        let result = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+            writeln!(
+                file,
+                "block,elapsed_seconds,render_ms,left_rms,right_rms,trace_ms,ir_prepare_ms,convolution_ms,spatial_updates,spatial_update_age_ms,spatial_deferred"
+            )?;
+            for (index, block) in self.blocks.iter().enumerate() {
+                writeln!(
+                    file,
+                    "{index},{},{},{},{},{},{},{},{},{},{}",
+                    block.time,
+                    block.ms,
+                    block.left,
+                    block.right,
+                    block.stages[0],
+                    block.stages[1],
+                    block.stages[2],
+                    block.spatial_updates,
+                    block.spatial_update_age_ms,
+                    u8::from(block.spatial_deferred)
+                )?;
+            }
+            std::fs::write(
+                path.with_extension("audio.json"),
+                format!(
+                    "{{\"underrun_callbacks\":{underruns},\"missing_frames\":{missing},\"first_underrun_seconds_since_player_creation\":{},\"last_underrun_seconds_since_player_creation\":{}}}\n",
+                    starvation_times.map_or_else(|| "null".to_owned(), |(first, _)| first.to_string()),
+                    starvation_times.map_or_else(|| "null".to_owned(), |(_, last)| last.to_string()),
+                ),
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Could not save runtime measurements: {error}");
         }
     }
 }

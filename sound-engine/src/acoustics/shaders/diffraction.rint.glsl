@@ -30,7 +30,7 @@ layout(std430, set = 0, binding = 4) readonly buffer DiffractionEdgeBuffer {
 
 // Passed to closest-hit. x is the virtual plane hit distance to the closest edge
 // point and drives the normalized radial response. y records distance along the
-// finite edge segment; the interaction itself remains at the ray-traced hit.
+// finite edge segment so ray generation can advance to the physical edge.
 hitAttributeEXT vec2 diffraction_hit;
 
 void main() {
@@ -71,16 +71,20 @@ void main() {
     }
 
     vec3 closest = edge.start + edge.edge_dir * edge_t;
+    // The negative half-strip lies inside the solid wedge (or in the thin
+    // screen). It is not part of the exterior sampling support.
+    if (dot(hit_position - closest, edge.bisector_dir) < 0.0) {
+        return;
+    }
     float distance_to_edge = length(hit_position - closest);
     
-    // The radius is both the strip half-width and the zero-bend boundary used by
-    // closest-hit's linear falloff, so hits outside it are not meaningful.
+    // The exterior strip ends where its triangular sampling kernel reaches zero.
     if (distance_to_edge >= edge.diffraction_radius) {
         return;
     }
 
-    // Keep the finite-edge coordinate in the payload for diagnostics and future
-    // edge-varying material data without moving the acoustic interaction.
+    // The accepted ray retains its accumulated weight; this coordinate locates
+    // its next physical diffraction vertex, not an independent edge source.
     diffraction_hit = vec2(distance_to_edge, edge_t);
     reportIntersectionEXT(hit_t, 0);
 }

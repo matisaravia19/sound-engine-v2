@@ -57,9 +57,15 @@ struct SceneConfig {
     roof_enabled: bool,
     door_open: bool,
     outer_walls_enabled: bool,
+    /// Existing edge-strip width, retained when interactive geometry is rebuilt.
+    diffraction_radius: f32,
+    /// Existing per-edge energy scale, retained across door and wall toggles.
+    diffraction_strength: f32,
 }
 
 struct PlaygroundState {
+    /// Registered source calibration retained when interactive source positions change.
+    source_radiation: sound_engine::acoustics::SourceRadiation,
     scene_config: SceneConfig,
     scene: PlaygroundScene,
     listener_index: usize,
@@ -75,14 +81,17 @@ struct PlaygroundState {
 }
 
 impl PlaygroundState {
-    fn new() -> Self {
+    fn new(diffraction_radius: f32, diffraction_strength: f32) -> Self {
         let scene_config = SceneConfig {
             roof_enabled: false,
             door_open: true,
             outer_walls_enabled: true,
+            diffraction_radius,
+            diffraction_strength,
         };
 
         Self {
+            source_radiation: Default::default(),
             scene_config,
             scene: build_scene(scene_config),
             listener_index: 0,
@@ -165,6 +174,7 @@ impl PlaygroundState {
         PointSource {
             position: to_glam(self.source_position()),
             amplitude: 1.0,
+            radiation: self.source_radiation,
         }
     }
 
@@ -191,19 +201,111 @@ impl PlaygroundState {
 }
 
 fn main() -> SoundResult<()> {
-    let mut state = PlaygroundState::new();
     let sample_rate = SoundPlayer::default_output_sample_rate()?;
-    let mut engine = SoundEngine::new(engine_config(sample_rate))?;
+    let args: Vec<_> = std::env::args().collect();
+    let diffraction_radius = args.iter().find_map(|a| a.strip_prefix("--diffraction-radius="))
+        .unwrap_or("1.25").parse::<f32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-radius"))?;
+    let diffraction_strength = args.iter().find_map(|a| a.strip_prefix("--diffraction-strength="))
+        .unwrap_or("0.85").parse::<f32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-strength"))?;
+    if !diffraction_radius.is_finite() || diffraction_radius <= 0.0
+        || !diffraction_strength.is_finite() || !(0.0..=1.0).contains(&diffraction_strength) {
+        return Err(sound_engine::core::error::SoundError::invalid_argument(
+            "diffraction radius must be positive and finite; strength must be in [0, 1]",
+        ));
+    }
+    let mut state = PlaygroundState::new(diffraction_radius, diffraction_strength);
+    let source_profile_path = args.iter().find_map(|a| a.strip_prefix("--source-directivity="));
+    let source_yaw_degrees = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--source-yaw="))
+        .unwrap_or("0")
+        .parse::<f32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --source-yaw"))?;
+    if !source_yaw_degrees.is_finite() {
+        return Err(sound_engine::core::error::SoundError::invalid_argument(
+            "source yaw must be finite",
+        ));
+    }
+    // Playback headroom is separate from calibrated ray pressure. The same
+    // dry gain applies to every acoustic model and can be overridden for A/B runs.
+    let playback_gain = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--volume="))
+        .unwrap_or("0.6")
+        .parse::<f32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --volume"))?;
+    if !playback_gain.is_finite() || playback_gain < 0.0 {
+        return Err(sound_engine::core::error::SoundError::invalid_argument(
+            "--volume must be finite and non-negative",
+        ));
+    }
+    let utd_orders = args.iter().find_map(|a| a.strip_prefix("--utd-orders="));
+    let utd_bands = args.iter().find_map(|a| a.strip_prefix("--utd-bands="));
+    let surface_two_edge_paths = args.iter().any(|a| a == "--utd-surface-two-edges");
+    let band_count = utd_bands
+        .unwrap_or("16")
+        .parse::<u32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --utd-bands"))?;
+    let utd =
+        args.iter().any(|a| a == "--utd") || utd_orders.is_some() || utd_bands.is_some() || surface_two_edge_paths;
+    let diffraction_orders = utd_orders
+        .unwrap_or(if surface_two_edge_paths { "2" } else { "1" })
+        .parse::<u32>()
+        .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --utd-orders"))?;
+    let mut config = engine_config(sample_rate);
+    if let Some(value) = args.iter().find_map(|a| a.strip_prefix("--rays=")) {
+        config.acoustics.listener_ray_count = value
+            .parse()
+            .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --rays"))?;
+    }
+    if let Some(value) = args.iter().find_map(|a| a.strip_prefix("--bounces=")) {
+        config.acoustics.max_bounces = value.parse()
+            .map_err(|_| sound_engine::core::error::SoundError::invalid_argument("invalid --bounces"))?;
+    }
+    let model = if utd {
+        sound_engine::acoustics::AcousticModel::Utd {
+            cone_width: 0.04,
+            maximum_frequency_hz: 20000.0_f32.min(sample_rate as f32 * 0.45),
+            diffraction_orders,
+            band_count,
+            surface_two_edge_paths,
+        }
+    } else {
+        sound_engine::acoustics::AcousticModel::Cosine
+    };
+    let model_label = if utd { format!("{model:?}") } else { "ScalarGeometry".to_owned() };
+    println!(
+        "Playground model={model_label}, sample_rate={sample_rate}, rays={}, IR samples={}, max_path={}, playback_gain={playback_gain}, source_directivity={source_profile_path:?}, source_yaw_degrees={source_yaw_degrees}, diffraction_radius={diffraction_radius}, diffraction_strength={diffraction_strength}, bounces={}",
+        config.acoustics.listener_ray_count, config.sound.ir_num_samples, config.acoustics.maximum_path_length,
+        config.acoustics.max_bounces
+    );
+    let mut engine = SoundEngine::with_acoustic_model(config, model)?;
+    if let Some(path) = source_profile_path {
+        let profile = sound_engine::acoustics::SourceDirectivity::read(path)?;
+        state.source_radiation.profile = engine.register_source_directivity(&profile)?;
+        state.source_radiation.orientation = glam::Quat::from_rotation_y(source_yaw_degrees.to_radians());
+    }
     engine.load_scene(scene_description(&state.scene))?;
     engine.set_listener_pose(state.red_sphere_listener_pose())?;
     let sound_source_id = engine.create_sound_source(state.point_source())?;
     state.sound_source_id = Some(sound_source_id);
     let sound_id = engine.load_wav_sound(GUITAR_SAMPLE_PATH)?;
-    engine.start_sound_player(PlaybackConfig::default())?;
+    engine.start_sound_player(PlaybackConfig {
+        prefill_blocks: 3,
+        max_queue_seconds: 0.064,
+    })?;
 
     let (mut rl, thread) = raylib::init()
         .size(1280, 720)
-        .title("sound-engine playground")
+        .title(if utd && diffraction_orders == 2 {
+            "sound-engine playground / UTD (experimental, two edges)"
+        } else if utd {
+            "sound-engine playground / UTD (experimental, single edge)"
+        } else {
+            "sound-engine playground / scalar diffraction"
+        })
         .resizable()
         .msaa_4x()
         .build();
@@ -221,15 +323,22 @@ fn main() -> SoundResult<()> {
         .find_map(|argument| argument.strip_prefix("--camera-stress-seconds=").map(str::to_owned))
         .and_then(|seconds| seconds.parse::<f32>().ok())
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
-    let camera_stress = camera_stress_seconds.map(|seconds| (Duration::from_secs_f32(seconds), Instant::now()));
-    if camera_stress.is_some() {
+    if camera_stress_seconds.is_some() {
+        // Start on the motion path before preparing the first voice's IR. A
+        // first-frame teleport otherwise rebuilds it immediately after playback.
+        camera.position = Vector3::new(7.0, 2.0, 0.0);
+        camera.target = Vector3::new(0.0, 1.0, 0.0);
         state.listener_mode = ListenerMode::Camera;
         sync_camera_listener_if_changed(&mut engine, &mut state, &camera, true);
-        let voice_id = play_source_sound(&mut engine, sound_id, &state, &camera)?;
+        let voice_id = play_source_sound(&mut engine, sound_id, &state, &camera, playback_gain)?;
         state.ui.last_voice = Some(voice_id);
     }
+    let camera_stress = camera_stress_seconds.map(|seconds| (Duration::from_secs_f32(seconds), Instant::now()));
+
+    let mut frame_times = Vec::new();
 
     while !rl.window_should_close() {
+        let frame_started = Instant::now();
         if let Some((duration, started)) = camera_stress {
             let elapsed = started.elapsed().as_secs_f32();
             if started.elapsed() >= duration {
@@ -251,7 +360,7 @@ fn main() -> SoundResult<()> {
 
         if start_sound_requested(&rl) {
             state.ui.status = "Building IR and starting sound...".to_owned();
-            match play_source_sound(&mut engine, sound_id, &state, &camera) {
+            match play_source_sound(&mut engine, sound_id, &state, &camera, playback_gain) {
                 Ok(voice_id) => {
                     state.ui.last_voice = Some(voice_id);
                     state.ui.status = format!("Started voice {voice_id}");
@@ -271,10 +380,25 @@ fn main() -> SoundResult<()> {
         }
 
         draw_overlay(&mut d, &camera, &state);
+        drop(d);
+        if camera_stress.is_some() {
+            frame_times.push(frame_started.elapsed().as_secs_f64() * 1000.0);
+        }
     }
 
     engine.stop_sound_player()?;
     drop(engine);
+    if let Some(path) = args.iter().find_map(|a| a.strip_prefix("--frame-report=")) {
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(path).map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?,
+        );
+        writeln!(file, "frame,total_ms").map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?;
+        for (index, ms) in frame_times.iter().enumerate() {
+            writeln!(file, "{index},{ms}")
+                .map_err(|e| sound_engine::core::error::SoundError::external(e.to_string()))?;
+        }
+    }
     Ok(())
 }
 
@@ -303,12 +427,13 @@ fn play_source_sound(
     sound_id: u64,
     state: &PlaygroundState,
     camera: &Camera3D,
+    playback_gain: f32,
 ) -> SoundResult<u64> {
     engine.set_listener_pose(state.active_listener_pose(camera))?;
     let source_id = state.sound_source_id.ok_or_else(|| {
         sound_engine::core::error::SoundError::invalid_state("sandbox sound source is not initialized")
     })?;
-    engine.play_sound_from_source(sound_id, source_id, 0.9)
+    engine.play_sound_from_source(sound_id, source_id, playback_gain)
 }
 
 fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut PlaygroundState, camera: &Camera3D) {
@@ -346,6 +471,11 @@ fn handle_config_keys(rl: &RaylibHandle, engine: &mut SoundEngine, state: &mut P
     if rl.is_key_pressed(KeyboardKey::KEY_SEVEN) {
         state.toggle_listener_spin();
         sync_red_sphere_listener(engine, state, "red sphere spin");
+    }
+    if rl.is_key_pressed(KeyboardKey::KEY_EIGHT) && state.source_radiation.profile != 0 {
+        state.source_radiation.orientation =
+            (glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4) * state.source_radiation.orientation).normalize();
+        sync_source(engine, state);
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_L) {
@@ -407,7 +537,7 @@ fn sync_red_sphere_listener(engine: &mut SoundEngine, state: &mut PlaygroundStat
         return;
     }
 
-    match engine.set_listener_pose(state.red_sphere_listener_pose()) {
+    match engine.update_listener_pose(state.red_sphere_listener_pose()) {
         Ok(()) => {
             state.ui.status = format!(
                 "Changed {label}: {} / {}",
@@ -443,7 +573,7 @@ fn sync_camera_listener_if_changed(
         return;
     }
 
-    match engine.set_listener_pose(pose) {
+    match engine.update_listener_pose(pose) {
         Ok(()) => {
             state.last_camera_listener_pose = Some(pose);
             state.last_camera_listener_sync = Some(Instant::now());
@@ -631,14 +761,14 @@ fn build_scene(config: SceneConfig) -> PlaygroundScene {
         acoustic_mesh,
         blocks,
         diffraction_edges: if config.door_open {
-            doorway_diffraction_edges()
+            doorway_diffraction_edges(config.diffraction_radius, config.diffraction_strength)
         } else {
             Vec::new()
         },
     }
 }
 
-fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
+fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge> {
     let half_thickness = WALL_THICKNESS * 0.5;
     let diagonal = std::f32::consts::FRAC_1_SQRT_2;
     vec![
@@ -648,8 +778,8 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             end: vec3(-half_thickness, WALL_HEIGHT, -DOOR_HALF_WIDTH),
             bisector_dir: vec3(-diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
-            diffraction_radius: 1.25,
-            base_strength: 0.85,
+            diffraction_radius: radius,
+            base_strength: strength,
         },
         DiffractionEdge {
             id: 2,
@@ -657,8 +787,8 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             end: vec3(half_thickness, WALL_HEIGHT, -DOOR_HALF_WIDTH),
             bisector_dir: vec3(diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
-            diffraction_radius: 1.25,
-            base_strength: 0.85,
+            diffraction_radius: radius,
+            base_strength: strength,
         },
         DiffractionEdge {
             id: 3,
@@ -666,8 +796,8 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             end: vec3(-half_thickness, WALL_HEIGHT, DOOR_HALF_WIDTH),
             bisector_dir: vec3(-diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
-            diffraction_radius: 1.25,
-            base_strength: 0.85,
+            diffraction_radius: radius,
+            base_strength: strength,
         },
         DiffractionEdge {
             id: 4,
@@ -675,8 +805,8 @@ fn doorway_diffraction_edges() -> Vec<DiffractionEdge> {
             end: vec3(half_thickness, WALL_HEIGHT, DOOR_HALF_WIDTH),
             bisector_dir: vec3(diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
-            diffraction_radius: 1.25,
-            base_strength: 0.85,
+            diffraction_radius: radius,
+            base_strength: strength,
         },
     ]
 }
@@ -747,6 +877,12 @@ fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &Playground
     }
 
     draw_marker(d, state.source_position(), 0.38, Color::GREEN);
+    if state.source_radiation.profile != 0 {
+        let origin = to_glam(state.source_position());
+        let tip = origin + state.source_radiation.orientation * Vec3::X * 1.1;
+        draw_plane_line(d, origin, tip, Color::LIME);
+        d.draw_sphere(from_glam(tip), 0.11, Color::LIME);
+    }
     draw_listener(d, state.listener_position(), state.listener_forward());
     draw_diffraction_edges(d, &state.scene.diffraction_edges);
     if state.ui.show_bisector_planes {
@@ -901,7 +1037,11 @@ fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &PlaygroundS
         Color::LIGHTGRAY,
     );
     d.draw_text(
-        "Suggested next toggles: absorption preset, wall thickness, obstacle in doorway",
+        if state.source_radiation.profile != 0 {
+            "Directional source: green marker shows forward | 8: turn source"
+        } else {
+            "Source radiation: omnidirectional"
+        },
         24,
         234,
         18,

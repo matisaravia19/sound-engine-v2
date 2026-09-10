@@ -35,6 +35,8 @@ pub struct SoundPlayer {
     queue: Arc<SampleQueue>,
     stream: cpal::Stream,
     block_samples: usize,
+    /// Initial queue occupancy required before device consumption begins.
+    prefill_samples: usize,
 }
 
 impl SoundPlayer {
@@ -55,6 +57,9 @@ impl SoundPlayer {
 
         let block_samples = block_size * output_channels;
         let state = Arc::new(PlaybackState::new());
+        if config.prefill_blocks > 0 {
+            state.begin_prebuffering();
+        }
         let max_queued_blocks = max_queued_blocks(config, sample_rate, block_size);
         let queue = state.prepare_queue(max_queued_blocks * block_samples)?;
         let stream = build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
@@ -69,6 +74,7 @@ impl SoundPlayer {
             queue,
             stream,
             block_samples,
+            prefill_samples: config.prefill_blocks * block_samples,
         })
     }
 
@@ -82,6 +88,28 @@ impl SoundPlayer {
         self.config
     }
 
+    /// Returns underrun callbacks and missing engine frames after startup.
+    /// Idle intervals and explicitly finished playback do not count as starvation.
+    pub fn starvation_counts(&self) -> (u64, u64) {
+        self.state.starvation_counts()
+    }
+
+    /// First/last active underrun seconds from this player's monotonic creation clock.
+    /// Used by completed-run diagnostics; the clock does not control scheduling.
+    pub(crate) fn starvation_time_range_seconds(&self) -> Option<(f64, f64)> {
+        self.state.starvation_time_range_seconds()
+    }
+
+    /// Allows the engine worker to exclude intervals with no active voices.
+    pub(crate) fn set_expects_audio(&self, active: bool) {
+        self.state.set_expects_audio(active);
+    }
+
+    /// Releases a short voice's queued tail when no further blocks will arrive.
+    pub(crate) fn release_prebuffer(&self) {
+        self.state.release_prebuffer();
+    }
+
     /// Pushes one interleaved rendered block into the playback queue.
     pub fn push_block(&self, block: &[f32]) -> SoundResult<bool> {
         crate::debug_validate!(
@@ -92,7 +120,11 @@ impl SoundPlayer {
             self.block_samples
         );
 
-        self.queue.push_block(block, self.state.stop_requested())
+        let accepted = self.queue.push_block(block, self.state.stop_requested())?;
+        if accepted && !self.state.ready_to_play() && self.queue.queued_samples()? >= self.prefill_samples {
+            self.state.release_prebuffer();
+        }
+        Ok(accepted)
     }
 
     /// Marks the producer as finished so the callback can complete after draining.

@@ -1,1007 +1,55 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_shader_atomic_float : require
+#extension GL_GOOGLE_include_directive : require
+#include "listener_transport.glsl"
 
-// This shader is deliberately iterative. Each launch invocation owns one
-// listener-originated acoustic path and issues only depth-one traversal calls.
-// Miss and closest-hit stages return compact data; they never continue a path
-// or write the IR. Keeping estimator state here makes branch probabilities,
-// direction PDFs, path lengths, and termination rules explicit in one place.
-//
-// Direction convention:
-// - `direction` points away from the listener along the backward-traced path.
-// - `incoming_direction` is that same listener-to-vertex direction at a hit.
-// - `source_direction` points from the current vertex toward the source.
-// - `initial_direction` is retained for listener-space panning even after bends.
-//
-// For every non-direct completed path the pressure estimator is:
-//
-//   source_amplitude * path_throughput * local_source_response
-//       * (4 * PI / listener_ray_count) / total_path_length
-//
-// `path_throughput` contains only sampled continuation responses. It never
-// includes spreading or the initial spherical sampling normalization.
+// Two edges retain the double-edge benchmark paths while bounding the least
+// reliable higher-order approximation. Surface bounces keep their own budget.
+const uint MAX_DIFFRACTION_EVENTS = 2u;
 
-const float PI = 3.14159265358979323846;
-const float TWO_PI = 6.28318530717958647692;
-// Origins are moved off accepted geometry to avoid immediately re-hitting the
-// same primitive. This is a geometric tolerance, not an acoustic distance.
-const float RAY_EPSILON = 0.001;
-const float DIRECTION_EPSILON = 0.00001;
-const uint HIT_NONE = 0;
-const uint HIT_SURFACE = 1;
-const uint HIT_DIFFRACTION_EDGE = 2;
-const uint OUTPUT_CHANNELS_MONO = 0;
-const uint OUTPUT_CHANNELS_STEREO = 1;
-const uint OUTPUT_CHANNELS_BINAURAL = 2;
-// Visibility rays see physical surfaces only. Continuation rays additionally
-// see virtual diffraction strips, whose instances use the disjoint 0x02 mask.
-const uint SURFACE_GEOMETRY_MASK = 0x01;
-const uint CONTINUATION_GEOMETRY_MASK = 0x03;
-
-// -----------------------------------------------------------------------------
-// Scene inputs and traversal payloads
-// -----------------------------------------------------------------------------
-
-layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
-
-struct IrSample {
-    float left;
-    float right;
-};
-
-// Float storage-buffer atomics are a required device feature. Every completed
-// path can therefore deposit pressure without an intermediate contribution
-// list, fixed-point encoding, or a later hit-to-IR compute pass.
-layout(std430, set = 0, binding = 1) buffer IrBuffer {
-    IrSample samples[];
-} ir;
-
-struct SceneMaterial {
-    float absorption;
-    float scattering;
-    float transmission;
-    float roughness;
-};
-
-layout(std430, set = 0, binding = 3) readonly buffer SceneMaterialBuffer {
-    SceneMaterial materials[];
-} scene_materials;
-
-struct DiffractionEdge {
-    vec3 start;
-    float diffraction_radius;
-    vec3 end;
-    float base_strength;
-    vec3 edge_dir;
-    float edge_length;
-    vec3 bisector_dir;
-    float edge_angle_radians;
-    vec3 positive_plane_normal;
-    float _pad0;
-    vec3 positive_shadow_dir;
-    float _pad1;
-    vec3 negative_shadow_dir;
-    float solid_wedge_cos;
-};
-
-layout(std430, set = 0, binding = 4) readonly buffer DiffractionEdgeBuffer {
-    DiffractionEdge edges[];
-} diffraction_edges;
-
-struct HitPayload {
-    // HIT_NONE is also the continuation-miss result.
-    uint hit_type;
-    // Parametric distance along the current world-space ray.
-    float t;
-    uint instance_id;
-    uint primitive_id;
-    // Triangle barycentrics for surfaces; (distance_to_edge, edge_t) for edges.
-    vec2 barycentrics;
-    vec3 world_normal;
-    // Material index for a surface or edge index for a diffraction proxy.
-    uint data_id;
-};
-
-struct VisibilityPayload {
-    // The visibility hit group only changes this flag; it returns no geometry.
-    uint occluded;
-};
-
-// Separate payload locations prevent the compact visibility query from
-// clobbering the continuation result while nested traceRayEXT calls are issued
-// sequentially by the same ray-generation invocation.
-layout(location = 0) rayPayloadEXT HitPayload hit_payload;
-layout(location = 1) rayPayloadEXT VisibilityPayload visibility_payload;
-
-// Explicit offsets mirror ListenerTracePushConstants on the host. vec3 values
-// occupy twelve bytes here, so relying on implicit layout would be error-prone.
-layout(push_constant) uniform PushConstants {
-    layout(offset = 0) vec3 source_position;
-    layout(offset = 12) float source_amplitude;
-    layout(offset = 16) vec3 listener_position;
-    layout(offset = 28) float speed_of_sound;
-    layout(offset = 32) vec3 listener_right;
-    layout(offset = 44) float maximum_path_length;
-    layout(offset = 48) uint listener_ray_count;
-    layout(offset = 52) uint max_bounces;
-    layout(offset = 56) uint sample_rate;
-    layout(offset = 60) uint sample_count;
-    layout(offset = 64) uint output_channels;
-    layout(offset = 68) uint sampling_seed;
-    layout(offset = 72) float minimum_throughput;
-    layout(offset = 76) float head_radius_meters;
-    layout(offset = 80) float max_ild_db;
-} pc;
-
-// -----------------------------------------------------------------------------
-// Numerical guards and deterministic sampling
-// -----------------------------------------------------------------------------
-
-// GLSL normalization of a zero or non-finite vector can poison every later
-// calculation with NaNs. Returning zero lets callers terminate that path.
-bool finiteFloat(float value) {
-    return !isnan(value) && !isinf(value);
-}
-
-bool finiteVector(vec3 value) {
-    return !any(isnan(value)) && !any(isinf(value));
-}
-
-vec3 normalizeOrZero(vec3 value) {
-    float length_squared = dot(value, value);
-    if (!finiteFloat(length_squared) || length_squared <= DIRECTION_EPSILON * DIRECTION_EPSILON) {
-        return vec3(0.0);
-    }
-    return value * inversesqrt(length_squared);
-}
-
-uint hashState(uint value) {
-    // This integer avalanche is used both to initialize independent per-ray
-    // streams and to advance them. Reproducibility is more important here than
-    // cryptographic quality.
-    value ^= value >> 16;
-    value *= 0x7feb352du;
-    value ^= value >> 15;
-    value *= 0x846ca68bu;
-    value ^= value >> 16;
-    return value;
-}
-
-float randomFloat(inout uint state) {
-    state = hashState(state + 0x9e3779b9u);
-    return float(state >> 8) * (1.0 / 16777216.0);
-}
-
-// The Fibonacci lattice covers the sphere with nearly equal-area directions.
-// A seed-dependent global azimuth rotation keeps the distribution stable for a
-// fixed seed while allowing callers to choose a different deterministic set.
-vec3 fibonacciSphereDirection(uint ray_index, uint ray_count, uint azimuth_rotation) {
-    float index = float(ray_index);
-    float count = float(max(ray_count, 1u));
-    float z = 1.0 - 2.0 * ((index + 0.5) / count);
-    float radius = sqrt(max(0.0, 1.0 - z * z));
-    // Computing index * golden_angle directly in float loses nearly all
-    // azimuth precision once the launch reaches a few million rays: the
-    // unreduced product is millions of radians, so adjacent indices quantize
-    // to the same handful of angles. Multiplication by 0x61c88647 performs the
-    // same golden-ratio rotation modulo 2^32 using exact integer wraparound.
-    // Taking the high 24 bits is exactly representable by float and retains a
-    // stable, uniformly rotated lattice throughout the supported launch range.
-    uint phase = ray_index * 0x61c88647u + azimuth_rotation;
-    float phi = TWO_PI * float(phase >> 8) * (1.0 / 16777216.0);
-    return vec3(cos(phi) * radius, sin(phi) * radius, z);
-}
-
-void orthonormalBasis(vec3 axis, out vec3 tangent, out vec3 bitangent) {
-    // Choose a helper that is not almost parallel to the lobe axis; otherwise
-    // the cross product loses precision for directions near the world Z axis.
-    vec3 helper = abs(axis.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-    tangent = normalize(cross(helper, axis));
-    bitangent = cross(axis, tangent);
-}
-
-float powerCosinePdf(float cosine, float exponent) {
-    if (!finiteFloat(cosine) || !finiteFloat(exponent) || cosine <= 0.0 || exponent < 0.0) {
-        return 0.0;
-    }
-    // This constant normalizes cos(theta)^exponent over one hemisphere.
-    return (exponent + 1.0) * pow(cosine, exponent) / (2.0 * PI);
-}
-
-// Samples the same normalized finite lobe used by source connections. Because
-// response contains this PDF, response / direction_pdf cancels for a sampled
-// branch; retaining both terms makes the Monte Carlo estimator and guards clear.
-bool samplePowerCosine(
-    vec3 axis,
-    float exponent,
-    inout uint random_state,
-    out vec3 sampled_direction,
-    out float direction_pdf
+// A proxy is sampling geometry, not an occluder. At the first proxy, retain
+// the ray's ordinary surface continuation as well as its diffraction branch.
+// The prefix has already contributed; trace only the remaining surface suffix.
+// This adds at most one bounded surface walk per launch, with no recursive
+// tracing, ray queue, extra frequency state, or change to surface pressure.
+void traceSurfaceSuffix(
+    uint first_bounce, vec3 origin, vec3 path_vertex, vec3 direction,
+    float path_throughput, float traveled_distance, uint random_state,
+    float normalization, vec3 initial_direction
 ) {
-    vec3 normalized_axis = normalizeOrZero(axis);
-    if (dot(normalized_axis, normalized_axis) <= 0.0 || exponent < 0.0) {
-        return false;
-    }
+    for (uint bounce = first_bounce; bounce < pc.max_bounces; ++bounce) {
+        if (!finiteFloat(path_throughput)
+            || abs(path_throughput) < pc.minimum_throughput
+            || !finiteVector(origin) || !finiteVector(direction)
+            || traveled_distance >= pc.maximum_path_length) break;
 
-    float u0 = randomFloat(random_state);
-    float u1 = randomFloat(random_state);
-    // Invert the marginal CDF of the power-cosine distribution. Clamping u0
-    // avoids an exact grazing sample whose PDF may underflow for sharp lobes.
-    float cosine = pow(max(u0, DIRECTION_EPSILON), 1.0 / (exponent + 1.0));
-    float sine = sqrt(max(0.0, 1.0 - cosine * cosine));
-    float phi = TWO_PI * u1;
-    vec3 tangent;
-    vec3 bitangent;
-    orthonormalBasis(normalized_axis, tangent, bitangent);
-    sampled_direction = normalizeOrZero(
-        tangent * (cos(phi) * sine)
-        + bitangent * (sin(phi) * sine)
-        + normalized_axis * cosine
-    );
-    direction_pdf = powerCosinePdf(max(dot(sampled_direction, normalized_axis), 0.0), exponent);
-    return finiteVector(sampled_direction) && direction_pdf > 0.0 && finiteFloat(direction_pdf);
-}
-
-float specularExponent(float roughness) {
-    // Match the Phong lobe's width to the authored RMS slope approximation.
-    // Capping the smooth limit keeps it finite without making ordinary
-    // nonzero roughness so narrow that a fixed ray lattice spatially aliases it.
-    float alpha = max(clamp(roughness, 0.0, 1.0), 0.0001);
-    return clamp(2.0 / (alpha * alpha) - 2.0, 1.0, 4096.0);
-}
-
-float roughExponent(float roughness) {
-    // The rough branch stays much wider than the specular branch at every
-    // roughness, reaching a cosine-weighted shape at roughness one.
-    return mix(64.0, 1.0, clamp(roughness, 0.0, 1.0));
-}
-
-// Material coefficients are authored as energy fractions. Reflection is the
-// energy remaining after absorption and straight transmission; scattering
-// divides only that reflected portion into specular and rough components.
-void materialEnergies(
-    SceneMaterial material,
-    out float specular_energy,
-    out float rough_energy,
-    out float transmission_energy
-) {
-    float absorption = clamp(material.absorption, 0.0, 1.0);
-    transmission_energy = min(clamp(material.transmission, 0.0, 1.0), 1.0 - absorption);
-    float reflection_energy = max(0.0, 1.0 - absorption - transmission_energy);
-    float rough_fraction = clamp(material.scattering, 0.0, 1.0);
-    specular_energy = reflection_energy * (1.0 - rough_fraction);
-    rough_energy = reflection_energy * rough_fraction;
-}
-
-// -----------------------------------------------------------------------------
-// Visibility, stereo panning, and IR deposition
-// -----------------------------------------------------------------------------
-
-// Returns true when the open segment from `origin` to the source is clear.
-// The caller is responsible for offsetting origin onto the intended side of the
-// current surface or edge.
-bool traceVisibility(vec3 origin, vec3 direction, float distance_to_source) {
-    if (distance_to_source <= 2.0 * RAY_EPSILON) {
-        return true;
-    }
-    visibility_payload.occluded = 0u;
-    // SBT offset 1 selects the surface-visibility hit record. Stride zero is
-    // intentional: diffraction instances are excluded by the surface-only mask.
-    // Miss index 1 selects visibility.rmiss.glsl.
-    // tmin skips the offset origin's immediate neighborhood. Reducing tmax by
-    // the same tolerance prevents geometry at the source endpoint from
-    // incorrectly classifying the connection as blocked.
-    traceRayEXT(
-        tlas,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        SURFACE_GEOMETRY_MASK,
-        1,
-        0,
-        1,
-        origin,
-        RAY_EPSILON,
-        direction,
-        max(distance_to_source - RAY_EPSILON, RAY_EPSILON),
-        1
-    );
-    return visibility_payload.occluded == 0u;
-}
-
-// Atomically deposits one ear contribution with a linear fractional delay.
-// Boundary clipping intentionally drops any portion outside the configured IR.
-void depositChannel(float sample_position, float amplitude, uint channel) {
-    if (!finiteFloat(sample_position)
-        || !finiteFloat(amplitude)
-        || sample_position <= -1.0
-        || sample_position >= float(pc.sample_count)) {
-        return;
-    }
-
-    int base = int(floor(sample_position));
-    int next = base + 1;
-    float fraction = sample_position - float(base);
-    // Linear fractional delay preserves the total signed pressure of an event:
-    // the two weights always sum to one unless the IR boundary clips the tail.
-    if (base >= 0 && uint(base) < pc.sample_count) {
-        if (channel == 0u) {
-            atomicAdd(ir.samples[uint(base)].left, amplitude * (1.0 - fraction));
-        } else {
-            atomicAdd(ir.samples[uint(base)].right, amplitude * (1.0 - fraction));
-        }
-    }
-    if (fraction > 0.0 && next >= 0 && uint(next) < pc.sample_count) {
-        if (channel == 0u) {
-            atomicAdd(ir.samples[uint(next)].left, amplitude * fraction);
-        } else {
-            atomicAdd(ir.samples[uint(next)].right, amplitude * fraction);
-        }
+        hit_payload.hit_type = HIT_NONE;
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, SURFACE_GEOMETRY_MASK,
+                    0, 0, 0, origin, RAY_EPSILON, direction,
+                    max(pc.maximum_path_length - traveled_distance, RAY_EPSILON), 0);
+        if (hit_payload.hit_type != HIT_SURFACE
+            || !finiteFloat(hit_payload.t) || hit_payload.t < 0.0) break;
+        vec3 hit = origin + direction * hit_payload.t;
+        float distance = traveled_distance + length(hit - path_vertex);
+        if (distance > pc.maximum_path_length) break;
+        vec3 normal = normalizeOrZero(hit_payload.world_normal);
+        SceneMaterial material = scene_materials.materials[hit_payload.data_id];
+        connectSurfaceToSource(hit, direction, normal, material, distance,
+                               path_throughput, normalization, initial_direction);
+        if (bounce + 1u >= pc.max_bounces) break;
+        vec3 continuation;
+        if (!sampleSurfaceContinuation(material, direction, normal, random_state,
+                                       path_throughput, continuation)) break;
+        origin = hit + continuation * RAY_EPSILON;
+        path_vertex = hit;
+        direction = continuation;
+        traveled_distance = distance;
     }
 }
-
-// Folds the part of an axis-centered lobe that crosses a physical surface back
-// into the valid outgoing hemisphere. The sum of the original and mirrored
-// densities integrates to one there, so grazing lobes do not randomly lose
-// energy through rejected continuation samples.
-float foldedPowerCosinePdf(vec3 direction, vec3 axis, vec3 normal, float exponent) {
-    vec3 mirrored_direction = reflect(direction, normal);
-    return powerCosinePdf(max(dot(direction, axis), 0.0), exponent)
-        + powerCosinePdf(max(dot(mirrored_direction, axis), 0.0), exponent);
-}
-
-// The deterministic direct arrival dominates perceived level in a visible
-// region, so its fractional delay must not inherit the two-tap interpolator's
-// 3 dB phase-dependent energy ripple. A normalized Lanczos kernel preserves
-// signed pressure while keeping the extra atomics limited to one event per IR.
-void depositDirectChannel(float sample_position, float amplitude, uint channel) {
-    if (!finiteFloat(sample_position)
-        || !finiteFloat(amplitude)
-        || sample_position <= -1.0
-        || sample_position >= float(pc.sample_count)) {
-        return;
-    }
-
-    const int LANCZOS_RADIUS = 8;
-    int base = int(floor(sample_position));
-    float weight_sum = 0.0;
-    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
-        float distance = float(base + offset) - sample_position;
-        float sinc_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance) / (PI * distance);
-        float window_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance / float(LANCZOS_RADIUS))
-                / (PI * distance / float(LANCZOS_RADIUS));
-        weight_sum += sinc_value * window_value;
-    }
-    if (!finiteFloat(weight_sum) || abs(weight_sum) <= 1.0e-6) {
-        return;
-    }
-
-    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
-        int sample_index = base + offset;
-        if (sample_index < 0 || uint(sample_index) >= pc.sample_count) {
-            continue;
-        }
-        float distance = float(sample_index) - sample_position;
-        float sinc_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance) / (PI * distance);
-        float window_value = abs(distance) < 1.0e-6
-            ? 1.0
-            : sin(PI * distance / float(LANCZOS_RADIUS))
-                / (PI * distance / float(LANCZOS_RADIUS));
-        float contribution = amplitude * sinc_value * window_value / weight_sum;
-        if (channel == 0u) {
-            atomicAdd(ir.samples[uint(sample_index)].left, contribution);
-        } else {
-            atomicAdd(ir.samples[uint(sample_index)].right, contribution);
-        }
-    }
-}
-
-// Applies the same listener-space spatialization as depositPressure, but uses
-// the stable direct-arrival fractional delay above.
-void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction) {
-    if (!finiteFloat(total_path_length)
-        || !finiteFloat(amplitude)
-        || total_path_length < 0.0
-        || total_path_length > pc.maximum_path_length) {
-        return;
-    }
-
-    float center_sample_position =
-        total_path_length / max(pc.speed_of_sound, RAY_EPSILON) * float(pc.sample_rate);
-    if (!finiteFloat(center_sample_position) || center_sample_position < 0.0) {
-        return;
-    }
-
-    if (pc.output_channels == OUTPUT_CHANNELS_MONO) {
-        depositDirectChannel(center_sample_position, amplitude, 0u);
-        return;
-    }
-
-    float lateral = clamp(
-        dot(normalizeOrZero(listener_arrival_direction), normalizeOrZero(pc.listener_right)),
-        -1.0,
-        1.0
-    );
-    if (pc.output_channels == OUTPUT_CHANNELS_STEREO) {
-        float left_factor = sqrt(0.5 * (1.0 - lateral));
-        float right_factor = sqrt(0.5 * (1.0 + lateral));
-        depositDirectChannel(center_sample_position, amplitude * left_factor, 0u);
-        depositDirectChannel(center_sample_position, amplitude * right_factor, 1u);
-        return;
-    }
-
-    float absolute_lateral = abs(lateral);
-    float itd_seconds = pc.head_radius_meters
-        / max(pc.speed_of_sound, RAY_EPSILON)
-        * (asin(absolute_lateral) + absolute_lateral);
-    itd_seconds *= sign(lateral);
-    float half_itd_samples = 0.5 * itd_seconds * float(pc.sample_rate);
-    float far_to_near = pow(10.0, -pc.max_ild_db * absolute_lateral / 20.0);
-    float near_factor = inversesqrt(1.0 + far_to_near * far_to_near);
-    float far_factor = far_to_near * near_factor;
-    float left_factor = lateral < 0.0 ? near_factor : far_factor;
-    float right_factor = lateral > 0.0 ? near_factor : far_factor;
-    if (lateral == 0.0) {
-        left_factor = near_factor;
-        right_factor = near_factor;
-    }
-
-    depositDirectChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u);
-    depositDirectChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u);
-}
-
-// Converts geometric length to a fractional sample position and applies the
-// output mode's listener-space spatialization before IR deposition.
-void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction) {
-    if (!finiteFloat(total_path_length)
-        || !finiteFloat(amplitude)
-        || total_path_length < 0.0
-        || total_path_length > pc.maximum_path_length) {
-        return;
-    }
-
-    float center_sample_position =
-        total_path_length / max(pc.speed_of_sound, RAY_EPSILON) * float(pc.sample_rate);
-    if (!finiteFloat(center_sample_position) || center_sample_position < 0.0) {
-        return;
-    }
-
-    if (pc.output_channels == OUTPUT_CHANNELS_MONO) {
-        depositChannel(center_sample_position, amplitude, 0u);
-        return;
-    }
-
-    // The initial backward path direction points toward the apparent source.
-    // Its right-axis projection is positive for arrivals on the listener's right.
-    float lateral = clamp(
-        dot(normalizeOrZero(listener_arrival_direction), normalizeOrZero(pc.listener_right)),
-        -1.0,
-        1.0
-    );
-    if (pc.output_channels == OUTPUT_CHANNELS_STEREO) {
-        // Preserve the existing equal-power stereo panner exactly.
-        float left_factor = sqrt(0.5 * (1.0 - lateral));
-        float right_factor = sqrt(0.5 * (1.0 + lateral));
-        depositChannel(center_sample_position, amplitude * left_factor, 0u);
-        depositChannel(center_sample_position, amplitude * right_factor, 1u);
-        return;
-    }
-
-    // Woodworth's spherical-head delay expressed by the lateral sine. Using
-    // asin(lateral) makes front/back and elevation share the expected cone of
-    // confusion while preserving the delay sign between the two ears.
-    float absolute_lateral = abs(lateral);
-    float itd_seconds = pc.head_radius_meters
-        / max(pc.speed_of_sound, RAY_EPSILON)
-        * (asin(absolute_lateral) + absolute_lateral);
-    itd_seconds *= sign(lateral);
-    float half_itd_samples = 0.5 * itd_seconds * float(pc.sample_rate);
-
-    // Scalar ILD cannot reproduce frequency-dependent head shadow, but bounding
-    // the far ear avoids the hard null produced by extreme stereo panning.
-    float far_to_near = pow(10.0, -pc.max_ild_db * absolute_lateral / 20.0);
-    float near_factor = inversesqrt(1.0 + far_to_near * far_to_near);
-    float far_factor = far_to_near * near_factor;
-    float left_factor = lateral < 0.0 ? near_factor : far_factor;
-    float right_factor = lateral > 0.0 ? near_factor : far_factor;
-    if (lateral == 0.0) {
-        left_factor = near_factor;
-        right_factor = near_factor;
-    }
-
-    depositChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u);
-    depositChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u);
-}
-
-// Evaluates the deterministic zero-vertex path listener -> source.
-void evaluateDirectPath() {
-    vec3 to_source = pc.source_position - pc.listener_position;
-    float distance_to_source = length(to_source);
-    if (!finiteFloat(distance_to_source)) {
-        return;
-    }
-    vec3 source_direction = distance_to_source > DIRECTION_EPSILON
-        ? to_source / distance_to_source
-        : vec3(0.0);
-    if (!traceVisibility(
-        pc.listener_position + source_direction * RAY_EPSILON,
-        source_direction,
-        distance_to_source
-    )) {
-        return;
-    }
-    // The direct path is evaluated exactly once by invocation zero and is not a
-    // listener-sphere Monte Carlo sample, so it does not receive the 4*PI/N term.
-    float spreading = 1.0 / max(distance_to_source, RAY_EPSILON);
-    depositDirectPressure(distance_to_source, pc.source_amplitude * spreading, source_direction);
-}
-
-// -----------------------------------------------------------------------------
-// Surface next-event estimation and continuation
-// -----------------------------------------------------------------------------
-
-// Evaluates all surface branches that can connect this vertex to the source.
-// This is evaluation, not sampling, so valid specular and rough reflection
-// responses are summed. Transmission is evaluated on the opposite hemisphere.
-float surfaceSourceResponse(SceneMaterial material, vec3 incoming_direction, vec3 normal, vec3 source_direction) {
-    float specular_energy;
-    float rough_energy;
-    float transmission_energy;
-    materialEnergies(material, specular_energy, rough_energy, transmission_energy);
-
-    // These are pressure-domain local responses. The normalized lobe value
-    // includes directional density, while sqrt converts energy to pressure.
-    float response = 0.0;
-    // Because incoming_direction points toward the surface, reflect() produces
-    // the backward path's ideal outgoing reflection direction.
-    vec3 reflection_axis = normalizeOrZero(reflect(incoming_direction, normal));
-    if (dot(source_direction, normal) > DIRECTION_EPSILON) {
-        response += sqrt(specular_energy)
-            * foldedPowerCosinePdf(
-                source_direction,
-                reflection_axis,
-                normal,
-                specularExponent(material.roughness)
-            );
-        response += sqrt(rough_energy)
-            * foldedPowerCosinePdf(
-                source_direction,
-                reflection_axis,
-                normal,
-                roughExponent(material.roughness)
-            );
-    }
-    if (dot(source_direction, normal) < -DIRECTION_EPSILON) {
-        // Straight transmission remains centered on incoming_direction: the
-        // backward path continues through the surface without refraction.
-        response += sqrt(transmission_energy)
-            * foldedPowerCosinePdf(
-                source_direction,
-                normalizeOrZero(incoming_direction),
-                normal,
-                specularExponent(material.roughness)
-            );
-    }
-    return finiteFloat(response) ? response : 0.0;
-}
-
-void connectSurfaceToSource(
-    vec3 hit_position,
-    vec3 incoming_direction,
-    vec3 normal,
-    SceneMaterial material,
-    float traveled_distance,
-    float path_throughput,
-    float monte_carlo_normalization,
-    vec3 listener_arrival_direction
-) {
-    // Next-event estimation explicitly connects every accepted surface vertex
-    // to the point source. It preserves this path's accumulated listener-side
-    // length instead of merging vertices into a common delay.
-    vec3 to_source = pc.source_position - hit_position;
-    float source_distance = length(to_source);
-    if (!finiteFloat(source_distance) || source_distance <= DIRECTION_EPSILON) {
-        return;
-    }
-    float total_path_length = traveled_distance + source_distance;
-    if (total_path_length > pc.maximum_path_length) {
-        return;
-    }
-
-    vec3 source_direction = to_source / source_distance;
-    float local_response = surfaceSourceResponse(material, incoming_direction, normal, source_direction);
-    if (local_response <= 0.0) {
-        return;
-    }
-    // Offset toward the same hemisphere as the source connection. Always using
-    // +normal would make transmission rays start on the wrong side.
-    vec3 offset_normal = dot(source_direction, normal) >= 0.0 ? normal : -normal;
-    if (!traceVisibility(hit_position + offset_normal * RAY_EPSILON, source_direction, source_distance)) {
-        return;
-    }
-
-    // Apply spreading once to the complete listener-to-vertex-to-source path.
-    // path_throughput excludes the initial spherical Monte Carlo normalization.
-    float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
-    // A normalized reflection lobe is a density in source-connection solid
-    // angle, while this estimator integrates uniformly sampled listener solid
-    // angle. For a planar first reflection, perturbing the listener direction
-    // changes the source-connection mismatch by total_length/source_distance
-    // in each of its two angular dimensions. This determinant converts between
-    // those measures and makes the narrow-lobe limit reproduce the exact image
-    // source. It is intentionally evaluated here as an experiment: curved
-    // geometry and later vertices require the full accumulated path Jacobian.
-    float angular_scale = total_path_length / max(source_distance, RAY_EPSILON);
-    float source_connection_jacobian = angular_scale * angular_scale;
-    float amplitude = pc.source_amplitude
-        * path_throughput
-        * local_response
-        * source_connection_jacobian
-        * spreading
-        * monte_carlo_normalization;
-    depositPressure(total_path_length, amplitude, listener_arrival_direction);
-}
-
-// Samples exactly one of:
-//   branch 0: specular reflection
-//   branch 1: rough reflection
-//   branch 2: straight transmission
-// On success, path_throughput is updated with the unbiased discrete/continuous
-// importance weight and continuation_direction lies on the required hemisphere.
-bool sampleSurfaceContinuation(
-    SceneMaterial material,
-    vec3 incoming_direction,
-    vec3 normal,
-    inout uint random_state,
-    inout float path_throughput,
-    out vec3 continuation_direction
-) {
-    float energies[3];
-    materialEnergies(material, energies[0], energies[1], energies[2]);
-    // Branch selection operates in the pressure domain. Choosing one branch,
-    // rather than emitting all three, keeps one continuation ray per invocation.
-    float weights[3] = float[3](sqrt(energies[0]), sqrt(energies[1]), sqrt(energies[2]));
-    float weight_sum = weights[0] + weights[1] + weights[2];
-    if (!finiteFloat(weight_sum) || weight_sum <= 0.0) {
-        return false;
-    }
-
-    float branch_sample = randomFloat(random_state) * weight_sum;
-    uint branch = branch_sample < weights[0] ? 0u : (branch_sample < weights[0] + weights[1] ? 1u : 2u);
-    float branch_probability = weights[branch] / weight_sum;
-    if (branch_probability <= 0.0 || !finiteFloat(branch_probability)) {
-        return false;
-    }
-
-    // Both reflection branches share the ideal reflection axis but use
-    // different widths. Transmission is centered on straight propagation.
-    vec3 axis = branch == 2u
-        ? normalizeOrZero(incoming_direction)
-        : normalizeOrZero(reflect(incoming_direction, normal));
-    float exponent = branch == 1u ? roughExponent(material.roughness) : specularExponent(material.roughness);
-    float direction_pdf;
-    if (!samplePowerCosine(axis, exponent, random_state, continuation_direction, direction_pdf)) {
-        return false;
-    }
-    // Fold wrong-side samples into the physical hemisphere instead of rejecting
-    // them. Rejection without renormalizing the PDF was a position-dependent
-    // energy loss, especially for rough or grazing lobes.
-    bool wrong_side = branch == 2u
-        ? dot(continuation_direction, normal) >= 0.0
-        : dot(continuation_direction, normal) <= 0.0;
-    if (wrong_side) {
-        continuation_direction = normalizeOrZero(reflect(continuation_direction, normal));
-    }
-
-    // Divide by both discrete branch probability and continuous direction PDF.
-    // For the matched power-cosine sampler the PDF cancels analytically, but
-    // writing the full estimator avoids hiding that invariant.
-    direction_pdf = foldedPowerCosinePdf(continuation_direction, axis, normal, exponent);
-    if (direction_pdf <= 0.0 || !finiteFloat(direction_pdf)) {
-        return false;
-    }
-    float response = sqrt(energies[branch]) * direction_pdf;
-    path_throughput *= response / (branch_probability * direction_pdf);
-    return finiteFloat(path_throughput) && finiteVector(continuation_direction);
-}
-
-// -----------------------------------------------------------------------------
-// Diffraction geometry and next-event estimation
-// -----------------------------------------------------------------------------
-
-vec3 rotateAroundAxis(vec3 value, vec3 axis, float angle) {
-    // Rodrigues' formula rotates only the edge cross-section component. The
-    // component parallel to the edge is conserved by diffraction continuation.
-    float sine = sin(angle);
-    float cosine = cos(angle);
-    return value * cosine + cross(axis, value) * sine + axis * dot(axis, value) * (1.0 - cosine);
-}
-
-bool insideSolidWedge(DiffractionEdge edge, vec3 perpendicular_direction) {
-    return dot(perpendicular_direction, -edge.bisector_dir) > edge.solid_wedge_cos + DIRECTION_EPSILON;
-}
-
-// Builds the forward diffraction domain in the plane perpendicular to the
-// edge. Candidate directions may turn by at most 90 degrees from the incident
-// cross-section direction and may not enter the solid wedge. The free exterior
-// wedge is at least PI radians, so the accepted domain is always finite and has
-// measure of at least PI/2 for valid incidence.
-bool diffractionForwardDomain(
-    DiffractionEdge edge,
-    vec3 incoming_direction,
-    out vec3 incoming_perpendicular,
-    out float perpendicular_length,
-    out vec3 parallel_component,
-    out float valid_angle_measure,
-    out float valid_cosine_integral,
-    out float forbidden_start,
-    out float forbidden_end
-) {
-    // Work in the edge cross-section. Keeping the parallel component fixed
-    // produces the diffraction cone rather than an unconstrained 3-D scatter.
-    parallel_component = dot(incoming_direction, edge.edge_dir) * edge.edge_dir;
-    vec3 perpendicular = incoming_direction - parallel_component;
-    perpendicular_length = length(perpendicular);
-    if (perpendicular_length <= DIRECTION_EPSILON) {
-        return false;
-    }
-    incoming_perpendicular = perpendicular / perpendicular_length;
-    if (insideSolidWedge(edge, incoming_perpendicular)) {
-        return false;
-    }
-
-    // Express the solid wedge as a periodic angular interval relative to the
-    // incident direction, then subtract its overlap with the forward interval
-    // [-PI/2, PI/2]. At most endpoint-equivalent copies overlap, and summing the
-    // clipped lengths handles the wrap at +/-PI without a branch cut.
-    vec3 solid_center = -edge.bisector_dir;
-    float solid_center_angle = atan(
-        dot(cross(incoming_perpendicular, solid_center), edge.edge_dir),
-        dot(incoming_perpendicular, solid_center)
-    );
-    float solid_half_angle = clamp(
-        0.5 * (TWO_PI - edge.edge_angle_radians),
-        0.0,
-        0.5 * PI
-    );
-    float solid_overlap = 0.0;
-    float solid_cosine_overlap = 0.0;
-    forbidden_start = 0.5 * PI;
-    forbidden_end = 0.5 * PI;
-    bool found_forbidden_interval = false;
-    for (int wrap = -1; wrap <= 1; ++wrap) {
-        float center = solid_center_angle + float(wrap) * TWO_PI;
-        float overlap_start = max(-0.5 * PI, center - solid_half_angle);
-        float overlap_end = min(0.5 * PI, center + solid_half_angle);
-        if (overlap_end > overlap_start) {
-            solid_overlap += overlap_end - overlap_start;
-            solid_cosine_overlap += sin(overlap_end) - sin(overlap_start);
-            if (!found_forbidden_interval) {
-                forbidden_start = overlap_start;
-                forbidden_end = overlap_end;
-                found_forbidden_interval = true;
-            } else {
-                // Positive wrapped overlaps can only meet at an endpoint for
-                // the validated wedge range. Merging also protects against
-                // last-bit disagreement at the +/-PI branch cut.
-                forbidden_start = min(forbidden_start, overlap_start);
-                forbidden_end = max(forbidden_end, overlap_end);
-            }
-        }
-    }
-    valid_angle_measure = PI - solid_overlap;
-    valid_cosine_integral = 2.0 - solid_cosine_overlap;
-    return finiteFloat(valid_angle_measure)
-        && finiteFloat(valid_cosine_integral)
-        && valid_angle_measure >= 0.5 * PI - DIRECTION_EPSILON
-        && valid_cosine_integral > DIRECTION_EPSILON;
-}
-
-// Evaluates whether the edge-to-source connection belongs to the same angular
-// domain available to a sampled continuation and, if so, returns its pressure
-// response including radial normalization and angular density.
-bool diffractionSourceResponse(
-    DiffractionEdge edge,
-    vec3 incoming_direction,
-    vec3 source_direction,
-    float distance_to_edge,
-    out float response
-) {
-    vec3 incoming_perpendicular;
-    float perpendicular_length;
-    vec3 parallel_component;
-    float valid_angle_measure;
-    float valid_cosine_integral;
-    float forbidden_start;
-    float forbidden_end;
-    if (!diffractionForwardDomain(
-        edge,
-        incoming_direction,
-        incoming_perpendicular,
-        perpendicular_length,
-        parallel_component,
-        valid_angle_measure,
-        valid_cosine_integral,
-        forbidden_start,
-        forbidden_end
-    )) {
-        return false;
-    }
-
-    // Project the source connection into the same cross-section. Diffraction
-    // continuation uses a clipped forward cosine distribution outside the wall,
-    // and the deterministic source connection evaluates the same directional
-    // shape.
-    vec3 source_perpendicular = source_direction
-        - dot(source_direction, edge.edge_dir) * edge.edge_dir;
-    source_perpendicular = normalizeOrZero(source_perpendicular);
-    if (dot(source_perpendicular, source_perpendicular) <= 0.0
-        || dot(source_perpendicular, incoming_perpendicular) < -DIRECTION_EPSILON
-        || insideSolidWedge(edge, source_perpendicular)) {
-        return false;
-    }
-
-    // This symmetric triangular kernel integrates to one across the strip and
-    // reaches zero continuously at its virtual boundary.
-    float radial_kernel = clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
-        / edge.diffraction_radius;
-    float forward_cosine = max(dot(source_perpendicular, incoming_perpendicular), 0.0);
-    float directional_shape = valid_angle_measure * forward_cosine / valid_cosine_integral;
-    // Listener directions are sampled on the full sphere while a straight edge
-    // occupies a one-dimensional cross-sectional measure. TWO_PI is the
-    // calibrated conversion between those measures. It is a bounded response,
-    // not the continuation sampler's angular PDF.
-    response = TWO_PI
-        * sqrt(clamp(edge.base_strength, 0.0, 1.0))
-        * radial_kernel
-        * directional_shape;
-    return response > 0.0 && finiteFloat(response);
-}
-
-// Performs next-event estimation for listener -> ... -> edge -> source.
-void connectDiffractionToSource(
-    DiffractionEdge edge,
-    vec3 proxy_hit_position,
-    vec3 incoming_direction,
-    float distance_to_edge,
-    float proxy_path_distance,
-    float path_throughput,
-    float monte_carlo_normalization,
-    vec3 listener_arrival_direction
-) {
-    // The proxy hit is the diffraction interaction. Connecting from its
-    // projection on the edge would move both the visibility endpoint and the
-    // delay away from the ray-traced event.
-    vec3 to_source = pc.source_position - proxy_hit_position;
-    float source_distance = length(to_source);
-    if (!finiteFloat(source_distance) || source_distance <= DIRECTION_EPSILON) {
-        return;
-    }
-    float total_path_length = proxy_path_distance + source_distance;
-    if (total_path_length > pc.maximum_path_length) {
-        return;
-    }
-
-    vec3 source_direction = to_source / source_distance;
-    float local_response;
-    if (!diffractionSourceResponse(
-        edge,
-        incoming_direction,
-        source_direction,
-        distance_to_edge,
-        local_response
-    )) {
-        return;
-    }
-    // Offset along the connection rather than an arbitrary proxy normal. The
-    // proxy itself is invisible to this surface-only visibility trace.
-    if (!traceVisibility(proxy_hit_position + source_direction * RAY_EPSILON, source_direction, source_distance)) {
-        return;
-    }
-    float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
-    float amplitude = pc.source_amplitude
-        * path_throughput
-        * local_response
-        * spreading
-        * monte_carlo_normalization;
-    depositPressure(total_path_length, amplitude, listener_arrival_direction);
-}
-
-// Samples one continuous forward diffraction direction. This is not a binary
-// straight/diffracted branch: zero bend is simply one point in the distribution.
-// The sampler preserves the component along the edge, rejects the solid wedge,
-// and never turns the cross-section direction by more than 90 degrees.
-bool sampleDiffractionContinuation(
-    DiffractionEdge edge,
-    vec3 plane_hit_position,
-    vec3 incoming_direction,
-    float incoming_path_distance,
-    float hit_distance,
-    inout uint random_state,
-    inout float path_throughput,
-    out vec3 continuation_origin,
-    out vec3 continuation_direction,
-    out float continuation_path_distance
-) {
-    vec3 incoming_perpendicular;
-    float perpendicular_length;
-    vec3 parallel_component;
-    float valid_angle_measure;
-    float valid_cosine_integral;
-    float forbidden_start;
-    float forbidden_end;
-    if (!diffractionForwardDomain(
-        edge,
-        incoming_direction,
-        incoming_perpendicular,
-        perpendicular_length,
-        parallel_component,
-        valid_angle_measure,
-        valid_cosine_integral,
-        forbidden_start,
-        forbidden_end
-    )) {
-        return false;
-    }
-
-    // Invert the clipped cosine CDF directly. The primitive integral is
-    // sin(theta), so the two free intervals can be sampled without rejection.
-    // Consuming exactly one random value keeps nearby listener queries
-    // correlated even as the solid-wedge boundary moves across the domain.
-    float left_mass = max(0.0, sin(forbidden_start) + 1.0);
-    float mass_sample = randomFloat(random_state) * valid_cosine_integral;
-    float sine_angle = mass_sample < left_mass
-        ? -1.0 + mass_sample
-        : sin(forbidden_end) + (mass_sample - left_mass);
-    float angle = asin(clamp(
-        sine_angle,
-        -1.0 + DIRECTION_EPSILON,
-        1.0 - DIRECTION_EPSILON
-    ));
-    vec3 sampled_perpendicular = normalizeOrZero(
-        rotateAroundAxis(incoming_perpendicular, edge.edge_dir, angle)
-    );
-    if (insideSolidWedge(edge, sampled_perpendicular)) {
-        return false;
-    }
-
-    continuation_direction = normalizeOrZero(
-        parallel_component + sampled_perpendicular * perpendicular_length
-    );
-    if (!finiteVector(continuation_direction)
-        || dot(continuation_direction, incoming_direction) < -DIRECTION_EPSILON) {
-        return false;
-    }
-
-    float continuation_gain = sqrt(clamp(edge.base_strength, 0.0, 1.0));
-    if (continuation_gain <= 0.0 || !finiteFloat(continuation_gain)) {
-        return false;
-    }
-    // Conditional on a proxy hit, continuation is a normalized scattering
-    // event: f(omega) = sqrt(strength) * q(omega), sampled from q. The PDF
-    // cancels exactly, so neither proxy radius nor angular-domain measure can
-    // amplify a continued path. The radial importance kernel belongs only to
-    // completed hit-to-source edge integration above.
-    path_throughput *= continuation_gain;
-    continuation_origin = plane_hit_position + continuation_direction * RAY_EPSILON;
-    continuation_path_distance = incoming_path_distance + hit_distance;
-    return finiteVector(continuation_origin)
-        && finiteVector(continuation_direction)
-        && finiteFloat(continuation_path_distance)
-        && finiteFloat(path_throughput);
-}
-
-// -----------------------------------------------------------------------------
-// Per-listener-path state machine
-// -----------------------------------------------------------------------------
 
 void main() {
-    uint ray_index = gl_LaunchIDEXT.x;
+    uint ray_index = pc.ray_offset + gl_LaunchIDEXT.x;
     // Direct sound is a deterministic visibility query, so exactly one
     // invocation performs it regardless of listener_ray_count.
     if (ray_index == 0u) {
@@ -1019,12 +67,16 @@ void main() {
     uint azimuth_rotation = hashState(pc.sampling_seed);
     vec3 initial_direction = fibonacciSphereDirection(ray_index, pc.listener_ray_count, azimuth_rotation);
     vec3 origin = pc.listener_position;
+    // Keep acoustic vertices separate from epsilon-offset traversal origins.
+    // Numerical self-intersection offsets must not shorten propagation delays.
+    vec3 path_vertex = origin;
     vec3 direction = initial_direction;
     // Throughput contains only accumulated local transport. The 4*PI/N
     // estimator weight stays separate and is applied only to completed paths.
     float path_throughput = 1.0;
     float traveled_distance = 0.0;
     float monte_carlo_normalization = 4.0 * PI / float(pc.listener_ray_count);
+    uint diffraction_events = 0u;
 
     for (uint bounce = 0u; bounce < pc.max_bounces; ++bounce) {
         // This is deterministic truncation only. There is no Russian roulette;
@@ -1044,7 +96,8 @@ void main() {
         traceRayEXT(
             tlas,
             gl_RayFlagsOpaqueEXT,
-            CONTINUATION_GEOMETRY_MASK,
+            diffraction_events < MAX_DIFFRACTION_EVENTS
+                ? CONTINUATION_GEOMETRY_MASK : SURFACE_GEOMETRY_MASK,
             0,
             0,
             0,
@@ -1065,7 +118,7 @@ void main() {
             // Step 1: account for distance to the physical surface.
             // Step 2: explicitly connect that vertex to the source.
             // Step 3: if another bounce is allowed, sample one continuation.
-            float hit_path_distance = traveled_distance + hit_payload.t;
+            float hit_path_distance = traveled_distance + length(hit_position - path_vertex);
             if (hit_path_distance > pc.maximum_path_length) {
                 break;
             }
@@ -1102,17 +155,51 @@ void main() {
             // Commit the new path state only after every sample and finite-state
             // check succeeds. Failed samples terminate without partial updates.
             origin = hit_position + continuation_direction * RAY_EPSILON;
+            path_vertex = hit_position;
             direction = continuation_direction;
             traveled_distance = hit_path_distance;
         } else if (hit_payload.hit_type == HIT_DIFFRACTION_EDGE) {
-            // The traversal hit on the finite proxy strip is the diffraction
-            // interaction point. The edge projection is used only to calculate
-            // the radial kernel in the intersection shader.
+            if (diffraction_events == 0u) {
+                // Preserve the zero-edge path once, before changing its vertex,
+                // RNG, direction or pressure. Later edges belong exclusively to
+                // the approximate diffracted branch and do not fork again.
+                HitPayload proxy_hit = hit_payload;
+                traceSurfaceSuffix(bounce, origin, path_vertex, direction,
+                    path_throughput, traveled_distance, random_state,
+                    monte_carlo_normalization, initial_direction);
+                hit_payload = proxy_hit;
+            }
+            ++diffraction_events;
+            // The proxy discovers an interaction; the ray bends at the physical
+            // edge. Re-trace the adjusted incoming leg so relocation cannot
+            // transport pressure through a blocker missed by the proxy ray.
             DiffractionEdge edge = diffraction_edges.edges[hit_payload.data_id];
             float distance_to_edge = hit_payload.barycentrics.x;
-            float proxy_path_distance = traveled_distance + hit_payload.t;
-            if (proxy_path_distance > pc.maximum_path_length) {
+            float proxy_leg_length = length(hit_position - path_vertex);
+            hit_position = edge.start + hit_payload.barycentrics.y * edge.edge_dir;
+            vec3 edge_leg = hit_position - path_vertex;
+            float edge_leg_length = length(edge_leg);
+            if (edge_leg_length <= RAY_EPSILON) {
                 break;
+            }
+            direction = edge_leg / edge_leg_length;
+            float edge_path_distance = traveled_distance + edge_leg_length;
+            if (edge_path_distance > pc.maximum_path_length
+                || !traceVisibility(path_vertex, direction, edge_leg_length)) {
+                break;
+            }
+            // Projection changes the uniform listener-ray sampling density. On this
+            // plane dOmega/dA = |n dot (P-L)| / |P-L|^3; its numerator is
+            // unchanged by the in-plane relocation from proxy P to edge E.
+            // Apply only to the initial uniform launch: later surface/edge
+            // directional PDFs would also need their own relocation correction.
+            if (bounce == 0u) {
+                float density_ratio = proxy_leg_length / edge_leg_length;
+                path_throughput *= density_ratio * density_ratio * density_ratio;
+            }
+            path_throughput *= sqrt(clamp(edge.base_strength, 0.0, 1.0));
+            if (bounce == 0u) {
+                initial_direction = direction;
             }
 
             connectDiffractionToSource(
@@ -1120,7 +207,7 @@ void main() {
                 hit_position,
                 direction,
                 distance_to_edge,
-                proxy_path_distance,
+                edge_path_distance,
                 path_throughput,
                 monte_carlo_normalization,
                 initial_direction
@@ -1139,7 +226,7 @@ void main() {
                 hit_position,
                 direction,
                 traveled_distance,
-                hit_payload.t,
+                edge_leg_length,
                 random_state,
                 path_throughput,
                 continuation_origin,
@@ -1148,9 +235,10 @@ void main() {
             )) {
                 break;
             }
-            // Continue from the ray-traced interaction in the sampled forward
+            // Continue from the ray-traced interaction in the sampled shadow
             // diffraction direction.
             origin = continuation_origin;
+            path_vertex = hit_position;
             direction = continuation_direction;
             traveled_distance = continuation_path_distance;
         } else {

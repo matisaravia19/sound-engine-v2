@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+// Cargo tracks every included GLSL file, including shared transport includes.
+// The generated manifest is also used to reject stale host/source combinations.
+include!(concat!(env!("OUT_DIR"), "/shader_sources.rs"));
+
 /// Default shader entry point used when compiling GLSL modules.
 pub const SHADER_ENTRY_POINT: &str = "main";
 
@@ -85,8 +89,11 @@ impl ShaderLibrary {
     /// Compiles a GLSL file into SPIR-V and creates a Vulkan shader module.
     ///
     /// The returned ID remains valid until the shader library is dropped.
+    /// Bundled engine shaders must match the sources used to build this host
+    /// executable; rebuild after editing GLSL, including shared include files.
     pub fn load_glsl_file<P: AsRef<Path>>(&self, stage: ShaderStage, path: P) -> SoundResult<ShaderId> {
         let source_path = path.as_ref().to_path_buf();
+        validate_bundled_shader_sources(&source_path)?;
         if !source_path.exists() {
             return Err(SoundError::io(format!(
                 "Shader source file does not exist: {}",
@@ -138,6 +145,81 @@ impl ShaderLibrary {
             .ok_or_else(|| SoundError::not_found(format!("Invalid shader id {}", shader_id.0)))?;
 
         Ok(shader.stage)
+    }
+}
+
+/// Rejects source edits before compiling any bundled shader against a stale
+/// host ABI. Custom caller-owned shader files retain the ordinary loading path.
+fn validate_bundled_shader_sources(source_path: &Path) -> SoundResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let requested = source_path.canonicalize().ok();
+    let bundled = BUNDLED_SHADER_SOURCES.iter().any(|(relative, _)| {
+        let expected = root.join(relative);
+        source_path == expected
+            || requested
+                .as_ref()
+                .is_some_and(|path| expected.canonicalize().is_ok_and(|canonical| path == &canonical))
+    });
+    if bundled {
+        // Validate includes as well as entry points. This is setup I/O, outside
+        // the audio render loop; no filesystem reads are added to ray tracing.
+        for (relative, expected) in BUNDLED_SHADER_SOURCES {
+            verify_shader_source(&root.join(relative), expected)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks exact bytes so a host executable cannot silently adopt changed GLSL.
+fn verify_shader_source(path: &Path, expected: &str) -> SoundResult<()> {
+    let actual = fs::read(path).map_err(|error| {
+        SoundError::shader_compile_failed(format!(
+            "Cannot verify bundled shader {}: {error}. Restore the source files and rebuild the executable.",
+            path.display()
+        ))
+    })?;
+    if actual != expected.as_bytes() {
+        return Err(SoundError::shader_compile_failed(format!(
+            "Bundled shader {} differs from the source used to build this executable. Rebuild with cargo before running; mixing an old host with edited GLSL can invalidate acoustic results.",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn edited_or_missing_shader_is_rejected_before_compilation() {
+        let path = std::env::temp_dir().join(format!("sound_engine_shader_guard_{}.glsl", std::process::id()));
+        let expected = "layout(offset = 100) uint source_surface_paths;\n";
+        fs::write(&path, expected).unwrap();
+        assert!(verify_shader_source(&path, expected).is_ok());
+        fs::write(&path, "layout(offset = 104) uint source_surface_paths;\n").unwrap();
+        let error = verify_shader_source(&path, expected).unwrap_err();
+        assert!(error.to_string().contains("Rebuild with cargo"));
+        fs::remove_file(&path).unwrap();
+        assert!(verify_shader_source(&path, expected).is_err());
+    }
+
+    #[test]
+    fn bundled_manifest_covers_shared_transport_and_current_sources() {
+        assert!(
+            BUNDLED_SHADER_SOURCES
+                .iter()
+                .any(|(path, _)| path.ends_with("/listener_transport.glsl"))
+        );
+        assert!(
+            BUNDLED_SHADER_SOURCES
+                .iter()
+                .any(|(path, _)| path.ends_with("/utd_two_edges.glsl"))
+        );
+        validate_bundled_shader_sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/acoustics/shaders/listener_utd_two_edges.rgen.glsl"),
+        )
+        .unwrap();
     }
 }
 

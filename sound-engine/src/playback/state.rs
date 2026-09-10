@@ -1,6 +1,6 @@
 use crate::core::error::{SoundError, SoundResult};
 use crate::playback::queue::SampleQueue;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Shared playback lifecycle flags used by producers and the device callback.
@@ -17,6 +17,79 @@ pub(super) struct PlaybackState {
     playback_done: AtomicBool,
     /// Set when producers and the callback should stop as soon as possible.
     stop_requested: AtomicBool,
+    /// Producer expectation distinguishes active starvation from an idle engine.
+    expects_audio: AtomicBool,
+    /// Startup silence is excluded until the callback has received audio once.
+    received_audio: AtomicBool,
+    /// Callback count with missing frames during active playback.
+    underruns: AtomicU64,
+    /// Missing engine frames during active playback, independent of device channels.
+    missing_frames: AtomicU64,
+    /// Monotonic origin for underrun diagnostics; timing never affects playback.
+    created_at: std::time::Instant,
+    /// First active underrun in nanoseconds since creation, or u64::MAX if none.
+    first_underrun_ns: AtomicU64,
+    /// Most recent active underrun on the same clock as first_underrun_ns.
+    last_underrun_ns: AtomicU64,
+    /// Callback gate while the producer fills the configured initial prebuffer.
+    ready: AtomicBool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_active_starvation_but_excludes_startup_idle_and_finished_audio() {
+        let state = PlaybackState::new();
+        state.prepare_queue(1024).unwrap();
+        state.record_callback(0, 100);
+        assert_eq!(state.starvation_counts(), (0, 0));
+        assert_eq!(state.starvation_time_range_seconds(), None);
+        state.record_callback(100, 100);
+        state.record_callback(40, 100);
+        assert_eq!(state.starvation_counts(), (1, 60));
+        let (first, last) = state.starvation_time_range_seconds().unwrap();
+        assert!(first >= 0.0 && first == last);
+        state.set_expects_audio(false);
+        state.record_callback(0, 100);
+        assert_eq!(state.starvation_counts(), (1, 60));
+        state.set_expects_audio(true);
+        state.record_callback(0, 100);
+        assert_eq!(state.starvation_counts(), (2, 160));
+        let (retained_first, latest) = state.starvation_time_range_seconds().unwrap();
+        assert_eq!(retained_first, first);
+        assert!(latest >= last);
+        state.mark_producer_done().unwrap();
+        state.record_callback(0, 100);
+        assert_eq!(state.starvation_counts(), (2, 160));
+    }
+
+    #[test]
+    fn explicit_stop_does_not_count_callback_silence_as_starvation() {
+        let state = PlaybackState::new();
+        state.prepare_queue(1024).unwrap();
+        state.record_callback(100, 100);
+        state.record_callback(40, 100);
+        assert_eq!(state.starvation_counts(), (1, 60));
+        state.request_stop().unwrap();
+        // The device can deliver more callbacks before the stream is dropped.
+        state.record_callback(0, 100);
+        assert_eq!(state.starvation_counts(), (1, 60));
+    }
+
+    #[test]
+    fn prebuffer_is_explicit_and_short_finished_sounds_are_released() {
+        let state = PlaybackState::new();
+        state.prepare_queue(1024).unwrap();
+        state.begin_prebuffering();
+        assert!(!state.ready_to_play());
+        state.release_prebuffer();
+        assert!(state.ready_to_play());
+        state.begin_prebuffering();
+        state.mark_producer_done().unwrap();
+        assert!(state.ready_to_play());
+    }
 }
 
 impl PlaybackState {
@@ -27,6 +100,14 @@ impl PlaybackState {
             producer_done: AtomicBool::new(true),
             playback_done: AtomicBool::new(true),
             stop_requested: AtomicBool::new(false),
+            expects_audio: AtomicBool::new(true),
+            received_audio: AtomicBool::new(false),
+            underruns: AtomicU64::new(0),
+            missing_frames: AtomicU64::new(0),
+            created_at: std::time::Instant::now(),
+            first_underrun_ns: AtomicU64::new(u64::MAX),
+            last_underrun_ns: AtomicU64::new(0),
+            ready: AtomicBool::new(true),
         }
     }
 
@@ -49,6 +130,72 @@ impl PlaybackState {
         &self.producer_done
     }
 
+    /// Gates callback consumption until enough initial blocks have been queued.
+    pub(super) fn begin_prebuffering(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+
+    /// Releases the callback after the producer fills its prebuffer.
+    pub(super) fn release_prebuffer(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
+    /// Returns whether the device callback may consume queued frames.
+    pub(super) fn ready_to_play(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    /// Marks whether an active producer should currently keep the queue fed.
+    pub(super) fn set_expects_audio(&self, active: bool) {
+        self.expects_audio.store(active, Ordering::Release);
+    }
+
+    /// Records active callback starvation without allocation, locks, or logging.
+    /// Explicit-stop silence is excluded even while the device stream is alive.
+    pub(super) fn record_callback(&self, received_frames: usize, requested_frames: usize) {
+        let started = self.received_audio.load(Ordering::Relaxed);
+        if received_frames > 0 {
+            self.received_audio.store(true, Ordering::Relaxed);
+        }
+        if started
+            && self.expects_audio.load(Ordering::Acquire)
+            && !self.producer_done.load(Ordering::Acquire)
+            && !self.stop_requested.load(Ordering::Acquire)
+            && received_frames < requested_frames
+        {
+            // Read the clock only on starvation. The callback still performs
+            // no allocation, lock acquisition, or diagnostic file I/O.
+            let elapsed = self.created_at.elapsed().as_nanos().min(u64::MAX as u128 - 1) as u64;
+            let _ = self
+                .first_underrun_ns
+                .compare_exchange(u64::MAX, elapsed, Ordering::Relaxed, Ordering::Relaxed);
+            self.last_underrun_ns.store(elapsed, Ordering::Relaxed);
+            self.underruns.fetch_add(1, Ordering::Relaxed);
+            self.missing_frames
+                .fetch_add((requested_frames - received_frames) as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns active-playback underrun callbacks and missing frame totals.
+    pub(super) fn starvation_counts(&self) -> (u64, u64) {
+        (
+            self.underruns.load(Ordering::Relaxed),
+            self.missing_frames.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Returns first/last active underrun seconds since this state was created.
+    /// A live snapshot may lag a concurrent callback; read after stopping for a final report.
+    pub(super) fn starvation_time_range_seconds(&self) -> Option<(f64, f64)> {
+        let first = self.first_underrun_ns.load(Ordering::Relaxed);
+        (first != u64::MAX).then(|| {
+            (
+                first as f64 * 1e-9,
+                self.last_underrun_ns.load(Ordering::Relaxed) as f64 * 1e-9,
+            )
+        })
+    }
+
     /// Returns the stop flag observed by producers while they wait for capacity.
     pub(super) fn stop_requested(&self) -> &AtomicBool {
         &self.stop_requested
@@ -57,6 +204,8 @@ impl PlaybackState {
     /// Marks the producer as finished and wakes any blocked queue users.
     pub(super) fn mark_producer_done(&self) -> SoundResult<()> {
         self.producer_done.store(true, Ordering::Release);
+        // Short sounds may finish before reaching the prefill threshold.
+        self.release_prebuffer();
         self.notify_all()
     }
 

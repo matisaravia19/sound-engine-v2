@@ -67,14 +67,18 @@ pub struct DiffractionEdge {
     pub start: Vec3,
     /// Second endpoint of the finite edge segment in world meters.
     pub end: Vec3,
-    /// In-plane direction that points into the angle bisected by the diffraction plane.
+    /// Direction perpendicular to the edge bisecting the exterior air wedge.
+    /// For a thin screen, points away from the screen into its open continuation.
     pub bisector_dir: Vec3,
-    /// Wedge angle in radians around the edge direction.
+    /// Exterior air angle in radians: 3*PI/2 for a solid right-angle corner,
+    /// TAU for a zero-thickness screen. Must match the physical mesh faces.
     pub edge_angle_radians: f32,
-    /// Half-width of the ray-traced virtual edge strip in meters.
+    /// Width of the exterior ray-traced virtual edge strip in meters.
     ///
-    /// The estimator normalizes its triangular radial kernel by this width, so
-    /// changing it primarily trades variance against edge locality.
+    /// The negative half of the bounding box lies in the solid wedge and is
+    /// rejected. The triangular kernel integrates to one over [0, width].
+    /// Accepted rays advance to the physical edge before continuing; this width
+    /// controls discovery and sampling variance, not the diffraction vertex.
     pub diffraction_radius: f32,
     /// Designer-authored energy scale applied to the ray-traced response.
     /// The square root is used as a pressure multiplier.
