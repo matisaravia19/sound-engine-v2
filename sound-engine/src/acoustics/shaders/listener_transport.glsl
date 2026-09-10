@@ -803,9 +803,9 @@ bool diffractionShadowDomain(
 // Broadband scalar approximation, not an exact BTM or frequency-domain UTD
 // coefficient. The four rational terms include both wedge-face distances;
 // axial mismatch narrows the response near the incident shadow boundary.
-// A 0.01-radian floor bounds variance at that boundary. See the derivation and
+// A 0.04-radian floor bounds variance at that boundary. See the derivation and
 // limitations in references/scalar-diffraction-validation.md.
-const float DIFFRACTION_ANGULAR_FLOOR = 0.01;
+const float DIFFRACTION_ANGULAR_FLOOR = 0.04;
 
 float diffractionScalarResponse(
     DiffractionEdge edge,
