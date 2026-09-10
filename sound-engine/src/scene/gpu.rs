@@ -272,7 +272,7 @@ fn upload_scene_buffers(
     })
 }
 
-// Preserve the authored energy budget at the scene/transport boundary.
+// Bound the coherent scalar reflection mixture by the authored pressure loss.
 fn gpu_material(material: &super::types::Material) -> GpuMaterial {
     let absorption = material
         .absorption_bands
@@ -289,9 +289,15 @@ fn gpu_material(material: &super::types::Material) -> GpuMaterial {
         .min(1.0 - absorption);
     let reflection = (1.0 - absorption - transmission).max(0.0);
     let scattering = material.scattering.clamp(0.0, 1.0);
+    // The transport sums these lobes as pressure, not independent energies.
+    // Normalize their relative amplitudes so branch sampling cannot multiply
+    // reflected throughput by sqrt(1-s) + sqrt(s) at every interaction.
+    let specular = (1.0 - scattering).sqrt();
+    let rough = scattering.sqrt();
+    let reflection_pressure = reflection.sqrt() / (specular + rough);
     GpuMaterial {
-        specular_pressure: (reflection * (1.0 - scattering)).sqrt(),
-        rough_pressure: (reflection * scattering).sqrt(),
+        specular_pressure: reflection_pressure * specular,
+        rough_pressure: reflection_pressure * rough,
         transmission_pressure: transmission.sqrt(),
         roughness: material.roughness.clamp(0.0, 1.0),
     }
@@ -457,7 +463,7 @@ mod tests {
     use std::mem::{align_of, size_of};
 
     #[test]
-    fn uploaded_pressure_gains_preserve_authored_energy_budget() {
+    fn uploaded_reflection_mixture_has_no_scattering_gain() {
         for absorption in [0.0_f32, 0.2, 0.75, 1.0] {
             for transmission in [0.0_f32, 0.3, 1.0] {
                 for scattering in [0.0_f32, 0.4, 1.0] {
@@ -469,10 +475,12 @@ mod tests {
                         transmission: Some(vec![transmission]),
                     };
                     let gpu = gpu_material(&material);
-                    let reflected = gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
+                    let reflected = (gpu.specular_pressure + gpu.rough_pressure).powi(2);
                     assert!((reflected + gpu.transmission_pressure.powi(2) - (1.0 - absorption)).abs() < 1e-6);
                     assert!((gpu.transmission_pressure.powi(2) - transmission.min(1.0 - absorption)).abs() < 1e-6);
-                    assert!((gpu.rough_pressure.powi(2) - reflected * scattering).abs() < 1e-6);
+                    let separate_energy = gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
+                    assert!(separate_energy <= reflected + 1e-6);
+                    assert!((gpu.rough_pressure.powi(2) - separate_energy * scattering).abs() < 1e-6);
                 }
             }
         }
