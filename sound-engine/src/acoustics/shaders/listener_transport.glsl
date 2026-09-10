@@ -858,7 +858,8 @@ float diffractionScalarResponse(
     // illuminated side. Every contribution still passes physical visibility.
     if (bend <= 0.0) {
         float window = smoothstep(-4.0 * DIFFRACTION_ANGULAR_FLOOR, 0.0, bend);
-        return -terms.x * window / TWO_PI;
+        // The nonsingular face terms must not vanish abruptly at zero bend.
+        return (dot(terms.yzw, vec3(1.0)) - terms.x) * window / TWO_PI;
     }
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
