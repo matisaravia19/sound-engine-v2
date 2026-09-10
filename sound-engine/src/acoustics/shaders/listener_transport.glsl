@@ -364,9 +364,9 @@ float foldedPowerCosinePdf(vec3 direction, vec3 axis, vec3 normal, float exponen
 
 // The deterministic direct arrival dominates perceived level in a visible
 // region, so its fractional delay must not inherit the two-tap interpolator's
-// 3 dB phase-dependent energy ripple. A normalized Lanczos kernel preserves
-// signed pressure; the caller selects the constant support size.
-void depositBandlimitedChannel(float sample_position, float amplitude, uint channel, int kernel_radius) {
+// 3 dB phase-dependent energy ripple. Use its normalized Lanczos kernel,
+// or a compact pressure-preserving cubic kernel for numerous edge arrivals.
+void depositStableChannel(float sample_position, float amplitude, uint channel, bool cubic_edge) {
     if (!finiteFloat(sample_position)
         || !finiteFloat(amplitude)
         || sample_position <= -1.0
@@ -376,7 +376,7 @@ void depositBandlimitedChannel(float sample_position, float amplitude, uint chan
 
     // The four-tap edge kernel preserves signed pressure without per-ray
     // trigonometry. Geometric direct arrivals retain their existing Lanczos.
-    if (kernel_radius == 2) {
+    if (cubic_edge) {
         int base = int(floor(sample_position));
         float fraction = sample_position - float(base);
         float square = fraction * fraction;
@@ -400,24 +400,25 @@ void depositBandlimitedChannel(float sample_position, float amplitude, uint chan
         return;
     }
 
+    const int LANCZOS_RADIUS = 8;
     int base = int(floor(sample_position));
     float weight_sum = 0.0;
-    for (int offset = -kernel_radius + 1; offset <= kernel_radius; ++offset) {
+    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
         float distance = float(base + offset) - sample_position;
         float sinc_value = abs(distance) < 1.0e-6
             ? 1.0
             : sin(PI * distance) / (PI * distance);
         float window_value = abs(distance) < 1.0e-6
             ? 1.0
-            : sin(PI * distance / float(kernel_radius))
-                / (PI * distance / float(kernel_radius));
+            : sin(PI * distance / float(LANCZOS_RADIUS))
+                / (PI * distance / float(LANCZOS_RADIUS));
         weight_sum += sinc_value * window_value;
     }
     if (!finiteFloat(weight_sum) || abs(weight_sum) <= 1.0e-6) {
         return;
     }
 
-    for (int offset = -kernel_radius + 1; offset <= kernel_radius; ++offset) {
+    for (int offset = -LANCZOS_RADIUS + 1; offset <= LANCZOS_RADIUS; ++offset) {
         int sample_index = base + offset;
         if (sample_index < 0 || uint(sample_index) >= timeDomainSampleCount()) {
             continue;
@@ -428,8 +429,8 @@ void depositBandlimitedChannel(float sample_position, float amplitude, uint chan
             : sin(PI * distance) / (PI * distance);
         float window_value = abs(distance) < 1.0e-6
             ? 1.0
-            : sin(PI * distance / float(kernel_radius))
-                / (PI * distance / float(kernel_radius));
+            : sin(PI * distance / float(LANCZOS_RADIUS))
+                / (PI * distance / float(LANCZOS_RADIUS));
         float contribution = amplitude * sinc_value * window_value / weight_sum;
         if (channel == 0u) {
             atomicAdd(ir.samples[timeDomainOffset()+uint(sample_index)].left, contribution);
@@ -441,16 +442,16 @@ void depositBandlimitedChannel(float sample_position, float amplitude, uint chan
 
 // Keep the established interpolation for the single geometric direct arrival.
 void depositDirectChannel(float sample_position, float amplitude, uint channel) {
-    depositBandlimitedChannel(sample_position, amplitude, channel, 8);
+    depositStableChannel(sample_position, amplitude, channel, false);
 }
 
-// Applies the same listener-space spatialization as depositPressure, but uses
-// the stable direct-arrival fractional delay above.
+// Applies listener-space spatialization with pressure-preserving interpolation.
+// Scalar edge arrivals select cubic interpolation; direct arrivals use Lanczos.
 #ifdef SPECTRAL_TRACE
 void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 void depositPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure);
 #else
-void depositBandlimitedPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure, int kernel_radius) {
+void depositStablePressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure, bool cubic_edge) {
     if (!finiteFloat(total_path_length)
         || !finiteFloat(amplitude)
         || total_path_length < 0.0
@@ -465,7 +466,7 @@ void depositBandlimitedPressure(float total_path_length, float amplitude, vec3 l
     }
 
     if (pc.output_channels == OUTPUT_CHANNELS_MONO) {
-        depositBandlimitedChannel(center_sample_position, amplitude, 0u, kernel_radius);
+        depositStableChannel(center_sample_position, amplitude, 0u, cubic_edge);
         return;
     }
 
@@ -477,8 +478,8 @@ void depositBandlimitedPressure(float total_path_length, float amplitude, vec3 l
     if (pc.output_channels == OUTPUT_CHANNELS_STEREO) {
         float left_factor = sqrt(0.5 * (1.0 - lateral));
         float right_factor = sqrt(0.5 * (1.0 + lateral));
-        depositBandlimitedChannel(center_sample_position, amplitude * left_factor, 0u, kernel_radius);
-        depositBandlimitedChannel(center_sample_position, amplitude * right_factor, 1u, kernel_radius);
+        depositStableChannel(center_sample_position, amplitude * left_factor, 0u, cubic_edge);
+        depositStableChannel(center_sample_position, amplitude * right_factor, 1u, cubic_edge);
         return;
     }
 
@@ -498,14 +499,14 @@ void depositBandlimitedPressure(float total_path_length, float amplitude, vec3 l
         right_factor = near_factor;
     }
 
-    depositBandlimitedChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u, kernel_radius);
-    depositBandlimitedChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u, kernel_radius);
+    depositStableChannel(center_sample_position + half_itd_samples, amplitude * left_factor, 0u, cubic_edge);
+    depositStableChannel(center_sample_position - half_itd_samples, amplitude * right_factor, 1u, cubic_edge);
 }
 
-// Geometric arrival retains its 16-tap kernel; edge connections choose a
-// smaller constant kernel to bound atomics per sampled path.
+// The single geometric arrival retains its established 16-tap kernel.
+// Edge arrivals use the compact cubic path through depositStablePressure.
 void depositDirectPressure(float total_path_length, float amplitude, vec3 listener_arrival_direction, vec3 source_departure) {
-    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, source_departure, 8);
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, source_departure, false);
 }
 
 // Converts geometric length to a fractional sample position and applies the
@@ -899,9 +900,9 @@ float diffractionScalarResponse(
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
 
-// Evaluates whether the edge-to-source connection belongs to the same angular
-// domain available to a sampled continuation and, if so, returns its pressure
-// response including radial normalization and angular density.
+// Evaluates the edge-to-source pressure, including radial normalization and
+// angular density. Connections include a signed near-lit transition; sampled
+// continuation remains restricted to the shadow domain.
 bool diffractionSourceResponse(
     DiffractionEdge edge,
     vec3 incoming_direction,
@@ -930,7 +931,7 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    // Connection and continuation share the same complete shadow interval.
+    // Source connections must stay outside the solid wedge.
     vec3 source_perpendicular = source_direction
         - dot(source_direction, edge.edge_dir) * edge.edge_dir;
     source_perpendicular = normalizeOrZero(source_perpendicular);
@@ -1008,12 +1009,12 @@ void connectDiffractionToSource(
         * local_response
         * spreading
         * monte_carlo_normalization;
-    // A short bandlimited kernel reduces phase-dependent cancellation error
-    // while bounding work per accepted edge connection.
+    // Cubic interpolation reduces phase-dependent cancellation error using
+    // four atomics per channel and no per-connection trigonometric kernel.
 #ifdef SPECTRAL_TRACE
     depositDirectPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction);
 #else
-    depositBandlimitedPressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, 2);
+    depositStablePressure(total_path_length, amplitude, listener_arrival_direction, -source_direction, true);
 #endif
 }
 
