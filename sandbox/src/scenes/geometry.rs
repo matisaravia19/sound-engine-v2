@@ -85,7 +85,6 @@ pub fn diffraction_wedge_scene(
         bisector_dir: Vec3::X,
         edge_angle_radians: exterior_wedge_angle,
         diffraction_radius: proxy_radius,
-        base_strength: 1.0,
     });
     scene
 }

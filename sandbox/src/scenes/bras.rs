@@ -163,6 +163,5 @@ fn edge(
         bisector_dir,
         edge_angle_radians: angle,
         diffraction_radius: radius,
-        base_strength: 1.0,
     }
 }

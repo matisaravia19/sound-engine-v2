@@ -63,7 +63,6 @@ fn box_scene() -> SceneDescription {
                 bisector_dir: vec3(side, 1.0, 0.0).normalize(),
                 edge_angle_radians: 1.5 * std::f32::consts::PI,
                 diffraction_radius: 0.1,
-                base_strength: 1.0,
             })
             .collect(),
     }

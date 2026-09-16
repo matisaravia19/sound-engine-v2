@@ -19,7 +19,7 @@ fn main() -> SoundResult<()> {
     let gpu = VkBackend::new()?;
     let source_position = vec3(1.0, 0.0, -1.0);
     let listener_position = vec3(-1.0, 0.0, 0.5);
-    let edge = diffraction_edge(0.45, 0.65);
+    let edge = diffraction_edge(0.45);
 
     let baseline = trace_scene(
         &gpu,
@@ -37,7 +37,7 @@ fn main() -> SoundResult<()> {
     )?;
     let alternate_radius = trace_scene(
         &gpu,
-        diffraction_scene(Some(diffraction_edge(0.9, 0.65)), 1.0),
+        diffraction_scene(Some(diffraction_edge(0.9)), 1.0),
         3,
         source_position,
         listener_position,
@@ -111,40 +111,6 @@ fn main() -> SoundResult<()> {
         )));
     }
 
-    let visible_source = vec3(1.0, 0.0, -1.0);
-    let visible_listener = vec3(1.0, 0.0, -2.0);
-    let visible_baseline = trace_scene(
-        &gpu,
-        diffraction_scene(None, 0.18),
-        4,
-        visible_source,
-        visible_listener,
-    )?;
-    let visible_zero_strength = trace_scene(
-        &gpu,
-        diffraction_scene(Some(diffraction_edge(3.0, 0.0)), 0.18),
-        5,
-        visible_source,
-        visible_listener,
-    )?;
-    let visible_baseline_samples = visible_baseline
-        .samples
-        .iter()
-        .flat_map(|sample| [sample.left as f64, sample.right as f64])
-        .collect::<Vec<_>>();
-    let visible_zero_strength_samples = visible_zero_strength
-        .samples
-        .iter()
-        .flat_map(|sample| [sample.left as f64, sample.right as f64])
-        .collect::<Vec<_>>();
-    let visible_invariance_error =
-        relative_l2(&visible_baseline_samples, &visible_zero_strength_samples);
-    if visible_invariance_error > 1.0e-6 {
-        return Err(SoundError::invalid_state(format!(
-            "A transparent zero-strength proxy changed ordinary transport: relative L2 {visible_invariance_error:.9}"
-        )));
-    }
-
     let sandbox_source_position = vec3(-4.5, 0.45, 0.0);
     let (doorway_maximum_step_db, doorway_span_db, shadow_excess_db, boundary_step_db) =
         doorway_position_sweep(&gpu, sandbox_source_position)?;
@@ -182,7 +148,6 @@ fn main() -> SoundResult<()> {
         "  shadow/unobstructed energy ratio: {:.9}",
         diffracted.energy / unobstructed.energy
     );
-    println!("  zero-strength proxy relative L2: {visible_invariance_error:.9}");
     println!("  doorway maximum adjacent level step: {doorway_maximum_step_db:.6} dB");
     println!("  doorway direct-view level span: {doorway_span_db:.6} dB");
     println!("  doorway shadow excess over direct view: {shadow_excess_db:.6} dB");
@@ -479,7 +444,6 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(-diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 2,
@@ -488,7 +452,6 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 3,
@@ -497,7 +460,6 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(-diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.85,
         },
         DiffractionEdge {
             id: 4,
@@ -506,7 +468,6 @@ fn doorway_scene() -> SceneDescription {
             bisector_dir: vec3(diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 1.25,
-            base_strength: 0.85,
         },
     ];
     SceneDescription {
@@ -564,7 +525,7 @@ fn box_vertices(center: Vec3, size: Vec3) -> Vec<Vec3> {
     vertices
 }
 
-fn diffraction_edge(radius: f32, strength: f32) -> DiffractionEdge {
+fn diffraction_edge(radius: f32) -> DiffractionEdge {
     DiffractionEdge {
         id: 1,
         start: vec3(0.0, -2.0, 0.0),
@@ -574,7 +535,6 @@ fn diffraction_edge(radius: f32, strength: f32) -> DiffractionEdge {
         bisector_dir: Vec3::Z,
         edge_angle_radians: std::f32::consts::TAU,
         diffraction_radius: radius,
-        base_strength: strength,
     }
 }
 
@@ -612,7 +572,6 @@ mod btm_reference {
         let listener_angle = wedge_angle(positive_shadow, edge_axis, listener_radial);
         let wedge_index = PI / edge.edge_angle_radians as f64;
         let segment_length = edge_length / segments as f64;
-        let strength = (edge.base_strength as f64).clamp(0.0, 1.0).sqrt();
 
         for segment in 0..segments {
             let coordinate = (segment as f64 + 0.5) * segment_length;
@@ -634,9 +593,8 @@ mod btm_reference {
                 }
             }
             let total_distance = source_distance + listener_distance;
-            let pressure =
-                source_amplitude * strength * -wedge_index / (4.0 * PI) * beta_sum * segment_length
-                    / (source_distance * listener_distance);
+            let pressure = source_amplitude * -wedge_index / (4.0 * PI) * beta_sum * segment_length
+                / (source_distance * listener_distance);
             deposit_fractional(
                 &mut samples,
                 total_distance / 343.0 * SAMPLE_RATE as f64,
@@ -695,16 +653,6 @@ mod btm_reference {
     fn magnitude(value: Complex) -> f64 {
         value.real.hypot(value.imaginary)
     }
-}
-
-fn relative_l2(left: &[f64], right: &[f64]) -> f64 {
-    let error = left
-        .iter()
-        .zip(right)
-        .map(|(left, right)| (left - right).powi(2))
-        .sum::<f64>();
-    let reference = right.iter().map(|value| value * value).sum::<f64>();
-    (error / reference.max(1.0e-24)).sqrt()
 }
 
 fn baffle_vertices() -> Vec<Vec3> {

@@ -345,12 +345,6 @@ fn validate_diffraction_edge(edge: &DiffractionEdge) -> SoundResult<()> {
             edge.id
         )));
     }
-    if !(0.0..=1.0).contains(&edge.base_strength) {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} base strength must be in [0, 1]",
-            edge.id
-        )));
-    }
     Ok(())
 }
 
@@ -508,7 +502,6 @@ mod tests {
             bisector_dir: vec3(1.0, 0.0, 0.0),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 0.5,
-            base_strength: 0.25,
         }
     }
 
@@ -593,16 +586,26 @@ mod tests {
                 updates: vec![SceneUpdate::AddDiffractionEdge(edge(1))],
             })
             .unwrap();
-        assert_eq!(store.diffraction_edges.get(&1).unwrap().base_strength, 0.25);
+        assert_eq!(
+            store.diffraction_edges.get(&1).unwrap().diffraction_radius,
+            0.5
+        );
 
         let mut replacement = edge(1);
-        replacement.base_strength = 0.5;
+        replacement.diffraction_radius = 1.0;
         store
             .apply_updates(SceneUpdates {
-                updates: vec![
-                    SceneUpdate::ReplaceDiffractionEdge(replacement),
-                    SceneUpdate::RemoveDiffractionEdge(1),
-                ],
+                updates: vec![SceneUpdate::ReplaceDiffractionEdge(replacement)],
+            })
+            .unwrap();
+        assert_eq!(
+            store.diffraction_edges.get(&1).unwrap().diffraction_radius,
+            1.0
+        );
+
+        store
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::RemoveDiffractionEdge(1)],
             })
             .unwrap();
 

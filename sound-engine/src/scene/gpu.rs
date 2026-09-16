@@ -68,7 +68,8 @@ struct GpuDiffractionEdge {
     start: [f32; 3],
     diffraction_radius: f32,
     end: [f32; 3],
-    pressure_gain: f32,
+    // std430 keeps the following vec3 aligned to a 16-byte boundary.
+    _pad_end: f32,
     edge_dir: [f32; 3],
     edge_length: f32,
     bisector_dir: [f32; 3],
@@ -350,9 +351,9 @@ fn upload_diffraction_edges(
     let gpu_edges = if diffraction_edges.is_empty() {
         vec![GpuDiffractionEdge {
             start: [0.0; 3],
-            diffraction_radius: 1.0,
+            diffraction_radius: 0.0,
             end: [0.0, 1.0, 0.0],
-            pressure_gain: 0.0,
+            _pad_end: 0.0,
             edge_dir: [0.0, 1.0, 0.0],
             edge_length: 1.0,
             bisector_dir: [1.0, 0.0, 0.0],
@@ -447,7 +448,7 @@ fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {
         start: edge.start.to_array(),
         diffraction_radius: edge.diffraction_radius,
         end: edge.end.to_array(),
-        pressure_gain: edge.base_strength.clamp(0.0, 1.0).sqrt(),
+        _pad_end: 0.0,
         edge_dir: edge_dir.to_array(),
         edge_length,
         bisector_dir: bisector_dir.to_array(),
@@ -511,7 +512,6 @@ mod tests {
             }
         }
         assert_eq!(size_of::<GpuMaterial>(), 16);
-        assert_eq!(gpu_diffraction_edge(&test_edge()).pressure_gain, 0.5);
     }
 
     #[test]
@@ -571,7 +571,6 @@ mod tests {
             bisector_dir: Vec3::X,
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: 0.5,
-            base_strength: 0.25,
         }
     }
 

@@ -60,7 +60,8 @@ pub struct SceneObject {
     pub active: bool,
 }
 
-/// Manually authored edge that can diffract acoustic rays.
+/// Manually authored geometry that can diffract acoustic rays.
+/// Remove an edge from the scene to disable its diffraction contribution.
 #[derive(Debug, Clone)]
 pub struct DiffractionEdge {
     /// Application-provided diffraction edge identifier.
@@ -82,9 +83,6 @@ pub struct DiffractionEdge {
     /// Accepted rays advance to the physical edge before continuing; this width
     /// controls discovery and sampling variance, not the diffraction vertex.
     pub diffraction_radius: f32,
-    /// Designer-authored energy scale applied to the ray-traced response.
-    /// Converted once to a pressure gain when preparing the GPU scene.
-    pub base_strength: f32,
 }
 
 /// Complete scene replacement payload.

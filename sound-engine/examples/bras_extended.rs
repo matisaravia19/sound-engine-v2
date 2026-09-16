@@ -51,7 +51,19 @@ fn fixture(path: &std::path::Path) -> Result<SceneDescription, Box<dyn std::erro
                     .or_default()
                     .extend(p[1..].chunks_exact(3).map(|v| vec3(v[0], v[1], v[2])));
             }
-            "edge" if p.len() == 12 && p[10] > 0.0 && (0.0..=1.0).contains(&p[11]) => {
+            "edge" if (p.len() == 11 || p.len() == 12) && p[10] > 0.0 => {
+                // Legacy fixtures end in an energy scale. Only their disabled
+                // state survives migration; positive values no longer scale rays.
+                if p.len() == 12 {
+                    if !(0.0..=1.0).contains(&p[11]) {
+                        return Err(format!("invalid legacy edge scale: {line}").into());
+                    }
+
+                    if p[11] == 0.0 {
+                        continue;
+                    }
+                }
+
                 scene.diffraction_edges.push(DiffractionEdge {
                     id: scene.diffraction_edges.len() as u32 + 1,
                     start: vec3(p[0], p[1], p[2]),
@@ -59,7 +71,6 @@ fn fixture(path: &std::path::Path) -> Result<SceneDescription, Box<dyn std::erro
                     bisector_dir: vec3(p[6], p[7], p[8]),
                     edge_angle_radians: p[9],
                     diffraction_radius: p[10],
-                    base_strength: p[11],
                 });
             }
             _ => return Err(format!("invalid fixture row: {line}").into()),

@@ -28,7 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut seeds = 3_u32;
     let mut bounces = 3_u32;
     let mut radius = 0.2_f32;
-    let mut edge_strength = 1.0_f32;
     let mut diffraction = true;
     let mut reverse = false;
     let mut repeats = 1_usize;
@@ -41,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "bras_diffraction [--scene RS5|RS6] [--rays 262144] [--seeds 3] [--bounces 3] [--radius 0.2] [--edge-strength 1.0] [--diffraction true|false] [--reverse true|false] [--repeats 1] [--warmups 3] [--case RS5_LS1_MP1] [--motion-height 0] [--input output/measured-reference-research] [--output output/bras-ray-baseline]"
+                "bras_diffraction [--scene RS5|RS6] [--rays 262144] [--seeds 3] [--bounces 3] [--radius 0.2] [--diffraction true|false] [--reverse true|false] [--repeats 1] [--warmups 3] [--case RS5_LS1_MP1] [--motion-height 0] [--input output/measured-reference-research] [--output output/bras-ray-baseline]"
             );
             return Ok(());
         }
@@ -52,7 +51,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--seeds" => seeds = value.parse()?,
             "--bounces" => bounces = value.parse()?,
             "--radius" => radius = value.parse()?,
-            "--edge-strength" => edge_strength = value.parse()?,
             "--reverse" => reverse = value.parse()?,
             "--diffraction" => diffraction = value.parse()?,
             "--repeats" => repeats = value.parse()?,
@@ -70,8 +68,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || repeats == 0
         || !radius.is_finite()
         || radius <= 0.0
-        || !edge_strength.is_finite()
-        || !(0.0..=1.0).contains(&edge_strength)
     {
         return Err("invalid scene, ray/seed count or radius".into());
     }
@@ -87,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     writeln!(
         runs,
-        "case,seed,rays,bounces,radius,diffraction,sample_rate,cold_ms,p50_ms,p95_ms,p99_ms,max_ms,repeats,warmups,revision,edge_strength,reverse"
+        "case,seed,rays,bounces,radius,diffraction,sample_rate,cold_ms,p50_ms,p95_ms,p99_ms,max_ms,repeats,warmups,revision,reverse"
     )?;
     let mut raw_times = BufWriter::new(fs::File::create(
         output.join(format!("{scene_name}-latencies.csv")),
@@ -100,10 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let revision = provenance::revision();
     for seed in 7..end_seed {
         let mut scene = SceneManager::new();
-        let mut description = benchmark_scene(&scene_name, radius, diffraction);
-        for edge in &mut description.diffraction_edges {
-            edge.base_strength = edge_strength;
-        }
+        let description = benchmark_scene(&scene_name, radius, diffraction);
         scene.load(description)?;
         let config = EngineConfig {
             sound: SoundConfig {
@@ -202,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             writeln!(
                 runs,
-                "{},{seed},{rays},{bounces},{radius},{diffraction},44100,{cold_ms},{},{},{},{},{repeats},{warmups},{revision},{edge_strength},{reverse}",
+                "{},{seed},{rays},{bounces},{radius},{diffraction},44100,{cold_ms},{},{},{},{},{repeats},{warmups},{revision},{reverse}",
                 fields[0],
                 timing::percentile(&times, 0.5),
                 timing::percentile(&times, 0.95),
@@ -377,6 +370,5 @@ fn edge(
         bisector_dir,
         edge_angle_radians: angle,
         diffraction_radius: radius,
-        base_strength: 1.0,
     }
 }

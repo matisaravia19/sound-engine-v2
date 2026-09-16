@@ -68,7 +68,7 @@ struct DiffractionEdge {
     vec3 start;
     float diffraction_radius;
     vec3 end;
-    float pressure_gain;
+    float _pad_end;
     vec3 edge_dir;
     float edge_length;
     vec3 bisector_dir;

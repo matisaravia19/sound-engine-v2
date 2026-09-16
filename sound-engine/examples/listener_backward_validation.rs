@@ -266,7 +266,6 @@ fn diffraction_scene(radius: Option<f32>) -> SceneDescription {
             bisector_dir: Vec3::Z,
             edge_angle_radians: std::f32::consts::TAU,
             diffraction_radius: radius,
-            base_strength: 0.65,
         });
     }
     scene
@@ -427,11 +426,11 @@ mod reflection_tests {
             start: vec3(3.0, 0.0, -20.0),
             end: vec3(3.0, 0.0, 20.0),
             bisector_dir: Vec3::Y,
-            edge_angle_radians: std::f32::consts::TAU,
+            // A flat (PI) wedge has an empty shadow domain. Its proxy still
+            // intercepts rays, isolating surface-path preservation without an
+            // artificial pressure multiplier.
+            edge_angle_radians: std::f32::consts::PI,
             diffraction_radius: 1.25,
-            // Positive strength keeps proxy traversal active, while negligible
-            // diffraction lets the complete surface IR be compared separately.
-            base_strength: 1.0e-20,
         });
         let with_proxy = trace(&gpu, scene, settings, query)?;
         let late_start = (9.0 * SAMPLE_RATE as f32 / 343.0) as usize;
@@ -520,7 +519,6 @@ mod reflection_tests {
                 bisector_dir: Vec3::Y,
                 edge_angle_radians: std::f32::consts::TAU,
                 diffraction_radius: 1.25,
-                base_strength: 0.85,
             });
             let with_proxy = trace(&gpu, scene.clone(), settings, query)?;
             let next_direct = pressure(&with_proxy, direct_sample);

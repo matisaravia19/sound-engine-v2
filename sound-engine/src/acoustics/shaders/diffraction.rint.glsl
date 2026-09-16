@@ -11,7 +11,7 @@ struct DiffractionEdge {
     vec3 start;
     float diffraction_radius;
     vec3 end;
-    float pressure_gain;
+    float _pad_end;
     vec3 edge_dir;
     float edge_length;
     vec3 bisector_dir;
@@ -35,10 +35,8 @@ hitAttributeEXT vec2 diffraction_hit;
 
 void main() {
     DiffractionEdge edge = diffraction_edges.edges[gl_PrimitiveID];
-    // A disabled edge must not intercept ordinary transport. Skipping the
-    // procedural intersection removes it from both next-event evaluation and
-    // continuation without requiring a special branch in ray generation.
-    if (edge.pressure_gain <= 0.0 || edge.diffraction_radius <= 0.0) {
+    // Empty GPU buffers use a zero-radius placeholder, which cannot intersect.
+    if (edge.diffraction_radius <= 0.0) {
         return;
     }
 

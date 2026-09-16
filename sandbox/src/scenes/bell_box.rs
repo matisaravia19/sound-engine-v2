@@ -46,7 +46,6 @@ pub fn scene(baffle: bool, diffraction: bool, absorption: f32, radius: f32) -> S
                 bisector_dir: -Vec3::X,
                 edge_angle_radians: std::f32::consts::TAU,
                 diffraction_radius: radius,
-                base_strength: 1.0,
             });
         }
     }

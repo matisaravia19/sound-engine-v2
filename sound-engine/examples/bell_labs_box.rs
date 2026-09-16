@@ -181,8 +181,8 @@ mod tests {
         for variant in 0..3 {
             let mut description = bell_box::scene(true, true, 1.0, 0.05);
             if variant == 1 {
-                // The edge record remains present, but traversal must ignore it.
-                description.diffraction_edges[0].base_strength = 0.0;
+                // Removing the edge disables both connection and continuation.
+                description.diffraction_edges.clear();
             } else if variant == 2 {
                 // A fully absorbing cross-wall blocks listener-to-edge traversal.
                 description.meshes[0].vertices.extend(geometry::quad_z(
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a Vulkan ray-tracing device and glslangValidator"]
-    fn two_edge_paths_carry_both_pressure_attenuations_and_source_scale() {
+    fn two_edge_paths_require_both_events_and_preserve_source_scale() {
         let _guard = GPU_TEST_LOCK.lock().unwrap();
         use glam::vec3;
         use sound_engine::scene::DiffractionEdge;
@@ -247,13 +247,14 @@ mod tests {
             },
         };
         let mut reference = Vec::<f32>::new();
-        for (index, strength, amplitude, bounces) in [
-            (0, 1.0, 1.0, 2),
-            (1, 0.25, 1.0, 2),
-            (2, 1.0, 0.5, 2),
-            (3, 1.0, 1.0, 1),
-            (4, 1.0, 0.0, 2),
-        ] {
+        let variants = [
+            (0, 1.0, 2), // Reference needs both edge events.
+            (1, 0.5, 2), // Source scaling must survive both events.
+            (2, 1.0, 1), // One event cannot reach the source.
+            (3, 0.0, 2), // Silent sources must not inject pressure.
+        ];
+
+        for (index, amplitude, bounces) in variants {
             // Alternating half-screens block both direct and single-edge paths.
             // The only possible contribution needs two local diffraction events.
             let mut description = geometry::scene_from_walls(
@@ -271,7 +272,6 @@ mod tests {
                     bisector_dir: bisector,
                     edge_angle_radians: std::f32::consts::TAU,
                     diffraction_radius: 0.3,
-                    base_strength: strength,
                 });
             }
             let mut scene = SceneManager::new();
@@ -297,17 +297,13 @@ mod tests {
             if index == 0 {
                 assert!(ir.energy > 0.0, "test must discover a two-edge path");
                 reference = samples;
-            } else if index >= 3 {
+            } else if index >= 2 {
                 assert!(
                     samples.iter().all(|&s| s == 0.0),
                     "insufficient events or a silent source must contribute nothing"
                 );
             } else {
-                let expected_gain = if index == 1 {
-                    0.25
-                } else {
-                    0.5
-                };
+                let expected_gain = 0.5;
                 let residual: f64 = samples
                     .iter()
                     .zip(&reference)

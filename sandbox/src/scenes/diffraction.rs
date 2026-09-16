@@ -195,7 +195,6 @@ pub(super) fn infer(triangles: &[[Vec3; 3]], air_points: &[Vec3]) -> Vec<Diffrac
             bisector_dir: bisector,
             edge_angle_radians: angle,
             diffraction_radius: 0.20_f32.min(length * 0.25),
-            base_strength: 1.0,
         });
     }
 

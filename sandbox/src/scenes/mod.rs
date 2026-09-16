@@ -322,7 +322,19 @@ fn read_fixture(path: &Path) -> Result<SceneDescription, String> {
                     .or_default()
                     .extend(p[1..].chunks_exact(3).map(|v| vec3(v[0], v[1], v[2])));
             }
-            "edge" if p.len() == 12 => {
+            "edge" if p.len() == 11 || p.len() == 12 => {
+                // Older fixtures include an energy scale as the last column.
+                // Keep disabled edges absent; positive scales no longer alter pressure.
+                if p.len() == 12 {
+                    if !(0.0..=1.0).contains(&p[11]) {
+                        return Err(format!("Invalid legacy edge scale: {line}"));
+                    }
+
+                    if p[11] == 0.0 {
+                        continue;
+                    }
+                }
+
                 scene.diffraction_edges.push(DiffractionEdge {
                     id: scene.diffraction_edges.len() as u32 + 1,
                     start: vec3(p[0], p[1], p[2]),
@@ -330,7 +342,6 @@ fn read_fixture(path: &Path) -> Result<SceneDescription, String> {
                     bisector_dir: vec3(p[6], p[7], p[8]),
                     edge_angle_radians: p[9],
                     diffraction_radius: p[10],
-                    base_strength: p[11],
                 });
             }
             _ => return Err(format!("Invalid scene row: {line}")),

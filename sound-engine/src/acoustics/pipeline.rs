@@ -582,11 +582,6 @@ fn diffraction_shadow_interval(incident_angle: f64, air_angle: f64) -> Option<(f
 }
 
 #[cfg(test)]
-fn diffraction_continuation_pressure_gain(base_strength: f32) -> f32 {
-    base_strength.clamp(0.0, 1.0).sqrt()
-}
-
-#[cfg(test)]
 fn material_energies(absorption: f32, scattering: f32, transmission: f32) -> [f32; 4] {
     let absorption = absorption.clamp(0.0, 1.0);
     let transmission = transmission.clamp(0.0, 1.0).min(1.0 - absorption);
@@ -767,21 +762,6 @@ mod tests {
                     }
                     assert!((measured / expected - 1.0).abs() < 1e-10);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn diffraction_continuation_never_amplifies_and_is_radius_independent() {
-        for strength in [0.0, 0.01, 0.25, 0.65, 1.0] {
-            let gain = diffraction_continuation_pressure_gain(strength);
-            assert!(gain.is_finite() && (0.0..=1.0).contains(&gain));
-            assert!((gain * gain - strength).abs() < 1.0e-6);
-
-            let mut multi_edge_gain = 1.0;
-            for _ in 0..16 {
-                multi_edge_gain *= gain;
-                assert!(multi_edge_gain <= 1.0);
             }
         }
     }

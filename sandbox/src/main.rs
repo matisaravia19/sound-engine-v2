@@ -64,8 +64,6 @@ struct SceneConfig {
     outer_walls_enabled: bool,
     /// Existing edge-strip width, retained when interactive geometry is rebuilt.
     diffraction_radius: f32,
-    /// Existing per-edge energy scale, retained across door and wall toggles.
-    diffraction_strength: f32,
 }
 
 struct PlaygroundState {
@@ -95,13 +93,12 @@ struct PlaygroundState {
 }
 
 impl PlaygroundState {
-    fn new(diffraction_radius: f32, diffraction_strength: f32) -> Self {
+    fn new(diffraction_radius: f32) -> Self {
         let scene_config = SceneConfig {
             roof_enabled: false,
             door_open: true,
             outer_walls_enabled: true,
             diffraction_radius,
-            diffraction_strength,
         };
 
         Self {
@@ -251,7 +248,6 @@ fn main() -> SoundResult<()> {
                 "--benchmark-root=",
                 "--scene=",
                 "--diffraction-radius=",
-                "--diffraction-strength=",
                 "--volume=",
                 "--rays=",
                 "--bounces=",
@@ -304,26 +300,12 @@ fn main() -> SoundResult<()> {
         .map_err(|_| {
             sound_engine::core::error::SoundError::invalid_argument("invalid --diffraction-radius")
         })?;
-    let diffraction_strength = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--diffraction-strength="))
-        .unwrap_or("0.85")
-        .parse::<f32>()
-        .map_err(|_| {
-            sound_engine::core::error::SoundError::invalid_argument(
-                "invalid --diffraction-strength",
-            )
-        })?;
-    if !diffraction_radius.is_finite()
-        || diffraction_radius <= 0.0
-        || !diffraction_strength.is_finite()
-        || !(0.0..=1.0).contains(&diffraction_strength)
-    {
+    if !diffraction_radius.is_finite() || diffraction_radius <= 0.0 {
         return Err(sound_engine::core::error::SoundError::invalid_argument(
-            "diffraction radius must be positive and finite; strength must be in [0, 1]",
+            "diffraction radius must be positive and finite",
         ));
     }
-    let mut state = PlaygroundState::new(diffraction_radius, diffraction_strength);
+    let mut state = PlaygroundState::new(diffraction_radius);
     state.catalog = catalog;
     if let Some(id) = args.iter().find_map(|a| a.strip_prefix("--scene=")) {
         state.scene_index = state
@@ -368,7 +350,7 @@ fn main() -> SoundResult<()> {
         })?;
     }
     println!(
-        "Playground model=ScalarGeometry, sample_rate={sample_rate}, rays={}, IR samples={}, max_path={}, playback_gain={playback_gain}, diffraction_radius={diffraction_radius}, diffraction_strength={diffraction_strength}, bounces={}",
+        "Playground model=ScalarGeometry, sample_rate={sample_rate}, rays={}, IR samples={}, max_path={}, playback_gain={playback_gain}, diffraction_radius={diffraction_radius}, bounces={}",
         config.acoustics.listener_ray_count,
         config.sound.ir_num_samples,
         config.acoustics.maximum_path_length,
@@ -1072,14 +1054,14 @@ fn build_scene(config: SceneConfig) -> PlaygroundScene {
         acoustic_mesh,
         blocks,
         diffraction_edges: if config.door_open {
-            doorway_diffraction_edges(config.diffraction_radius, config.diffraction_strength)
+            doorway_diffraction_edges(config.diffraction_radius)
         } else {
             Vec::new()
         },
     }
 }
 
-fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge> {
+fn doorway_diffraction_edges(radius: f32) -> Vec<DiffractionEdge> {
     let half_thickness = WALL_THICKNESS * 0.5;
     let diagonal = std::f32::consts::FRAC_1_SQRT_2;
     vec![
@@ -1090,7 +1072,6 @@ fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge>
             bisector_dir: vec3(-diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: radius,
-            base_strength: strength,
         },
         DiffractionEdge {
             id: 2,
@@ -1099,7 +1080,6 @@ fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge>
             bisector_dir: vec3(diagonal, 0.0, diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: radius,
-            base_strength: strength,
         },
         DiffractionEdge {
             id: 3,
@@ -1108,7 +1088,6 @@ fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge>
             bisector_dir: vec3(-diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: radius,
-            base_strength: strength,
         },
         DiffractionEdge {
             id: 4,
@@ -1117,7 +1096,6 @@ fn doorway_diffraction_edges(radius: f32, strength: f32) -> Vec<DiffractionEdge>
             bisector_dir: vec3(diagonal, 0.0, -diagonal),
             edge_angle_radians: 1.5 * std::f32::consts::PI,
             diffraction_radius: radius,
-            base_strength: strength,
         },
     ]
 }
