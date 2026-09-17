@@ -1,8 +1,8 @@
-// This shader is deliberately iterative. Each launch invocation owns one
-// listener-originated acoustic path and issues only depth-one traversal calls.
+// Transport helpers issue only depth-one traversal calls. The iterative path
+// loop and branch policy are defined in listener_path.glsl and ray generation.
 // Miss and closest-hit stages return compact data; they never continue a path
-// or write the IR. Keeping estimator state here makes branch probabilities,
-// direction PDFs, path lengths, and termination rules explicit in one place.
+// or write the IR. These helpers evaluate local responses and sampling weights;
+// the caller owns accumulated path state and termination.
 //
 // Direction convention:
 // - `direction` points away from the listener along the backward-traced path.
@@ -15,8 +15,8 @@
 //   source_amplitude * path_throughput * local_source_response * connection_measure
 //       * (4 * PI / listener_ray_count) / total_path_length
 //
-// `path_throughput` contains only sampled continuation responses. It never
-// includes spreading or the initial spherical sampling normalization.
+// `path_throughput` accumulates local continuation responses and proxy-density
+// corrections. It excludes spreading and initial spherical normalization.
 
 const float PI = 3.14159265358979323846;
 const float TWO_PI = 6.28318530717958647692;
@@ -954,8 +954,8 @@ void connectDiffractionToSource(
     float monte_carlo_normalization,
     vec3 listener_arrival_direction
 ) {
-    // The incident ray has already reached the physical edge and carries the
-    // edge attenuation. Source connection uses this same local ray state.
+    // Interaction preparation already reached the physical edge. The source
+    // connection evaluates its local response using that same path state.
     vec3 to_source = pc.source_position - edge_hit_position;
     float source_distance = length(to_source);
     if (!finiteFloat(source_distance) || source_distance <= DIRECTION_EPSILON) {
@@ -979,8 +979,8 @@ void connectDiffractionToSource(
     )) {
         return;
     }
-    // Offset along the connection rather than an arbitrary proxy normal. The
-    // proxy itself is invisible to this surface-only visibility trace.
+    // Visibility skips the immediate endpoint along the connection direction;
+    // the proxy itself is invisible to this surface-only trace.
     if (!traceVisibility(edge_hit_position, source_direction, source_distance)) {
         return;
     }
@@ -1001,15 +1001,10 @@ void connectDiffractionToSource(
 // and covers the entire valid shadow, including bends beyond 90 degrees.
 bool sampleDiffractionContinuation(
     DiffractionEdge edge,
-    vec3 plane_hit_position,
     vec3 incoming_direction,
-    float incoming_path_distance,
-    float hit_distance,
     inout uint random_state,
     inout float path_throughput,
-    out vec3 continuation_origin,
-    out vec3 continuation_direction,
-    out float continuation_path_distance
+    out vec3 continuation_direction
 ) {
     vec3 incoming_perpendicular;
     float perpendicular_length;
@@ -1052,18 +1047,9 @@ bool sampleDiffractionContinuation(
         return false;
     }
 
-    // Edge strength was already applied on arrival. The continuation remains
-    // on the Keller cone; source connections additionally evaluate axial spread.
+    // The continuation stays on the Keller cone; source connections additionally
+    // evaluate axial spread. Path geometry is updated by the shared tracing loop.
     path_throughput *= diffractionScalarResponse(edge, incoming_direction, continuation_direction) / pdf;
-    continuation_origin = plane_hit_position + continuation_direction * RAY_EPSILON;
-    continuation_path_distance = incoming_path_distance + hit_distance;
-    return finiteVector(continuation_origin)
-        && finiteVector(continuation_direction)
-        && finiteFloat(continuation_path_distance)
-        && finiteFloat(path_throughput);
+    return finiteFloat(path_throughput);
 }
-
-// -----------------------------------------------------------------------------
-// Per-listener-path state machine
-// -----------------------------------------------------------------------------
 
