@@ -853,7 +853,7 @@ float diffractionScalarResponse(
     float far_angle = max(incident_angle, outgoing_angle);
     float bend = far_angle - near_angle - PI;
     float exterior = edge.edge_angle_radians;
-    if (bend < -4.0 * DIFFRACTION_ANGULAR_FLOOR || far_angle > exterior + DIRECTION_EPSILON) {
+    if (far_angle > exterior + DIRECTION_EPSILON) {
         return 0.0;
     }
     float face_a = near_angle;
@@ -869,21 +869,21 @@ float diffractionScalarResponse(
     vec4 regularized_angle = angle;
     regularized_angle.x = sqrt(angle_squared.x
         + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
+    // Extend the same four-term approximation across the shadow boundary.
+    // The leading term changes sign; no separately windowed lit correction is
+    // added. This local approximation does not guarantee field continuity.
+    if (bend <= 0.0) {
+        regularized_angle.x = -regularized_angle.x;
+    }
     vec4 terms = regularized_angle * taper / (angle_squared + vec4(
         axial_mismatch * axial_mismatch
         + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR));
-    // A ray-discovered edge supplies a signed, localized correction on the
-    // illuminated side. Every contribution still passes physical visibility.
-    if (bend <= 0.0) {
-        float window = smoothstep(-4.0 * DIFFRACTION_ANGULAR_FLOOR, 0.0, bend);
-        return -terms.x * window / TWO_PI;
-    }
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
 
 // Evaluates the edge-to-source pressure, including radial normalization and
-// angular density. Connections include a signed near-lit transition; sampled
-// continuation remains restricted to the shadow domain.
+// angular density. Connections use the bilateral scalar response; sampled
+// continuation retains the original shadow domain to isolate this experiment.
 bool diffractionSourceResponse(
     DiffractionEdge edge,
     vec3 incoming_direction,
@@ -921,8 +921,8 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    // The scalar response decides support, including its small signed
-    // illuminated-side transition; continuation remains shadow-only.
+    // Connections evaluate both angular sides for the accepted incidence;
+    // continuation remains shadow-only in this response-only experiment.
 
     // Only the exterior half-strip is sampled: the other half lies in the
     // wedge. Normalize over [0, radius], not the inaccessible symmetric strip.
