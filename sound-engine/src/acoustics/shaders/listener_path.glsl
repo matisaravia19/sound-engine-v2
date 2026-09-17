@@ -25,7 +25,7 @@ struct ListenerPath {
     // Work budget used by surfaces and all proxies, including straight crossings.
     uint interactions;
     // Distinguishes the uniform launch from later scattering. Straight proxy
-    // crossings must not prevent updating its listener arrival direction.
+    // crossings must not disable its projection correction or arrival direction.
     bool has_scattered;
 };
 
@@ -103,6 +103,7 @@ bool prepareInteraction(
     }
 
     DiffractionEdge edge = diffraction_edges.edges[hit.data_id];
+    float proxy_leg_length = length(interaction.position - path.vertex);
     interaction.position = edge.start + hit.barycentrics.y * edge.edge_dir;
     interaction.distance_to_edge = hit.barycentrics.x;
 
@@ -121,8 +122,12 @@ bool prepareInteraction(
         return false;
     }
 
-    // Panning follows the first physical leg after relocation to the edge.
+    // Relocation changes dOmega/dA by (proxy distance / edge distance)^3.
+    // Only the initial uniform launch has this correction; later directional
+    // PDFs require their own treatment, unchanged by this reorganization.
     if (!path.has_scattered) {
+        float density_ratio = proxy_leg_length / edge_leg_length;
+        path.pressure_weight *= density_ratio * density_ratio * density_ratio;
         path.listener_direction = path.direction;
     }
 
@@ -211,7 +216,7 @@ bool sampleDiffractionEvent(inout ListenerPath path) {
 
 // Advance traversal without bending the acoustic path or inserting an IR
 // contribution at a transparent proxy. Retaining the physical vertex preserves
-// length, listener arrival direction and visibility across straight passes.
+// length, first-edge projection and visibility across multiple straight passes.
 bool passThroughProxy(inout ListenerPath path, HitPayload hit) {
     vec3 position = path.origin + path.direction * hit.t;
     path.origin = position + path.direction * RAY_EPSILON;
