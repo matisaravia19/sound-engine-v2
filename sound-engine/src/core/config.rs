@@ -68,7 +68,8 @@ impl OutputChannels {
 pub struct AcousticsConfig {
     /// Number of Monte Carlo paths launched from the listener for each query.
     pub listener_ray_count: u32,
-    /// Maximum number of surface or diffraction interactions per path.
+    /// Maximum surface hits and diffraction-proxy hits per path.
+    /// A proxy consumes one interaction whether passed straight or diffracted.
     pub max_bounces: u32,
     /// Maximum completed or continued path length in world meters.
     pub maximum_path_length: f32,

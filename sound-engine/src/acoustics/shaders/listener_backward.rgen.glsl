@@ -5,37 +5,11 @@
 #include "listener_transport.glsl"
 #include "listener_path.glsl"
 
-// Current branch policy: keep the ordinary suffix once, then the diffracted
-// suffix. Both use tracePathStep; the prefix, hit and RNG are preserved.
-// A future single-continuation estimator belongs at this policy boundary and
-// in its local response/PDF sampler, not in a second traversal implementation.
-void traceListenerBranches(ListenerPath path, float normalization) {
-    uint walk_mode = WALK_TO_FIRST_EDGE;
-    HitPayload pending_hit;
-    pending_hit.hit_type = HIT_NONE;
-
-    ListenerPath diffracted_path;
-    HitPayload diffraction_hit;
-
-    // One iterative loop processes every interaction, with at most one saved
-    // branch. Neither local samplers nor closest-hit shaders start another walk.
+// Every accepted surface or proxy consumes one interaction. The local step
+// selects one continuation; no suffix is saved or traced as a second branch.
+void traceListenerPath(ListenerPath path, float normalization) {
     while (true) {
-        uint outcome = tracePathStep(path, walk_mode, normalization, pending_hit);
-        if (outcome == PATH_CONTINUED) {
-            continue;
-        }
-
-        if (outcome == PATH_REACHED_FIRST_EDGE) {
-            // Preserve the prefix and RNG before the ordinary walk changes them.
-            diffracted_path = path;
-            diffraction_hit = pending_hit;
-            pending_hit.hit_type = HIT_NONE;
-            walk_mode = WALK_SURFACES_ONLY;
-        } else if (walk_mode == WALK_SURFACES_ONLY) {
-            path = diffracted_path;
-            pending_hit = diffraction_hit;
-            walk_mode = WALK_WITH_DIFFRACTION;
-        } else {
+        if (!tracePathStep(path, normalization)) {
             return;
         }
     }
@@ -72,8 +46,9 @@ void main() {
     path.random_state = hashState(ray_index ^ pc.sampling_seed ^ 0xa511e9b3u);
     path.interactions = 0u;
     path.diffraction_events = 0u;
+    path.has_scattered = false;
 
     // Keep the estimator's spherical measure separate from local path weights.
     float normalization = 4.0 * PI / float(pc.listener_ray_count);
-    traceListenerBranches(path, normalization);
+    traceListenerPath(path, normalization);
 }

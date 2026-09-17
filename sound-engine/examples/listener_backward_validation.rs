@@ -406,10 +406,10 @@ mod reflection_tests {
                 vec3(x, -20.0, 20.0),
             ]);
         }
-        // A wider reflection lobe gives the small ray budget useful coverage
-        // of the second bounce; this test checks preservation, not its level.
+        // A wider lobe and larger launch budget resolve the second reflection
+        // despite the extra variance from sampling the straight proxy event.
         let mut scene = wall_scene(vertices, 0.36, 0.15);
-        let mut settings = config(4_096, 2);
+        let mut settings = config(262_144, 2);
         settings.sound.ir_num_samples = 2_048;
         settings.acoustics.maximum_path_length = 12.0;
         let query = AcousticQuery {
@@ -430,8 +430,12 @@ mod reflection_tests {
             // intercepts rays, isolating surface-path preservation without an
             // artificial pressure multiplier.
             edge_angle_radians: std::f32::consts::PI,
-            diffraction_radius: 1.25,
+            // Cover every clear two-wall path; a narrow proxy legitimately
+            // leaves rough paths above the strip with their original budget.
+            diffraction_radius: 40.0,
         });
+        let exhausted = trace(&gpu, scene.clone(), settings, query)?;
+        settings.acoustics.max_bounces = 3;
         let with_proxy = trace(&gpu, scene, settings, query)?;
         let late_start = (9.0 * SAMPLE_RATE as f32 / 343.0) as usize;
         require(
@@ -440,13 +444,27 @@ mod reflection_tests {
                 .any(|s| s.left.abs() > 1.0e-5),
             "fixture must contain a two-reflection arrival beyond the proxy",
         )?;
-        for (a, b) in reference.samples.iter().zip(&with_proxy.samples) {
-            require(
-                (a.left - b.left).abs() < 1.0e-6 && (a.right - b.right).abs() < 1.0e-6,
-                "proxy must preserve the surface prefix, RNG and later reflections",
-            )?;
-        }
-        Ok(())
+        require(
+            exhausted.samples[late_start..]
+                .iter()
+                .all(|s| s.left.abs() < 1.0e-6),
+            "a straight crossing must consume the second interaction before the next wall",
+        )?;
+        let late_pressure =
+            |ir: &IrSnapshot| -> f32 { ir.samples[late_start..].iter().map(|s| s.left).sum() };
+        eprintln!(
+            "two reflections: reference={}, budget2={}, budget3={}",
+            late_pressure(&reference),
+            late_pressure(&exhausted),
+            late_pressure(&with_proxy)
+        );
+        // Roulette preserves the mean pressure, not identical samples or RNG.
+        require_relative_close(
+            late_pressure(&reference),
+            late_pressure(&with_proxy),
+            0.05,
+            "an extra interaction must recover the later reflection within sampling tolerance",
+        )
     }
 
     #[test]
@@ -492,9 +510,33 @@ mod reflection_tests {
             }
             result
         };
+        // Binary path selection adds variance to the narrow mirror lobe. Check
+        // its mean over a fixed seed set, retaining the 3% pressure tolerance.
+        // This is a convergence control, not the real-time benchmark budget.
+        let mean_arrivals = |scene: &SceneDescription,
+                             mut settings: EngineConfig|
+         -> SoundResult<([f32; 2], [f32; 2])> {
+            let mut direct = [0.0; 2];
+            let mut reflected = [0.0; 2];
+            for seed in 7..15 {
+                settings.acoustics.sampling_seed = seed;
+                let ir = trace(&gpu, scene.clone(), settings, query)?;
+                let sample_direct = pressure(&ir, direct_sample);
+                let sample_reflected = pressure(&ir, reflected_sample);
+                eprintln!(
+                    "proxies={} seed={seed} reflected={sample_reflected:?}",
+                    scene.diffraction_edges.len()
+                );
+                for channel in 0..2 {
+                    direct[channel] += sample_direct[channel] / 8.0;
+                    reflected[channel] += sample_reflected[channel] / 8.0;
+                }
+            }
+            Ok((direct, reflected))
+        };
         for channels in [OutputChannels::Mono, OutputChannels::Stereo] {
             scene.diffraction_edges.clear();
-            let mut settings = config(262_144, 1);
+            let mut settings = config(8_388_608, 1);
             // Both arrivals fit in 43 ms; no long IR or playback queue is needed.
             settings.sound.ir_num_samples = 2_048;
             settings.acoustics.maximum_path_length = 10.0;
@@ -520,9 +562,15 @@ mod reflection_tests {
                 edge_angle_radians: std::f32::consts::TAU,
                 diffraction_radius: 1.25,
             });
-            let with_proxy = trace(&gpu, scene.clone(), settings, query)?;
-            let next_direct = pressure(&with_proxy, direct_sample);
-            let next_reflected = pressure(&with_proxy, reflected_sample);
+            let exhausted = trace(&gpu, scene.clone(), settings, query)?;
+            let lost_reflected = pressure(&exhausted, reflected_sample);
+            require(
+                lost_reflected[0].hypot(lost_reflected[1]) < 1.0e-6,
+                "a proxy must consume the sole interaction before the mirror wall",
+            )?;
+
+            settings.acoustics.max_bounces = 2;
+            let (next_direct, next_reflected) = mean_arrivals(&scene, settings)?;
             eprintln!(
                 "{channels:?}: direct {direct:?} -> {next_direct:?}, reflected {reflected:?} -> {next_reflected:?}"
             );
@@ -531,9 +579,39 @@ mod reflection_tests {
                     (direct[channel] - next_direct[channel]).abs() < 1e-5,
                     "edge discovery must preserve unobstructed direct pressure",
                 )?;
-                require(
-                    (reflected[channel] - next_reflected[channel]).abs() < 1e-5,
-                    "edge discovery must preserve unobstructed reflected pressure",
+                require_relative_close(
+                    reflected[channel],
+                    next_reflected[channel],
+                    0.03,
+                    "a sampled straight crossing must preserve reflected pressure in expectation",
+                )?;
+            }
+
+            // This second, flat proxy has no diffraction response. It isolates
+            // repeated straight selection, its inverse weight and cost budget.
+            scene.diffraction_edges.push(DiffractionEdge {
+                id: 2,
+                start: vec3(1.5, 0.0, -20.0),
+                end: vec3(1.5, 0.0, 20.0),
+                bisector_dir: Vec3::Y,
+                edge_angle_radians: std::f32::consts::PI,
+                diffraction_radius: 1.25,
+            });
+            let exhausted = trace(&gpu, scene.clone(), settings, query)?;
+            let lost_reflected = pressure(&exhausted, reflected_sample);
+            require(
+                lost_reflected[0].hypot(lost_reflected[1]) < 1.0e-6,
+                "two straight proxies must exhaust two interactions before the wall",
+            )?;
+            settings.acoustics.max_bounces = 3;
+            let (_, recovered) = mean_arrivals(&scene, settings)?;
+            eprintln!("{channels:?}: two proxies, budget3 reflected {recovered:?}");
+            for channel in 0..2 {
+                require_relative_close(
+                    reflected[channel],
+                    recovered[channel],
+                    0.03,
+                    "both straight choices must compensate their sampling probability",
                 )?;
             }
         }

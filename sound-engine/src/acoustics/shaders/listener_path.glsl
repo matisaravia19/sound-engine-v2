@@ -1,28 +1,16 @@
-// Iterative path mechanics shared by ordinary and diffracted walks.
-// The branch policy lives in ray generation; local responses and direction
-// sampling live in listener_transport.glsl. No helper recursively traces paths.
+// One iterative path, with a sampled straight/diffracted choice at every proxy.
+// Local responses and angular sampling live in listener_transport.glsl.
+// A straight proxy crossing costs work but is not an acoustic scattering vertex.
 
 // Two edge events bound the current higher-order approximation. They also
 // consume the common interaction budget, just like surface hits.
 const uint MAX_DIFFRACTION_EVENTS = 2u;
 
-// Yield before processing the first proxy so the caller can preserve the
-// ordinary suffix. Resuming the cached hit neither retraces nor counts it twice.
-const uint WALK_TO_FIRST_EDGE = 0u;
+// Importance-sampling probability, not a physical energy split. Both event
+// weights include the reciprocal probability, so neither contribution is halved.
+const float DIFFRACTION_EVENT_PROBABILITY = 0.5;
 
-// Ordinary suffixes must not fork again or receive diffraction contributions.
-const uint WALK_SURFACES_ONLY = 1u;
-
-// Resume the diffracted branch, subject to the common and edge-event budgets.
-const uint WALK_WITH_DIFFRACTION = 2u;
-
-// Step outcomes separate path termination from the first-proxy policy decision.
-const uint PATH_FINISHED = 0u;
-const uint PATH_CONTINUED = 1u;
-const uint PATH_REACHED_FIRST_EDGE = 2u;
-
-// One listener-originated path. Copying it preserves the pressure prefix and
-// RNG stream when the current policy keeps both ordinary and diffracted walks.
+// One listener-originated path; no deferred branch or recursive path state.
 struct ListenerPath {
     // Epsilon-offset origin used only for traversal.
     vec3 origin;
@@ -38,10 +26,13 @@ struct ListenerPath {
     float distance;
     // Independent continuation stream; source connections do not consume it.
     uint random_state;
-    // Number of accepted vertices, including both surfaces and edges.
+    // Work budget used by surfaces and all proxies, including straight crossings.
     uint interactions;
     // Number of accepted edge events within the common interaction budget.
     uint diffraction_events;
+    // Distinguishes the uniform launch from later scattering. Straight proxy
+    // crossings must not disable its projection correction or arrival direction.
+    bool has_scattered;
 };
 
 // A prepared physical interaction. A proxy hit is relocated before this record
@@ -66,15 +57,12 @@ bool canTracePath(ListenerPath path) {
         && abs(path.pressure_weight) >= pc.minimum_throughput
         && finiteVector(path.origin)
         && finiteVector(path.direction)
-        && path.distance < pc.maximum_path_length;
+        && path.distance + length(path.origin - path.vertex) < pc.maximum_path_length;
 }
 
 // Visibility has its own surface-only payload. This query discovers the next
 // interaction and never connects to the source or continues from closest-hit.
-bool traceNextInteraction(ListenerPath path, uint walk_mode, out HitPayload hit) {
-    bool surfaces_only = walk_mode == WALK_SURFACES_ONLY
-        || path.diffraction_events >= MAX_DIFFRACTION_EVENTS;
-
+bool traceNextInteraction(ListenerPath path, out HitPayload hit) {
     hit_payload.hit_type = HIT_NONE;
     hit_payload.t = 0.0;
 
@@ -82,14 +70,14 @@ bool traceNextInteraction(ListenerPath path, uint walk_mode, out HitPayload hit)
     traceRayEXT(
         tlas,
         gl_RayFlagsOpaqueEXT,
-        surfaces_only ? SURFACE_GEOMETRY_MASK : CONTINUATION_GEOMETRY_MASK,
+        CONTINUATION_GEOMETRY_MASK,
         0,
         0,
         0,
         path.origin,
         RAY_EPSILON,
         path.direction,
-        max(pc.maximum_path_length - path.distance, RAY_EPSILON),
+        max(pc.maximum_path_length - path.distance - length(path.origin - path.vertex), RAY_EPSILON),
         0
     );
 
@@ -143,7 +131,7 @@ bool prepareInteraction(
     // Relocation changes dOmega/dA by (proxy distance / edge distance)^3.
     // Only the initial uniform launch has this correction; later directional
     // PDFs require their own treatment, unchanged by this reorganization.
-    if (path.interactions == 0u) {
+    if (!path.has_scattered) {
         float density_ratio = proxy_leg_length / edge_leg_length;
         path.pressure_weight *= density_ratio * density_ratio * density_ratio;
         path.listener_direction = path.direction;
@@ -221,41 +209,61 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
     return finiteVector(path.origin) && finiteFloat(path.distance);
 }
 
-// One interaction of the shared loop. A nonempty pending_hit resumes a cached
-// proxy. Yielding at the first edge leaves the prefix and vertex count unchanged.
-uint tracePathStep(
-    inout ListenerPath path,
-    uint walk_mode,
-    float normalization,
-    inout HitPayload pending_hit
-) {
+// Select one entire edge event, including its source connection. Applying the
+// inverse probability before that connection weights both local and future
+// contributions. At the edge-order limit, straight passage has probability one.
+bool sampleDiffractionEvent(inout ListenerPath path) {
+    if (path.diffraction_events >= MAX_DIFFRACTION_EVENTS) {
+        return false;
+    }
+
+    bool diffract = randomFloat(path.random_state) < DIFFRACTION_EVENT_PROBABILITY;
+    float probability = diffract
+        ? DIFFRACTION_EVENT_PROBABILITY
+        : 1.0 - DIFFRACTION_EVENT_PROBABILITY;
+    path.pressure_weight /= probability;
+    return diffract;
+}
+
+// Advance traversal without bending the acoustic path or inserting an IR
+// contribution at a transparent proxy. Retaining the physical vertex preserves
+// length, first-edge projection and visibility across multiple straight passes.
+bool passThroughProxy(inout ListenerPath path, HitPayload hit) {
+    vec3 position = path.origin + path.direction * hit.t;
+    path.origin = position + path.direction * RAY_EPSILON;
+    return canTracePath(path);
+}
+
+// Each accepted hit consumes the shared cost budget before either edge choice.
+// The final scattering vertex still connects to the source; a final straight
+// crossing cannot reach a later surface. Every continuation sees both masks.
+bool tracePathStep(inout ListenerPath path, float normalization) {
     if (!canTracePath(path)) {
-        return PATH_FINISHED;
+        return false;
     }
 
-    if (pending_hit.hit_type == HIT_NONE
-        && !traceNextInteraction(path, walk_mode, pending_hit)) {
-        return PATH_FINISHED;
+    HitPayload hit;
+    if (!traceNextInteraction(path, hit)) {
+        return false;
     }
 
-    if (walk_mode == WALK_TO_FIRST_EDGE && pending_hit.hit_type == HIT_DIFFRACTION_EDGE) {
-        return PATH_REACHED_FIRST_EDGE;
+    ++path.interactions;
+
+    if (hit.hit_type == HIT_DIFFRACTION_EDGE && !sampleDiffractionEvent(path)) {
+        return passThroughProxy(path, hit);
     }
 
     PathInteraction interaction;
-    if (!prepareInteraction(path, pending_hit, interaction)) {
-        return PATH_FINISHED;
+    if (!prepareInteraction(path, hit, interaction)) {
+        return false;
     }
 
-    pending_hit.hit_type = HIT_NONE;
     connectInteractionToSource(path, interaction, normalization);
+    path.has_scattered = true;
 
-    // The final allowed vertex still connects to the source. Only its
-    // continuation is suppressed when the common budget is exhausted.
-    ++path.interactions;
     if (path.interactions >= pc.max_bounces || !continuePath(path, interaction)) {
-        return PATH_FINISHED;
+        return false;
     }
 
-    return PATH_CONTINUED;
+    return true;
 }
