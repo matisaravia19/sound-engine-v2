@@ -70,6 +70,7 @@ pub struct AcousticsConfig {
     pub listener_ray_count: u32,
     /// Maximum surface hits and diffraction-proxy hits per path.
     /// A proxy consumes one interaction whether passed straight or diffracted.
+    /// Diffraction has no separate event limit.
     pub max_bounces: u32,
     /// Maximum completed or continued path length in world meters.
     pub maximum_path_length: f32,

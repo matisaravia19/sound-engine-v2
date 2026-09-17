@@ -45,7 +45,6 @@ void main() {
     path.distance = 0.0;
     path.random_state = hashState(ray_index ^ pc.sampling_seed ^ 0xa511e9b3u);
     path.interactions = 0u;
-    path.diffraction_events = 0u;
     path.has_scattered = false;
 
     // Keep the estimator's spherical measure separate from local path weights.

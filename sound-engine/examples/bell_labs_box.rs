@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a Vulkan ray-tracing device and glslangValidator"]
-    fn two_edge_paths_require_both_events_and_preserve_source_scale() {
+    fn multiple_edge_paths_require_each_event_and_preserve_source_scale() {
         let _guard = GPU_TEST_LOCK.lock().unwrap();
         use glam::vec3;
         use sound_engine::scene::DiffractionEdge;
@@ -246,74 +246,107 @@ mod tests {
                 block_size: 1024,
             },
         };
-        let mut reference = Vec::<f32>::new();
-        let variants = [
-            (0, 1.0, 2), // Reference needs both edge events.
-            (1, 0.5, 2), // Source scaling must survive both events.
-            (2, 1.0, 1), // One event cannot reach the source.
-            (3, 0.0, 2), // Silent sources must not inject pressure.
-        ];
+        for edge_count in [2, 3] {
+            let mut reference = Vec::<f32>::new();
+            let variants = [
+                (0, 1.0, edge_count),     // Reference needs every edge event.
+                (1, 0.5, edge_count),     // Source scaling must survive all events.
+                (2, 1.0, edge_count - 1), // A missing event cannot reach the source.
+                (3, 0.0, edge_count),     // Silent sources must not inject pressure.
+            ];
 
-        for (index, amplitude, bounces) in variants {
-            // Alternating half-screens block both direct and single-edge paths.
-            // The only possible contribution needs two local diffraction events.
-            let mut description = geometry::scene_from_walls(
-                vec![
-                    geometry::quad_z(3.0, -0.5, 40.0, -40.0, 40.0),
-                    geometry::quad_z(7.0, -40.0, 0.5, -40.0, 40.0),
-                ],
-                1.0,
-            );
-            for (id, x, z, bisector) in [(1, -0.5, 3.0, -Vec3::X), (2, 0.5, 7.0, Vec3::X)] {
-                description.diffraction_edges.push(DiffractionEdge {
-                    id,
-                    start: vec3(x, -40.0, z),
-                    end: vec3(x, 40.0, z),
-                    bisector_dir: bisector,
-                    edge_angle_radians: std::f32::consts::TAU,
-                    diffraction_radius: 0.3,
-                });
-            }
-            let mut scene = SceneManager::new();
-            scene.load(description).unwrap();
-            config.acoustics.max_bounces = bounces;
-            let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
-            let ir = pipeline
-                .build_ir(
-                    &gpu,
-                    &mut scene,
-                    AcousticQuery {
-                        query_id: index,
-                        source_position: vec3(-0.5, 0.0, 10.0),
-                        listener_position: vec3(0.5, 0.0, 0.0),
-                        listener_forward: Vec3::Z,
-                        listener_up: Vec3::Y,
-                        source_amplitude: amplitude,
-                    },
-                )
-                .unwrap();
-            let samples = ir.samples.iter().map(|s| s.left).collect::<Vec<_>>();
-            assert!(samples.iter().all(|s| s.is_finite()));
-            if index == 0 {
-                assert!(ir.energy > 0.0, "test must discover a two-edge path");
-                reference = samples;
-            } else if index >= 2 {
-                assert!(
-                    samples.iter().all(|&s| s == 0.0),
-                    "insufficient events or a silent source must contribute nothing"
+            for (index, amplitude, bounces) in variants {
+                // Alternating absorbing half-screens require every edge in order.
+                // The three-screen case detects an independent two-edge cutoff.
+                let walls = (0..edge_count)
+                    .map(|edge_index| {
+                        let z = 3.0 + 4.0 * edge_index as f32;
+                        let (left, right) = if edge_index % 2 == 0 {
+                            (-0.5, 40.0)
+                        } else {
+                            (-40.0, 0.5)
+                        };
+                        geometry::quad_z(z, left, right, -40.0, 40.0)
+                    })
+                    .collect();
+                let mut description = geometry::scene_from_walls(walls, 1.0);
+                for edge_index in 0..edge_count {
+                    let x = if edge_index % 2 == 0 {
+                        -0.5
+                    } else {
+                        0.5
+                    };
+                    let z = 3.0 + 4.0 * edge_index as f32;
+                    let bisector = if edge_index % 2 == 0 {
+                        -Vec3::X
+                    } else {
+                        Vec3::X
+                    };
+                    description.diffraction_edges.push(DiffractionEdge {
+                        id: edge_index + 1,
+                        start: vec3(x, -40.0, z),
+                        end: vec3(x, 40.0, z),
+                        bisector_dir: bisector,
+                        edge_angle_radians: std::f32::consts::TAU,
+                        diffraction_radius: 0.3,
+                    });
+                }
+                let mut scene = SceneManager::new();
+                scene.load(description).unwrap();
+                config.acoustics.max_bounces = bounces;
+                let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
+                let ir = pipeline
+                    .build_ir(
+                        &gpu,
+                        &mut scene,
+                        AcousticQuery {
+                            query_id: index,
+                            source_position: vec3(
+                                if edge_count % 2 == 0 {
+                                    -0.5
+                                } else {
+                                    0.5
+                                },
+                                0.0,
+                                4.0 * edge_count as f32 + 2.0,
+                            ),
+                            listener_position: vec3(0.5, 0.0, 0.0),
+                            listener_forward: Vec3::Z,
+                            listener_up: Vec3::Y,
+                            source_amplitude: amplitude,
+                        },
+                    )
+                    .unwrap();
+                let samples = ir.samples.iter().map(|s| s.left).collect::<Vec<_>>();
+                assert!(samples.iter().all(|s| s.is_finite()));
+                eprintln!(
+                    "edges={edge_count} budget={bounces} amplitude={amplitude} energy={}",
+                    ir.energy
                 );
-            } else {
-                let expected_gain = 0.5;
-                let residual: f64 = samples
-                    .iter()
-                    .zip(&reference)
-                    .map(|(&s, &r)| (s as f64 - expected_gain * r as f64).powi(2))
-                    .sum();
-                let norm: f64 = reference.iter().map(|&s| (s as f64).powi(2)).sum();
-                assert!(
-                    (residual / norm).sqrt() < 1e-4,
-                    "ray pressure inheritance failed in variant {index}"
-                );
+                if index == 0 {
+                    assert!(
+                        ir.energy > 0.0,
+                        "test must discover a {edge_count}-edge path"
+                    );
+                    reference = samples;
+                } else if index >= 2 {
+                    assert!(
+                        samples.iter().all(|&s| s == 0.0),
+                        "insufficient events or a silent source must contribute nothing"
+                    );
+                } else {
+                    let expected_gain = 0.5;
+                    let residual: f64 = samples
+                        .iter()
+                        .zip(&reference)
+                        .map(|(&s, &r)| (s as f64 - expected_gain * r as f64).powi(2))
+                        .sum();
+                    let norm: f64 = reference.iter().map(|&s| (s as f64).powi(2)).sum();
+                    assert!(
+                        (residual / norm).sqrt() < 1e-4,
+                        "ray pressure inheritance failed in variant {index}"
+                    );
+                }
             }
         }
     }

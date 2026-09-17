@@ -2,10 +2,6 @@
 // Local responses and angular sampling live in listener_transport.glsl.
 // A straight proxy crossing costs work but is not an acoustic scattering vertex.
 
-// Two edge events bound the current higher-order approximation. They also
-// consume the common interaction budget, just like surface hits.
-const uint MAX_DIFFRACTION_EVENTS = 2u;
-
 // Importance-sampling probability, not a physical energy split. Both event
 // weights include the reciprocal probability, so neither contribution is halved.
 const float DIFFRACTION_EVENT_PROBABILITY = 0.5;
@@ -28,8 +24,6 @@ struct ListenerPath {
     uint random_state;
     // Work budget used by surfaces and all proxies, including straight crossings.
     uint interactions;
-    // Number of accepted edge events within the common interaction budget.
-    uint diffraction_events;
     // Distinguishes the uniform launch from later scattering. Straight proxy
     // crossings must not disable its projection correction or arrival direction.
     bool has_scattered;
@@ -137,7 +131,6 @@ bool prepareInteraction(
         path.listener_direction = path.direction;
     }
 
-    ++path.diffraction_events;
     return true;
 }
 
@@ -211,12 +204,8 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
 
 // Select one entire edge event, including its source connection. Applying the
 // inverse probability before that connection weights both local and future
-// contributions. At the edge-order limit, straight passage has probability one.
+// contributions. Every proxy uses the same choice within the shared budget.
 bool sampleDiffractionEvent(inout ListenerPath path) {
-    if (path.diffraction_events >= MAX_DIFFRACTION_EVENTS) {
-        return false;
-    }
-
     bool diffract = randomFloat(path.random_state) < DIFFRACTION_EVENT_PROBABILITY;
     float probability = diffract
         ? DIFFRACTION_EVENT_PROBABILITY
