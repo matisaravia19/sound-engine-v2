@@ -469,7 +469,7 @@ mod reflection_tests {
 
     #[test]
     #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
-    fn edge_proxy_preserves_unobstructed_direct_and_reflected_pressure() -> SoundResult<()> {
+    fn transparent_proxy_preserves_unobstructed_direct_and_reflected_pressure() -> SoundResult<()> {
         let gpu = VkBackend::new()?;
         // The screen is below y=0. The direct and x=0 mirror paths lie at y=1.
         let mut scene = wall_scene(
@@ -559,7 +559,9 @@ mod reflection_tests {
                 start: vec3(1.0, 0.0, -20.0),
                 end: vec3(1.0, 0.0, 20.0),
                 bisector_dir: Vec3::Y,
-                edge_angle_radians: std::f32::consts::TAU,
+                // A flat proxy isolates straight-path weighting and interaction
+                // cost. A real edge can add pressure in the mirror's time window.
+                edge_angle_radians: std::f32::consts::PI,
                 diffraction_radius: 1.25,
             });
             let exhausted = trace(&gpu, scene.clone(), settings, query)?;
