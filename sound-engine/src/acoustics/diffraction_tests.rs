@@ -297,3 +297,152 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
 
     Ok(())
 }
+
+fn screen_with_two_mirrors(radius: f32, blocked: bool) -> SceneDescription {
+    let mut scene = screen_with_listener_side_floor(radius, true);
+    let ceiling = [
+        vec3(0.0, 3.0, -40.0),
+        vec3(40.0, 3.0, -40.0),
+        vec3(40.0, 3.0, 40.0),
+        vec3(0.0, 3.0, 40.0),
+    ];
+    let blocker = [
+        vec3(2.5, 1.99, -40.0),
+        vec3(2.5, 2.015, -40.0),
+        vec3(2.5, 2.015, 40.0),
+        vec3(2.5, 1.99, 40.0),
+    ];
+
+    for (index, corners) in [ceiling, blocker].into_iter().enumerate() {
+        if index == 1 && !blocked {
+            continue;
+        }
+
+        let id = index as u32 + 3;
+        let [a, b, c, d] = corners;
+        scene.meshes.push(MeshAsset {
+            id,
+            vertices: vec![a, b, c, a, c, d],
+            indices: Vec::new(),
+            opaque: true,
+        });
+        scene.objects.push(SceneObject {
+            id,
+            mesh_id: id,
+            material_id: if index == 0 {
+                2
+            } else {
+                1
+            },
+            transform: Mat4::IDENTITY,
+            active: true,
+        });
+    }
+
+    scene
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn initial_mirror_prefix_preserves_measure_and_occlusion() -> SoundResult<()> {
+    let gpu = VkBackend::new()?;
+    let radii = [0.3, 0.9];
+    let mut pressures = [[0.0_f64; 2]; 7];
+
+    for seed in [51, 52, 53, 54] {
+        // Modes 0/1 are physical scenes. The remaining modes independently
+        // unfold each allowed prefix of zero, one or two ideal reflections.
+        for mode in 0..7 {
+            let physical = mode < 2;
+            let config = EngineConfig {
+                sound: SoundConfig {
+                    output_channels: OutputChannels::Mono,
+                    sample_rate: 48_000,
+                    ir_num_samples: 32_768,
+                },
+                acoustics: AcousticsConfig {
+                    listener_ray_count: 8_388_608,
+                    max_bounces: if physical {
+                        3
+                    } else {
+                        1
+                    },
+                    maximum_path_length: 200.0,
+                    minimum_throughput: 0.0,
+                    sampling_seed: seed,
+                },
+                cache: IrCacheConfig::default(),
+                binaural: BinauralConfig::default(),
+                auralization: AuralizationConfig {
+                    block_size: 1024,
+                },
+            };
+            let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+
+            for (index, radius) in radii.into_iter().enumerate() {
+                for enabled in [true, false] {
+                    let mut scene = if physical {
+                        screen_with_two_mirrors(radius, mode == 1)
+                    } else {
+                        screen_with_listener_side_floor(radius, false)
+                    };
+                    if !enabled {
+                        scene.diffraction_edges.clear();
+                    }
+
+                    let mut manager = SceneManager::new();
+                    manager.load(scene)?;
+                    let listener_y = if physical {
+                        0.8
+                    } else {
+                        [0.8, -0.8, 5.2, 6.8, -5.2][mode - 2]
+                    };
+                    let query = AcousticQuery {
+                        query_id: index as u32,
+                        source_position: vec3(-2.0, 0.5, 0.0),
+                        listener_position: vec3(3.0, listener_y, 0.0),
+                        listener_forward: -Vec3::X,
+                        listener_up: Vec3::Y,
+                        source_amplitude: 1.0,
+                    };
+                    let ir = pipeline.build_ir(&gpu, &mut manager, query)?;
+                    assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));
+                    let pressure = ir
+                        .samples
+                        .iter()
+                        .map(|sample| sample.left as f64)
+                        .sum::<f64>();
+
+                    // Subtract the same scene without its edge to isolate
+                    // diffraction from direct and mirror-only connections.
+                    pressures[mode][index] += if enabled {
+                        pressure
+                    } else {
+                        -pressure
+                    } / 4.0;
+                }
+            }
+        }
+    }
+
+    for (index, radius) in radii.into_iter().enumerate() {
+        for blocked in [false, true] {
+            // The blocker intersects only the corrected ceiling-floor-edge
+            // prefix, at x=2.5, y=2. Its virtual listener is y=-5.2.
+            let last = if blocked {
+                6
+            } else {
+                7
+            };
+            let reference: f64 = pressures[2..last].iter().map(|row| row[index]).sum();
+            let actual = pressures[usize::from(blocked)][index];
+            let relative_error = actual / reference - 1.0;
+            println!(
+                "mirror prefix radius={radius} blocked={blocked} pressure={actual} reference={reference} error={relative_error}"
+            );
+            assert!(relative_error.abs() < 0.02);
+        }
+    }
+
+    Ok(())
+}

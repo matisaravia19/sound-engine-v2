@@ -50,9 +50,9 @@ void main() {
     path.pending_diffraction = false;
     path.pending_edge_id = 0u;
     path.pending_incoming_direction = vec3(0.0);
-    path.initial_mirror = false;
-    path.mirror_normal = vec3(0.0);
-    path.mirror_material = 0u;
+    path.initial_mirror_count = 0u;
+    path.mirror_listener = pc.listener_position;
+    path.mirror_pressure_gain = 1.0;
 
     // Keep the estimator's spherical measure separate from local path weights.
     float normalization = 4.0 * PI / float(pc.listener_ray_count);
