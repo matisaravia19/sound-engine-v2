@@ -904,9 +904,16 @@ float diffractionCaptureWeight(
     }
 
     // Only the exterior half-strip is accessible, hence normalization on [0,R].
+    // Keep projection distances comparable to the incident path length.
+    // The triangular kernel still integrates to one for every edge point;
+    // this changes radial sampling support, not the edge response or gain.
+    float capture_radius = min(edge.diffraction_radius, incoming_distance);
+    if (capture_radius <= RAY_EPSILON) {
+        return 0.0;
+    }
     float radial_kernel = 2.0
-        * clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
-        / edge.diffraction_radius;
+        * clamp(1.0 - distance_to_edge / capture_radius, 0.0, 1.0)
+        / capture_radius;
     return radial_kernel * incoming_distance / projected_incidence;
 }
 
@@ -1016,14 +1023,12 @@ void connectDiffractionToSource(
 // spread matches the scalar response's dimensionality; a delta Keller cone
 // cannot represent the edge-line integral after another proxy relocation.
 // Full proposal support lets the next physical endpoint determine validity.
-bool sampleDiffractionContinuation(
+bool sampleDiffractionBaseProposal(
     DiffractionEdge edge,
     vec3 incoming_direction,
-    float distance_to_edge,
-    float incident_distance,
     inout uint random_state,
-    inout float path_throughput,
-    out vec3 continuation_direction
+    out vec3 continuation_direction,
+    out float pdf
 ) {
     vec3 incoming_perpendicular;
     float perpendicular_length;
@@ -1057,7 +1062,7 @@ bool sampleDiffractionContinuation(
         angle = TWO_PI * (azimuth_sample - shadow_probability) / (1.0 - shadow_probability) - PI;
     }
 
-    float pdf = (1.0 - shadow_probability) / TWO_PI;
+    pdf = (1.0 - shadow_probability) / TWO_PI;
     if (angle >= angle_start && angle <= angle_end) {
         pdf += shadow_probability / valid_angle_measure;
     }
@@ -1096,16 +1101,91 @@ bool sampleDiffractionContinuation(
         return false;
     }
 
-    float capture_weight = diffractionCaptureWeight(
-        edge, incoming_direction, distance_to_edge, incident_distance
-    );
-    if (capture_weight <= 0.0) {
+    return true;
+}
+
+// Evaluate the original full-support solid-angle proposal at any direction.
+float diffractionProposalPdf(DiffractionEdge edge, vec3 incoming, vec3 outgoing) {
+    vec3 incoming_radial;
+    vec3 parallel_component;
+    float incoming_radius;
+    float measure;
+    float start;
+    float end;
+    if (!diffractionShadowDomain(edge, incoming, incoming_radial, incoming_radius,
+                                 parallel_component, measure, start, end)) {
+        return 0.0;
+    }
+    float outgoing_axial = dot(outgoing, edge.edge_dir);
+    vec3 outgoing_radial = outgoing - outgoing_axial * edge.edge_dir;
+    float outgoing_radius = length(outgoing_radial);
+    // The base proposal has support arbitrarily close to the edge axis.
+    // A geometric angular cutoff here would omit part of the mixture PDF.
+    if (outgoing_radius <= 0.0) {
+        return 0.0;
+    }
+    outgoing_radial /= outgoing_radius;
+    float angle = atan(dot(edge.edge_dir, cross(incoming_radial, outgoing_radial)),
+                       dot(incoming_radial, outgoing_radial));
+    float azimuth_pdf = 0.1 / TWO_PI;
+    if (angle >= start && angle <= end) {
+        azimuth_pdf += 0.9 / measure;
+    }
+    float width = sqrt(angle * angle + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
+    float offset = outgoing_axial / outgoing_radius - dot(incoming, edge.edge_dir) / incoming_radius;
+    float slope_pdf = 0.5 / PI * (width / (width * width + offset * offset)
+                                + 1.0 / (1.0 + offset * offset));
+    return azimuth_pdf * slope_pdf / (outgoing_radius * outgoing_radius * outgoing_radius);
+}
+
+// Select a proposal, not an extra acoustic path. Both lobes contribute to the
+// PDF even when only one of them generated the direction.
+bool sampleDiffractionContinuation(
+    DiffractionEdge edge,
+    vec3 edge_position,
+    vec3 incoming_direction,
+    float distance_to_edge,
+    float incident_distance,
+    inout uint random_state,
+    inout float path_throughput,
+    out vec3 continuation_direction
+) {
+    vec3 incoming_radial;
+    vec3 parallel_component;
+    float radius;
+    float measure;
+    float start;
+    float end;
+    if (!diffractionShadowDomain(edge, incoming_direction, incoming_radial, radius,
+                                 parallel_component, measure, start, end)) {
         return false;
     }
-
-    // The next hit may move from proxy to axis. Evaluate the angular response
-    // only after that relocation, while retaining this actual sampling PDF.
+    // These proposal constants control variance, not acoustic gain. Retain
+    // full base support, and fall back to it when the source has no direction.
+    const float guide_exponent = 32.0;
+    vec3 guide_axis = normalizeOrZero(pc.source_position - edge_position);
+    float guide_probability = dot(guide_axis, guide_axis) > 0.0 ? 0.8 : 0.0;
+    float base_pdf;
+    float guide_pdf;
+    if (randomFloat(random_state) < guide_probability) {
+        if (!samplePowerCosine(guide_axis, guide_exponent, random_state,
+                              continuation_direction, guide_pdf)) {
+            return false;
+        }
+        base_pdf = diffractionProposalPdf(edge, incoming_direction, continuation_direction);
+    } else {
+        if (!sampleDiffractionBaseProposal(edge, incoming_direction, random_state,
+                                          continuation_direction, base_pdf)) {
+            return false;
+        }
+        guide_pdf = powerCosinePdf(dot(guide_axis, continuation_direction), guide_exponent);
+    }
+    float pdf = (1.0 - guide_probability) * base_pdf + guide_probability * guide_pdf;
+    float capture_weight = diffractionCaptureWeight(edge, incoming_direction,
+                                                    distance_to_edge, incident_distance);
+    if (!finiteFloat(pdf) || pdf <= 0.0 || capture_weight <= 0.0) {
+        return false;
+    }
     path_throughput *= capture_weight / pdf;
     return finiteFloat(path_throughput);
 }
-

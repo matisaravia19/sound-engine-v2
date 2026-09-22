@@ -268,6 +268,7 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
     } else {
         sampled = sampleDiffractionContinuation(
             diffraction_edges.edges[interaction.data_id],
+            interaction.position,
             path.direction,
             interaction.distance_to_edge,
             path.distance - path.spreading_origin_distance,
@@ -314,6 +315,10 @@ bool sampleDiffractionEvent(inout ListenerPath path, HitPayload hit) {
     // Thin proxies have few hits but a large capture weight. Spend more of
     // those hits on diffraction, retaining both events with bounded variance.
     // This is proposal importance only: each chosen event divides by its PDF.
+    if (capture_weight <= 0.0) {
+        return false;
+    }
+
     float diffraction_probability = clamp(capture_weight / (1.0 + capture_weight), 0.05, 0.95);
     bool diffract = randomFloat(path.random_state) < diffraction_probability;
     float probability = diffract ? diffraction_probability : 1.0 - diffraction_probability;

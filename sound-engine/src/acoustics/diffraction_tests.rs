@@ -78,8 +78,11 @@ fn consecutive_edges_preserve_proxy_measure_and_scene_scale() -> SoundResult<()>
         (1.0, 6.0, 3.0),
         (1.0, 3.0, 0.3),
         (1.0, 3.0, 6.0),
+        // Much wider than the separation: projection used to amplify rare
+        // proxy hits far from either physical edge.
+        (1.0, 40.0, 40.0),
     ];
-    let mut pressures = [0.0_f64; 6];
+    let mut pressures = [0.0_f64; 7];
 
     for seed in [31, 32, 33, 34] {
         let config = EngineConfig {
