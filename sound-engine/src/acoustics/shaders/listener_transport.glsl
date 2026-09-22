@@ -768,8 +768,8 @@ bool sampleSurfaceContinuation(
 // -----------------------------------------------------------------------------
 
 vec3 rotateAroundAxis(vec3 value, vec3 axis, float angle) {
-    // Rodrigues' formula rotates only the edge cross-section component. The
-    // component parallel to the edge is conserved by diffraction continuation.
+    // Rotate the radial frame around the edge. The continuation sampler
+    // selects the axial component separately.
     float sine = sin(angle);
     float cosine = cos(angle);
     return value * cosine + cross(axis, value) * sine + axis * dot(axis, value) * (1.0 - cosine);
