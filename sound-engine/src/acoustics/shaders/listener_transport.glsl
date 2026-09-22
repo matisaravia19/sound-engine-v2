@@ -222,7 +222,7 @@ bool samplePowerCosine(
     float u0 = randomFloat(random_state);
     float u1 = randomFloat(random_state);
     // Invert the marginal CDF of the power-cosine distribution. Clamping u0
-    // avoids an exact grazing azimuth_sample whose PDF may underflow for sharp lobes.
+    // avoids an exact grazing sample whose PDF may underflow for sharp lobes.
     float cosine = pow(max(u0, DIRECTION_EPSILON), 1.0 / (exponent + 1.0));
     float sine = sqrt(max(0.0, 1.0 - cosine * cosine));
     float phi = TWO_PI * u1;
@@ -486,7 +486,7 @@ void depositDirectPressure(
     depositStablePressure(total_path_length, amplitude, listener_arrival_direction, false);
 }
 
-// Converts geometric length to a fractional azimuth_sample position and applies the
+// Converts geometric length to a fractional sample position and applies the
 // output mode's listener-space spatialization before IR deposition.
 void depositPressure(
     float total_path_length,
@@ -572,7 +572,7 @@ void evaluateDirectPath() {
         return;
     }
     // The direct path is evaluated exactly once by invocation zero and is not a
-    // listener-sphere Monte Carlo azimuth_sample, so it does not receive the 4*PI/N term.
+    // listener-sphere Monte Carlo sample, so it does not receive the 4*PI/N term.
     float spreading = 1.0 / max(distance_to_source, RAY_EPSILON);
     depositDirectPressure(distance_to_source, pc.source_amplitude * spreading, source_direction);
 }
@@ -703,8 +703,10 @@ bool sampleSurfaceContinuation(
     vec3 normal,
     inout uint random_state,
     inout float path_throughput,
-    out vec3 continuation_direction
+    out vec3 continuation_direction,
+    out bool mirror_delta
 ) {
+    mirror_delta = false;
     // Branch selection operates in the pressure domain. Choosing one branch,
     // rather than emitting all three, keeps one continuation ray per invocation.
     float weights[3] = float[3](material.specular_pressure, material.rough_pressure, material.transmission_pressure);
@@ -729,6 +731,7 @@ bool sampleSurfaceContinuation(
     // lobe regularizes point-source sampling; it must not scatter the ray again
     // at every smooth bounce. Only the discrete branch probability remains.
     if (branch != 1u && material.roughness <= 0.0) {
+        mirror_delta = branch == 0u;
         continuation_direction = axis;
         path_throughput *= weights[branch] / branch_probability;
         return finiteFloat(path_throughput) && finiteVector(continuation_direction);

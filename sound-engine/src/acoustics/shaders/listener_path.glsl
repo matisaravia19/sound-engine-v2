@@ -32,6 +32,12 @@ struct ListenerPath {
     uint pending_edge_id;
     // Incident direction at that edge, before sampling its outgoing proposal.
     vec3 pending_incoming_direction;
+    // One initial ideal reflection can be relocated with the first edge.
+    // Finite lobes and longer reflection prefixes retain their approximation.
+    bool initial_mirror;
+    // Plane and material of that ray-discovered reflection, while valid.
+    vec3 mirror_normal;
+    uint mirror_material;
 };
 
 // A prepared physical interaction. A proxy hit is relocated before this record
@@ -84,6 +90,62 @@ bool traceNextInteraction(ListenerPath path, out HitPayload hit) {
     return hit.hit_type != HIT_NONE && finiteFloat(hit.t) && hit.t >= 0.0;
 }
 
+// Moving P to E also moves the stationary point on a preceding mirror. Trace
+// the corrected first leg against real solids: the remembered plane alone
+// cannot establish that its finite surface exists or remains unobstructed.
+bool relocateInitialMirror(inout ListenerPath path, vec3 edge_position, vec3 proxy_position) {
+    vec3 listener = pc.listener_position;
+    vec3 normal = path.mirror_normal;
+    vec3 virtual_listener = listener - 2.0 * dot(listener - path.vertex, normal) * normal;
+    vec3 unfolded_leg = edge_position - virtual_listener;
+    float denominator = dot(unfolded_leg, normal);
+    if (abs(denominator) <= DIRECTION_EPSILON) {
+        return false;
+    }
+
+    float fraction = dot(path.vertex - virtual_listener, normal) / denominator;
+    if (fraction <= 0.0 || fraction >= 1.0) {
+        return false;
+    }
+
+    vec3 mirror_position = virtual_listener + fraction * unfolded_leg;
+    vec3 first_leg = mirror_position - listener;
+    float first_length = length(first_leg);
+    if (first_length <= RAY_EPSILON) {
+        return false;
+    }
+
+    vec3 first_direction = first_leg / first_length;
+    hit_payload.hit_type = HIT_NONE;
+    traceRayEXT(
+        tlas,
+        gl_RayFlagsOpaqueEXT,
+        SURFACE_GEOMETRY_MASK,
+        0, 0, 0,
+        listener,
+        RAY_EPSILON,
+        first_direction,
+        first_length + 4.0 * RAY_EPSILON,
+        0
+    );
+
+    if (hit_payload.hit_type != HIT_SURFACE
+        || hit_payload.data_id != path.mirror_material
+        || abs(hit_payload.t - first_length) > 4.0 * RAY_EPSILON
+        || abs(dot(normalizeOrZero(hit_payload.world_normal), normal)) < 0.9999) {
+        return false;
+    }
+
+    // Reflection preserves solid angle. Its projection density is measured
+    // from the unfolded listener, rather than from the old reflection point.
+    float density_ratio = length(proxy_position - virtual_listener) / length(unfolded_leg);
+    path.pressure_weight *= density_ratio * density_ratio * density_ratio;
+    path.vertex = mirror_position;
+    path.distance = first_length;
+    path.listener_direction = first_direction;
+    return true;
+}
+
 // Relocation belongs to interaction preparation, not to the continuation
 // sampler. Both the source connection and the next ray use the same edge point.
 bool prepareInteraction(
@@ -108,9 +170,14 @@ bool prepareInteraction(
     }
 
     DiffractionEdge edge = diffraction_edges.edges[hit.data_id];
+    vec3 proxy_position = interaction.position;
     float proxy_leg_length = length(interaction.position - path.vertex);
     interaction.position = edge.start + hit.barycentrics.y * edge.edge_dir;
     interaction.distance_to_edge = hit.barycentrics.x;
+
+    if (path.initial_mirror && !relocateInitialMirror(path, interaction.position, proxy_position)) {
+        return false;
+    }
 
     vec3 edge_leg = interaction.position - path.vertex;
     float edge_leg_length = length(edge_leg);
@@ -184,14 +251,20 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
     bool sampled;
 
     if (interaction.type == HIT_SURFACE) {
+        bool mirror_delta;
         sampled = sampleSurfaceContinuation(
             scene_materials.materials[interaction.data_id],
             path.direction,
             interaction.normal,
             path.random_state,
             path.pressure_weight,
-            direction
+            direction,
+            mirror_delta
         );
+        path.initial_mirror = mirror_delta
+            && all(equal(path.vertex, pc.listener_position));
+        path.mirror_normal = interaction.normal;
+        path.mirror_material = interaction.data_id;
     } else {
         sampled = sampleDiffractionContinuation(
             diffraction_edges.edges[interaction.data_id],
@@ -209,6 +282,7 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
     }
 
     if (interaction.type == HIT_DIFFRACTION_EDGE) {
+        path.initial_mirror = false;
         path.spreading_origin_distance = path.distance;
         path.pending_diffraction = true;
         path.pending_edge_id = interaction.data_id;

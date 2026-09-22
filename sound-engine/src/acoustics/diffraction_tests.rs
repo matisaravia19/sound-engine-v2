@@ -1,4 +1,4 @@
-//! Hardware regression for the proxy measure on consecutive edge interactions.
+//! Hardware regressions for the proxy measure on edge and mirror/edge paths.
 
 use super::{AcousticPipeline, AcousticQuery};
 use crate::core::config::*;
@@ -141,5 +141,156 @@ fn consecutive_edges_preserve_proxy_measure_and_scene_scale() -> SoundResult<()>
     }
 
     assert!((2.0 * pressures[1] / pressures[0] - 1.0).abs() < 0.005);
+    Ok(())
+}
+
+fn screen_with_listener_side_floor(radius: f32, floor: bool) -> SceneDescription {
+    let bottom = if floor {
+        0.0
+    } else {
+        -2.0
+    };
+    let a = vec3(0.0, bottom, -40.0);
+    let b = vec3(0.0, 2.0, -40.0);
+    let c = vec3(0.0, 2.0, 40.0);
+    let d = vec3(0.0, bottom, 40.0);
+    let mut scene = SceneDescription {
+        meshes: vec![MeshAsset {
+            id: 1,
+            vertices: vec![a, b, c, a, c, d],
+            indices: Vec::new(),
+            opaque: true,
+        }],
+        materials: vec![Material {
+            id: 1,
+            absorption_bands: vec![1.0],
+            scattering: 0.0,
+            roughness: 0.0,
+            transmission: None,
+        }],
+        objects: vec![SceneObject {
+            id: 1,
+            mesh_id: 1,
+            material_id: 1,
+            transform: Mat4::IDENTITY,
+            active: true,
+        }],
+        diffraction_edges: vec![DiffractionEdge {
+            id: 1,
+            start: b,
+            end: c,
+            bisector_dir: Vec3::Y,
+            edge_angle_radians: std::f32::consts::TAU,
+            diffraction_radius: radius,
+        }],
+    };
+
+    if floor {
+        // Restrict the mirror to the listener side. A source connection from
+        // this floor is blocked by the screen, excluding edge-then-floor paths.
+        let a = vec3(0.0, 0.0, -40.0);
+        let b = vec3(40.0, 0.0, -40.0);
+        let c = vec3(40.0, 0.0, 40.0);
+        let d = vec3(0.0, 0.0, 40.0);
+        scene.meshes.push(MeshAsset {
+            id: 2,
+            vertices: vec![a, b, c, a, c, d],
+            indices: Vec::new(),
+            opaque: true,
+        });
+        scene.materials.push(Material {
+            id: 2,
+            absorption_bands: vec![0.0],
+            scattering: 0.0,
+            roughness: 0.0,
+            transmission: None,
+        });
+        scene.objects.push(SceneObject {
+            id: 2,
+            mesh_id: 2,
+            material_id: 2,
+            transform: Mat4::IDENTITY,
+            active: true,
+        });
+    }
+
+    scene
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
+    let gpu = VkBackend::new()?;
+    let radii = [0.1, 1.0, 6.0];
+    let mut pressures = [[0.0_f64; 3]; 3];
+
+    for seed in [41, 42, 43, 44] {
+        for mode in 0..3 {
+            let floor = mode == 0;
+            let config = EngineConfig {
+                sound: SoundConfig {
+                    output_channels: OutputChannels::Mono,
+                    sample_rate: 48_000,
+                    ir_num_samples: 32_768,
+                },
+                acoustics: AcousticsConfig {
+                    listener_ray_count: 4_194_304,
+                    max_bounces: if floor {
+                        2
+                    } else {
+                        1
+                    },
+                    maximum_path_length: 200.0,
+                    minimum_throughput: 0.0,
+                    sampling_seed: seed,
+                },
+                cache: IrCacheConfig::default(),
+                binaural: BinauralConfig::default(),
+                auralization: AuralizationConfig {
+                    block_size: 1024,
+                },
+            };
+            let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+
+            for (index, radius) in radii.into_iter().enumerate() {
+                let mut manager = SceneManager::new();
+                manager.load(screen_with_listener_side_floor(radius, floor))?;
+                let query = AcousticQuery {
+                    query_id: index as u32,
+                    source_position: vec3(-2.0, 0.5, 0.0),
+                    listener_position: vec3(
+                        3.0,
+                        if mode == 2 {
+                            -0.8
+                        } else {
+                            0.8
+                        },
+                        0.0,
+                    ),
+                    listener_forward: -Vec3::X,
+                    listener_up: Vec3::Y,
+                    source_amplitude: 1.0,
+                };
+                let ir = pipeline.build_ir(&gpu, &mut manager, query)?;
+                assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));
+                pressures[mode][index] += ir
+                    .samples
+                    .iter()
+                    .map(|sample| sample.left as f64)
+                    .sum::<f64>()
+                    / 4.0;
+            }
+        }
+    }
+
+    for (index, radius) in radii.into_iter().enumerate() {
+        // Unfolding is only the test oracle. The physical scene must discover
+        // and validate its real mirror using rays before reaching the edge.
+        let reference = pressures[1][index] + pressures[2][index];
+        let relative_error = pressures[0][index] / reference - 1.0;
+        println!("mirror/edge proxy={radius} relative error={relative_error}");
+        assert!(relative_error.abs() < 0.01);
+    }
+
     Ok(())
 }
