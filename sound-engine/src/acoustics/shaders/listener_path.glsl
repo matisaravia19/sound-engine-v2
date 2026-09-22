@@ -2,10 +2,6 @@
 // Local responses and angular sampling live in listener_transport.glsl.
 // A straight proxy crossing costs work but is not an acoustic scattering vertex.
 
-// Importance-sampling probability, not a physical energy split. Both event
-// weights include the reciprocal probability, so neither contribution is halved.
-const float DIFFRACTION_EVENT_PROBABILITY = 0.5;
-
 // One listener-originated path; no deferred branch or recursive path state.
 struct ListenerPath {
     // Epsilon-offset origin used only for traversal.
@@ -20,13 +16,22 @@ struct ListenerPath {
     float pressure_weight;
     // Acoustic length from the listener to the current accepted vertex.
     float distance;
+    // Accumulated length at the last diffracting vertex; zero at launch.
+    // Subsequent spreading uses distance from this vertex, not from the listener.
+    float spreading_origin_distance;
     // Independent continuation stream; source connections do not consume it.
     uint random_state;
     // Work budget used by surfaces and all proxies, including straight crossings.
     uint interactions;
-    // Distinguishes the uniform launch from later scattering. Straight proxy
-    // crossings must not disable its projection correction or arrival direction.
+    // Distinguishes the uniform launch for projection and arrival direction.
+    // Straight proxy crossings leave the physical scattering state unchanged.
     bool has_scattered;
+    // The previous diffraction response awaits the next physical vertex.
+    bool pending_diffraction;
+    // Edge defining the pending response; valid only while pending_diffraction.
+    uint pending_edge_id;
+    // Incident direction at that edge, before sampling its outgoing proposal.
+    vec3 pending_incoming_direction;
 };
 
 // A prepared physical interaction. A proxy hit is relocated before this record
@@ -48,7 +53,7 @@ struct PathInteraction {
 bool canTracePath(ListenerPath path) {
     return path.interactions < pc.max_bounces
         && finiteFloat(path.pressure_weight)
-        && abs(path.pressure_weight) >= pc.minimum_throughput
+        && (path.pending_diffraction || abs(path.pressure_weight) >= pc.minimum_throughput)
         && finiteVector(path.origin)
         && finiteVector(path.direction)
         && path.distance + length(path.origin - path.vertex) < pc.maximum_path_length;
@@ -122,12 +127,16 @@ bool prepareInteraction(
         return false;
     }
 
-    // Relocation changes dOmega/dA by (proxy distance / edge distance)^3.
-    // Only the initial uniform launch has this correction; later directional
-    // PDFs require their own treatment, unchanged by this reorganization.
-    if (!path.has_scattered) {
+    // Convert proxy area density to the relocated edge direction. For a
+    // continued diffraction, its PDF remains at P and its response is evaluated
+    // at E below. Surface delta/finite-lobe mixtures keep their approximation;
+    // this solid-angle correction does not apply to an ideal mirror delta.
+    if (!path.has_scattered || path.pending_diffraction) {
         float density_ratio = proxy_leg_length / edge_leg_length;
         path.pressure_weight *= density_ratio * density_ratio * density_ratio;
+    }
+
+    if (!path.has_scattered) {
         path.listener_direction = path.direction;
     }
 
@@ -148,6 +157,7 @@ void connectInteractionToSource(
             interaction.normal,
             scene_materials.materials[interaction.data_id],
             path.distance,
+            path.spreading_origin_distance,
             path.pressure_weight,
             normalization,
             path.listener_direction
@@ -159,6 +169,7 @@ void connectInteractionToSource(
             path.direction,
             interaction.distance_to_edge,
             path.distance,
+            path.spreading_origin_distance,
             path.pressure_weight,
             normalization,
             path.listener_direction
@@ -185,6 +196,8 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
         sampled = sampleDiffractionContinuation(
             diffraction_edges.edges[interaction.data_id],
             path.direction,
+            interaction.distance_to_edge,
+            path.distance - path.spreading_origin_distance,
             path.random_state,
             path.pressure_weight,
             direction
@@ -193,6 +206,13 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
 
     if (!sampled) {
         return false;
+    }
+
+    if (interaction.type == HIT_DIFFRACTION_EDGE) {
+        path.spreading_origin_distance = path.distance;
+        path.pending_diffraction = true;
+        path.pending_edge_id = interaction.data_id;
+        path.pending_incoming_direction = path.direction;
     }
 
     path.origin = interaction.position + direction * RAY_EPSILON;
@@ -205,11 +225,24 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
 // Select one entire edge event, including its source connection. Applying the
 // inverse probability before that connection weights both local and future
 // contributions. Every proxy uses the same choice within the shared budget.
-bool sampleDiffractionEvent(inout ListenerPath path) {
-    bool diffract = randomFloat(path.random_state) < DIFFRACTION_EVENT_PROBABILITY;
-    float probability = diffract
-        ? DIFFRACTION_EVENT_PROBABILITY
-        : 1.0 - DIFFRACTION_EVENT_PROBABILITY;
+bool sampleDiffractionEvent(inout ListenerPath path, HitPayload hit) {
+    DiffractionEdge edge = diffraction_edges.edges[hit.data_id];
+    vec3 edge_position = edge.start + hit.barycentrics.y * edge.edge_dir;
+    vec3 incident_leg = edge_position - path.vertex;
+    float incident_length = length(incident_leg);
+    float capture_weight = diffractionCaptureWeight(
+        edge,
+        normalizeOrZero(incident_leg),
+        hit.barycentrics.x,
+        path.distance - path.spreading_origin_distance + incident_length
+    );
+
+    // Thin proxies have few hits but a large capture weight. Spend more of
+    // those hits on diffraction, retaining both events with bounded variance.
+    // This is proposal importance only: each chosen event divides by its PDF.
+    float diffraction_probability = clamp(capture_weight / (1.0 + capture_weight), 0.05, 0.95);
+    bool diffract = randomFloat(path.random_state) < diffraction_probability;
+    float probability = diffract ? diffraction_probability : 1.0 - diffraction_probability;
     path.pressure_weight /= probability;
     return diffract;
 }
@@ -238,13 +271,26 @@ bool tracePathStep(inout ListenerPath path, float normalization) {
 
     ++path.interactions;
 
-    if (hit.hit_type == HIT_DIFFRACTION_EDGE && !sampleDiffractionEvent(path)) {
+    if (hit.hit_type == HIT_DIFFRACTION_EDGE && !sampleDiffractionEvent(path, hit)) {
         return passThroughProxy(path, hit);
     }
 
     PathInteraction interaction;
     if (!prepareInteraction(path, hit, interaction)) {
         return false;
+    }
+
+    // Evaluate the response along the realized physical leg, after P becomes E.
+    // Straight proxy crossings preserve the pending response and its proposal.
+    if (path.pending_diffraction) {
+        vec3 outgoing = normalizeOrZero(interaction.position - path.vertex);
+        path.pressure_weight *= diffractionScalarResponse(
+            diffraction_edges.edges[path.pending_edge_id],
+            path.pending_incoming_direction,
+            outgoing,
+            true
+        );
+        path.pending_diffraction = false;
     }
 
     connectInteractionToSource(path, interaction, normalization);

@@ -43,9 +43,13 @@ void main() {
     path.listener_direction = direction;
     path.pressure_weight = 1.0;
     path.distance = 0.0;
+    path.spreading_origin_distance = 0.0;
     path.random_state = hashState(ray_index ^ pc.sampling_seed ^ 0xa511e9b3u);
     path.interactions = 0u;
     path.has_scattered = false;
+    path.pending_diffraction = false;
+    path.pending_edge_id = 0u;
+    path.pending_incoming_direction = vec3(0.0);
 
     // Keep the estimator's spherical measure separate from local path weights.
     float normalization = 4.0 * PI / float(pc.listener_ray_count);

@@ -10,13 +10,12 @@
 // - `source_direction` points from the current vertex toward the source.
 // - `initial_direction` is retained for listener-space panning even after bends.
 //
-// For every non-direct completed path the pressure estimator is:
-//
-//   source_amplitude * path_throughput * local_source_response * connection_measure
-//       * (4 * PI / listener_ray_count) / total_path_length
-//
-// `path_throughput` accumulates local continuation responses and proxy-density
-// corrections. It excludes spreading and initial spherical normalization.
+// Each edge carries its dimensionless incident capture measure K*a/cos(i).
+// Subsequent spreading starts at that edge: an edge-source connection uses 1/b,
+// while a surface connection uses the unfolded suffix length. Acoustic delay
+// always uses the full path. Paths without diffraction keep their original
+// 1/total_length spreading. Initial spherical normalization is applied once.
+// Mixed surface/edge paths retain the finite-lobe surface approximation.
 
 const float PI = 3.14159265358979323846;
 const float TWO_PI = 6.28318530717958647692;
@@ -223,7 +222,7 @@ bool samplePowerCosine(
     float u0 = randomFloat(random_state);
     float u1 = randomFloat(random_state);
     // Invert the marginal CDF of the power-cosine distribution. Clamping u0
-    // avoids an exact grazing sample whose PDF may underflow for sharp lobes.
+    // avoids an exact grazing azimuth_sample whose PDF may underflow for sharp lobes.
     float cosine = pow(max(u0, DIRECTION_EPSILON), 1.0 / (exponent + 1.0));
     float sine = sqrt(max(0.0, 1.0 - cosine * cosine));
     float phi = TWO_PI * u1;
@@ -487,7 +486,7 @@ void depositDirectPressure(
     depositStablePressure(total_path_length, amplitude, listener_arrival_direction, false);
 }
 
-// Converts geometric length to a fractional sample position and applies the
+// Converts geometric length to a fractional azimuth_sample position and applies the
 // output mode's listener-space spatialization before IR deposition.
 void depositPressure(
     float total_path_length,
@@ -573,7 +572,7 @@ void evaluateDirectPath() {
         return;
     }
     // The direct path is evaluated exactly once by invocation zero and is not a
-    // listener-sphere Monte Carlo sample, so it does not receive the 4*PI/N term.
+    // listener-sphere Monte Carlo azimuth_sample, so it does not receive the 4*PI/N term.
     float spreading = 1.0 / max(distance_to_source, RAY_EPSILON);
     depositDirectPressure(distance_to_source, pc.source_amplitude * spreading, source_direction);
 }
@@ -635,6 +634,7 @@ void connectSurfaceToSource(
     vec3 normal,
     SceneMaterial material,
     float traveled_distance,
+    float spreading_origin_distance,
     float path_throughput,
     float monte_carlo_normalization,
     vec3 listener_arrival_direction
@@ -653,8 +653,11 @@ void connectSurfaceToSource(
     }
 
     vec3 source_direction = to_source / source_distance;
+    // Reflection footprint and spreading use the same post-edge origin.
+    // With no previous edge this is the complete listener-to-source length.
+    float connection_path_length = total_path_length - spreading_origin_distance;
     float local_response = surfaceSourceResponse(material, incoming_direction, normal, source_direction,
-                                                 source_distance / total_path_length);
+                                                 source_distance / max(connection_path_length, RAY_EPSILON));
     if (local_response <= 0.0) {
         return;
     }
@@ -665,9 +668,9 @@ void connectSurfaceToSource(
         return;
     }
 
-    // Apply spreading once to the complete listener-to-vertex-to-source path.
-    // path_throughput excludes the initial spherical Monte Carlo normalization.
-    float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
+    // The previous edge already carries the incident capture measure.
+    // Apply suffix spreading once; the acoustic delay still uses the full path.
+    float spreading = 1.0 / max(total_path_length - spreading_origin_distance, RAY_EPSILON);
     // A normalized reflection lobe is a density in source-connection solid
     // angle, while this estimator integrates uniformly sampled listener solid
     // angle. For a planar first reflection, perturbing the listener direction
@@ -677,7 +680,7 @@ void connectSurfaceToSource(
     // therefore must not acquire the numerical lobe's spread at earlier bounces.
     // Finite lobes, rough paths and edge/surface mixtures remain approximations;
     // this is not an accumulated differential for those paths.
-    float angular_scale = total_path_length / max(source_distance, RAY_EPSILON);
+    float angular_scale = connection_path_length / max(source_distance, RAY_EPSILON);
     float source_connection_jacobian = angular_scale * angular_scale;
     float amplitude = pc.source_amplitude
         * path_throughput
@@ -828,7 +831,8 @@ const float DIFFRACTION_ANGULAR_FLOOR = 0.02;
 float diffractionScalarResponse(
     DiffractionEdge edge,
     vec3 incoming_direction,
-    vec3 outgoing_direction
+    vec3 outgoing_direction,
+    bool shadow_only
 ) {
     float incoming_axial = dot(incoming_direction, edge.edge_dir);
     float outgoing_axial = dot(outgoing_direction, edge.edge_dir);
@@ -853,7 +857,7 @@ float diffractionScalarResponse(
     float far_angle = max(incident_angle, outgoing_angle);
     float bend = far_angle - near_angle - PI;
     float exterior = edge.edge_angle_radians;
-    if (far_angle > exterior + DIRECTION_EPSILON) {
+    if (far_angle > exterior + DIRECTION_EPSILON || (shadow_only && bend <= 0.0)) {
         return 0.0;
     }
     float face_a = near_angle;
@@ -881,16 +885,36 @@ float diffractionScalarResponse(
     return dot(terms, vec4(1.0)) / TWO_PI;
 }
 
-// Evaluates the edge-to-source pressure, including radial normalization and
-// angular density. Connections use the bilateral scalar response; sampled
-// continuation retains the original shadow domain to isolate this experiment.
+// Maps a normalized proxy strip to edge-line measure. K has units 1/m,
+// so K*a/cos(i) is dimensionless. With the projected solid-angle density,
+// this leaves incident 1/a spreading per unit edge length. Both estimators
+// must use this same factor; inserting K alone would break scene-scale laws.
+float diffractionCaptureWeight(
+    DiffractionEdge edge,
+    vec3 incoming_direction,
+    float distance_to_edge,
+    float incoming_distance
+) {
+    float projected_incidence = abs(dot(incoming_direction, edge.positive_plane_normal));
+    if (projected_incidence <= DIRECTION_EPSILON) {
+        return 0.0;
+    }
+
+    // Only the exterior half-strip is accessible, hence normalization on [0,R].
+    float radial_kernel = 2.0
+        * clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
+        / edge.diffraction_radius;
+    return radial_kernel * incoming_distance / projected_incidence;
+}
+
+// Source connections retain the bilateral scalar response. Continued edge
+// interactions retain shadow-only response, evaluated at their physical endpoint.
 bool diffractionSourceResponse(
     DiffractionEdge edge,
     vec3 incoming_direction,
     vec3 source_direction,
     float distance_to_edge,
     float incoming_distance,
-    float source_distance,
     out float response
 ) {
     vec3 incoming_perpendicular;
@@ -921,25 +945,13 @@ bool diffractionSourceResponse(
         return false;
     }
 
-    // Connections evaluate both angular sides for the accepted incidence;
-    // continuation remains shadow-only in this response-only experiment.
-
-    // Only the exterior half-strip is sampled: the other half lies in the
-    // wedge. Normalize over [0, radius], not the inaccessible symmetric strip.
-    float radial_kernel = 2.0 * clamp(1.0 - distance_to_edge / edge.diffraction_radius, 0.0, 1.0)
-        / edge.diffraction_radius;
-    float directional_shape = diffractionScalarResponse(edge, incoming_direction, source_direction);
-    float projected_incidence = abs(dot(incoming_direction, edge.positive_plane_normal));
-    if (projected_incidence <= DIRECTION_EPSILON) {
-        return false;
-    }
-    // The first-edge strip measure is h/m^3, with h=m*projected_incidence.
-    // Convert the existing final 1/(m+l) spreading to reciprocal 1/(m*l).
-    // This fixes scale and reversal for isolated edges. Using the accumulated
-    // prefix distance for mixed/multiple-edge paths remains an approximation.
-    float geometry = incoming_distance * (incoming_distance + source_distance)
-        / (projected_incidence * source_distance);
-    response = radial_kernel * geometry * directional_shape;
+    float capture_weight = diffractionCaptureWeight(
+        edge, incoming_direction, distance_to_edge, incoming_distance
+    );
+    float directional_shape = diffractionScalarResponse(
+        edge, incoming_direction, source_direction, false
+    );
+    response = capture_weight * directional_shape;
     return response != 0.0 && finiteFloat(response);
 }
 
@@ -950,6 +962,7 @@ void connectDiffractionToSource(
     vec3 incoming_direction,
     float distance_to_edge,
     float edge_path_distance,
+    float spreading_origin_distance,
     float path_throughput,
     float monte_carlo_normalization,
     vec3 listener_arrival_direction
@@ -973,8 +986,7 @@ void connectDiffractionToSource(
         incoming_direction,
         source_direction,
         distance_to_edge,
-        edge_path_distance,
-        source_distance,
+        edge_path_distance - spreading_origin_distance,
         local_response
     )) {
         return;
@@ -984,7 +996,9 @@ void connectDiffractionToSource(
     if (!traceVisibility(edge_hit_position, source_direction, source_distance)) {
         return;
     }
-    float spreading = 1.0 / max(total_path_length, RAY_EPSILON);
+    // The local capture measure contains incident spreading. Only the final
+    // edge-to-source leg remains; using total length here would count it twice.
+    float spreading = 1.0 / source_distance;
     float amplitude = pc.source_amplitude
         * path_throughput
         * local_response
@@ -995,13 +1009,15 @@ void connectDiffractionToSource(
     depositStablePressure(total_path_length, amplitude, listener_arrival_direction, true);
 }
 
-// Samples one continuous shadow diffraction direction. This is not a binary
-// straight/diffracted branch: zero bend is simply one point in the distribution.
-// The sampler preserves the component along the edge, rejects the solid wedge,
-// and covers the entire valid shadow, including bends beyond 90 degrees.
+// Samples a solid-angle proposal for one continued edge event. Finite axial
+// spread matches the scalar response's dimensionality; a delta Keller cone
+// cannot represent the edge-line integral after another proxy relocation.
+// Full proposal support lets the next physical endpoint determine validity.
 bool sampleDiffractionContinuation(
     DiffractionEdge edge,
     vec3 incoming_direction,
+    float distance_to_edge,
+    float incident_distance,
     inout uint random_state,
     inout float path_throughput,
     out vec3 continuation_direction
@@ -1025,31 +1041,68 @@ bool sampleDiffractionContinuation(
         return false;
     }
 
-    // Concentrate samples near the boundary without a singular PDF. Evaluate
-    // response/PDF explicitly because this sampler is only an approximation to
-    // the four-term scalar response.
-    float log_range = log(1.0 + valid_angle_measure / DIFFRACTION_ANGULAR_FLOOR);
-    float bend = DIFFRACTION_ANGULAR_FLOOR
-        * (exp(randomFloat(random_state) * log_range) - 1.0);
-    float angle = angle_start < 0.0 ? -bend : bend;
-    float pdf = 1.0 / ((bend + DIFFRACTION_ANGULAR_FLOOR) * log_range);
+    // Integrating the regularized axial response removes its 1/bend peak.
+    // Sample azimuth uniformly in shadow, with a full-circle component to
+    // cover directions whose next proxy hit will relocate into that shadow.
+    // This mixture only controls variance; its complete PDF is divided out.
+    const float shadow_probability = 0.9;
+    float azimuth_sample = randomFloat(random_state);
+    float angle;
+    if (azimuth_sample < shadow_probability) {
+        angle = mix(angle_start, angle_end, azimuth_sample / shadow_probability);
+    } else {
+        angle = TWO_PI * (azimuth_sample - shadow_probability) / (1.0 - shadow_probability) - PI;
+    }
+
+    float pdf = (1.0 - shadow_probability) / TWO_PI;
+    if (angle >= angle_start && angle <= angle_end) {
+        pdf += shadow_probability / valid_angle_measure;
+    }
+    float bend = abs(angle);
     vec3 sampled_perpendicular = normalizeOrZero(
         rotateAroundAxis(incoming_perpendicular, edge.edge_dir, angle)
     );
-    if (insideSolidWedge(edge, sampled_perpendicular)) {
-        return false;
-    }
+    // The evaluated edge response has finite axial spread. Sample that second
+    // dimension too: a Cauchy proposal matches its regularized denominator.
+    // With axial slope t, solid angle is d(phi)*dt/(1+t*t)^(3/2).
+    float axial_scale = sqrt(bend * bend
+        + DIFFRACTION_ANGULAR_FLOOR * DIFFRACTION_ANGULAR_FLOOR);
+    float incoming_slope = dot(incoming_direction, edge.edge_dir) / perpendicular_length;
+    // Relocation can turn a narrow sampled bend into a broad physical one.
+    // Mix its local Cauchy proposal with a unit-width Cauchy so those paths
+    // do not receive huge weights from an almost-zero proposal density.
+    float axial_sample = randomFloat(random_state);
+    float proposal_scale = axial_sample < 0.5 ? axial_scale : 1.0;
+    float axial_angle = PI * (fract(2.0 * axial_sample) - 0.5);
+    float slope_offset = proposal_scale * tan(axial_angle);
+    float axial_slope = incoming_slope + slope_offset;
+    float outgoing_radius = inversesqrt(1.0 + axial_slope * axial_slope);
+    float slope_pdf = 0.5 / PI * (
+        axial_scale / (axial_scale * axial_scale + slope_offset * slope_offset)
+        + 1.0 / (1.0 + slope_offset * slope_offset)
+    );
+    pdf *= slope_pdf / (outgoing_radius * outgoing_radius * outgoing_radius);
 
     continuation_direction = normalizeOrZero(
-        parallel_component + sampled_perpendicular * perpendicular_length
+        outgoing_radius * (sampled_perpendicular + axial_slope * edge.edge_dir)
     );
+    if (!finiteFloat(pdf) || pdf <= 0.0) {
+        return false;
+    }
     if (!finiteVector(continuation_direction)) {
         return false;
     }
 
-    // The continuation stays on the Keller cone; source connections additionally
-    // evaluate axial spread. Path geometry is updated by the shared tracing loop.
-    path_throughput *= diffractionScalarResponse(edge, incoming_direction, continuation_direction) / pdf;
+    float capture_weight = diffractionCaptureWeight(
+        edge, incoming_direction, distance_to_edge, incident_distance
+    );
+    if (capture_weight <= 0.0) {
+        return false;
+    }
+
+    // The next hit may move from proxy to axis. Evaluate the angular response
+    // only after that relocation, while retaining this actual sampling PDF.
+    path_throughput *= capture_weight / pdf;
     return finiteFloat(path_throughput);
 }
 

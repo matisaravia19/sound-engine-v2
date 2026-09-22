@@ -568,20 +568,6 @@ fn diffraction_radial_kernel(distance_to_edge: f32, radius: f32) -> f32 {
 }
 
 #[cfg(test)]
-fn diffraction_shadow_interval(incident_angle: f64, air_angle: f64) -> Option<(f64, f64)> {
-    use std::f64::consts::{FRAC_PI_2, PI};
-    if !(0.0..=air_angle).contains(&incident_angle) {
-        None
-    } else if incident_angle < air_angle - PI {
-        Some((0.0, FRAC_PI_2.min(air_angle - PI - incident_angle)))
-    } else if incident_angle > PI {
-        Some(((-FRAC_PI_2).max(PI - incident_angle), 0.0))
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
 fn material_energies(absorption: f32, scattering: f32, transmission: f32) -> [f32; 4] {
     let absorption = absorption.clamp(0.0, 1.0);
     let transmission = transmission.clamp(0.0, 1.0).min(1.0 - absorption);
@@ -706,40 +692,6 @@ mod tests {
             assert_eq!(diffraction_radial_kernel(-0.5 * radius, radius), 0.0);
             assert_eq!(diffraction_radial_kernel(radius, radius), 0.0);
             assert_eq!(diffraction_radial_kernel(2.0 * radius, radius), 0.0);
-        }
-    }
-
-    #[test]
-    fn diffraction_shadow_sampler_stays_in_air_and_preserves_the_keller_cone() {
-        use std::f64::consts::{FRAC_PI_2, PI, TAU};
-        for air_angle in [PI, 1.1 * PI, 1.5 * PI, 1.9 * PI, TAU] {
-            for incidence in 0..64 {
-                let incident = (incidence as f64 + 0.5) * air_angle / 64.0;
-                let Some((start, end)) = diffraction_shadow_interval(incident, air_angle) else {
-                    assert!(incident >= air_angle - PI && incident <= PI);
-                    continue;
-                };
-                let integral = end.sin() - start.sin();
-                let mut numerical_integral = 0.0;
-                for step in 0..1024 {
-                    let u = (step as f64 + 0.5) / 1024.0;
-                    let angle = (start.sin() + u * integral).asin();
-                    let outgoing = (incident + PI + angle).rem_euclid(TAU);
-                    assert!(outgoing <= air_angle + 1e-12);
-                    assert!((outgoing - incident).abs() >= PI - 1e-12);
-                    assert!(angle.abs() <= FRAC_PI_2);
-                    for axial in [-0.9_f64, 0.0, 0.9] {
-                        let radial = (1.0 - axial * axial).sqrt();
-                        let length_squared = (radial * angle.cos()).powi(2)
-                            + (radial * angle.sin()).powi(2)
-                            + axial * axial;
-                        assert!((length_squared - 1.0).abs() < 1e-12);
-                    }
-                    let uniform_angle = start + u * (end - start);
-                    numerical_integral += uniform_angle.cos() / integral * (end - start) / 1024.0;
-                }
-                assert!((numerical_integral - 1.0).abs() < 1e-6);
-            }
         }
     }
 
