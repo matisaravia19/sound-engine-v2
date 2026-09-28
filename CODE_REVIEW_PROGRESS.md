@@ -715,12 +715,46 @@ cargo run -p sound-engine --example runtime_costs --release --offline -- --gpu
 - The changes remain local helpers and exact-context build patches; the pinned
   VkFFT submodule is unchanged. Fixture code is in the adjacent native test header.
 
+## Stage dispatch, normalization and direct-Rader review
+
+- Confirmed a native allocation-failure crash in the direct-Rader generator: a
+  null temporary complex allocation was followed by unconditional component
+  writes. The isolated CPU child exited with access violation `0xc0000005`
+  (`-1073741819`); no Vulkan calls or GPU fault injection were involved. The
+  numeric pair now lives on the stack. All sixteen float/double fixtures generate
+  with zero allocation attempts and an allocator configured to fail its next call.
+- Two no-LUT twiddle calculations read an integer radix through the floating-point
+  union member. Radix 17 consequently generated `-inff`/`-infLF` shader constants
+  in the baseline. Both expressions now convert the integer value explicitly.
+  Sixteen direct-Rader fixtures cover both layouts, both precisions, LUT on/off
+  and stage sizes one/two. The four no-LUT, size-two cases have the corrected finite
+  coefficient `-2*pi/17`; the other twelve shader outputs are byte-identical.
+  The baseline contains eight non-finite angle expressions and the final output
+  contains none. This no-LUT evidence is CPU shader generation, not a separate
+  hardware run configured to disable LUTs.
+- Four duplicated normalization blocks now share checked arithmetic. Zero/negative
+  active dimensions, DCT-I's zero divisor and signed overflow in DST/DCT/Bluestein
+  factors are rejected before shader output or allocation. Baseline zero-source
+  and overflowing DST-I fixtures incorrectly returned success and made 65
+  allocations; both now return `VKFFT_ERROR_MATH_FAILED` with no allocation.
+  Tests cover boundary values, transform-specific factors, inactive dimensions,
+  later uploads/stages and preserving a prior error and output value.
+- Stage dispatch validates stage count/index, radix agreement and supported layout
+  before array reads. Rader selection clears the previous pointer and requires a
+  unique matching prime, generator and supported kernel type. Missing metadata can
+  no longer silently reuse another stage's container or dereference null. Invalid
+  dispatch fixtures leave code and allocation counts untouched.
+- This pass adds a shared policy helper, three exact-context patches and two native
+  test groups. Evidence is under `output/review-stage-dispatch-20260928/`;
+  `failure-result.log` preserves the baseline crash and `shader-comparison.log`
+  records the intentionally changed and unchanged generation cases.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **137 CPU tests**: 112 engine tests and
-  twenty-five VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **139 CPU tests**: 112 engine tests and
+  twenty-seven VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -845,6 +879,14 @@ alongside the tests. Existing style warnings and line-ending advisories remain.
 retains the intermediate double-double exception leak that motivated the
 arithmetic-temporary fix; it is not a passing final result.
 
+Current stage-dispatch evidence is under `output/review-stage-dispatch-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 139 passing CPU tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record nineteen
+passing serial hardware regressions with no Vulkan validation error markers.
+The seventeen-test audit group completed in 91.53 seconds. Workspace/all-feature
+checks, the no-playback check, Clippy and `git diff --check` pass; their logs are
+alongside the tests. Existing style warnings and line-ending advisories remain.
+
 ## Unresolved native device-creation stall
 
 On this RTX 3060 / NVIDIA 591.86 installation, creating another backend **on a
@@ -898,8 +940,8 @@ in every listed path:
    whether a supported ownership/initialization change can avoid it safely.
 2. Remaining playback/runtime error paths and integration under repeated scene/voice
    changes, including actual device failure/recovery beyond synthetic callbacks.
-3. Continue checking stage dispatch and shuffle-normalization invariants, native
-   scheduler arithmetic and allocation failures before these layout helpers, remaining
+3. Continue checking nested Rader layout/index invariants, native scheduler
+   arithmetic and allocation failures before these layout helpers, remaining
    native configuration/data invariants, retention outside VMA statistics and
    repeated complete backend creation/destruction.
 4. Extend the bounded soak toward the originally reported workload if its trigger
@@ -907,5 +949,6 @@ in every listed path:
    fault injection has been performed.
 
 Unrelated benchmark work and existing user edits have been preserved. Completed
-audit fixes are being committed locally at the user's request; the review remains
-active. No dependency upgrades, driver settings or OS watchdog changes were made.
+audit fixes are committed locally at the user's request; the initial checkpoint is
+`2d03fef`. The review remains active. No dependency upgrades, driver settings or OS
+watchdog changes were made.

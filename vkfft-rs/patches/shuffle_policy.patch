@@ -1,0 +1,65 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixShuffle.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixShuffle.h
+@@ -25,6 +25,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
++#include "codegen_stage_policy.hpp"
+ #include "codegen_stage_layout.hpp"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h"
+@@ -54,21 +55,7 @@
+ 	normalizationValue.type = 31;
+ 	normalizationValue.data.i = 1;
+ 
+-	if ((((sc->actualInverse) && (sc->normalize)) || (sc->convolutionStep && (stageAngle->data.d > 0))) && (stageSize->data.i == 1) && (sc->axis_upload_id == 0) && (!(sc->useBluesteinFFT && (stageAngle->data.d < 0)))) {
+-		if (((sc->performDCT) || (sc->performDST)) && (sc->actualInverse)) {
+-			if (sc->performDST == 1)
+-				normalizationValue.data.i = (sc->sourceFFTSize.data.i + 1) * 2;
+-			else if (sc->performDCT == 1)
+-				normalizationValue.data.i = (sc->sourceFFTSize.data.i - 1) * 2;
+-			else
+-				normalizationValue.data.i = sc->sourceFFTSize.data.i * 2;
+-		}
+-		else
+-			normalizationValue.data.i = sc->sourceFFTSize.data.i;
+-	}
+-	if (sc->useBluesteinFFT && (stageAngle->data.d > 0) && (stageSize->data.i == 1) && (sc->axis_upload_id == 0)) {
+-		normalizationValue.data.i *= sc->fft_dim_full.data.i;
+-	}
++	if (!vkfft_codegen::stage_normalization(sc, stageSize->data.i, stageAngle->data.d, normalizationValue.data.i)) return;
+ 	if (normalizationValue.data.i != 1) {
+ 		stageNormalization.data.d = pfFPinit("1.0") / (pfLD)(normalizationValue.data.i);
+ 	}
+@@ -357,21 +344,7 @@
+ 	normalizationValue.type = 31;
+ 	normalizationValue.data.i = 1;
+ 
+-	if ((((sc->actualInverse) && (sc->normalize)) || (sc->convolutionStep && (stageAngle->data.d > 0))) && (stageSize->data.i == 1) && (sc->axis_upload_id == 0) && (!(sc->useBluesteinFFT && (stageAngle->data.d < 0)))) {
+-		if (((sc->performDCT) || (sc->performDST)) && (sc->actualInverse)) {
+-			if (sc->performDST == 1)
+-				normalizationValue.data.i = (sc->sourceFFTSize.data.i + 1) * 2;
+-			else if (sc->performDCT == 1)
+-				normalizationValue.data.i = (sc->sourceFFTSize.data.i - 1) * 2;
+-			else
+-				normalizationValue.data.i = sc->sourceFFTSize.data.i * 2;
+-		}
+-		else
+-			normalizationValue.data.i = sc->sourceFFTSize.data.i;
+-	}
+-	if (sc->useBluesteinFFT && (stageAngle->data.d > 0) && (stageSize->data.i == 1) && (sc->axis_upload_id == 0)) {
+-		normalizationValue.data.i *= sc->fft_dim_full.data.i;
+-	}
++	if (!vkfft_codegen::stage_normalization(sc, stageSize->data.i, stageAngle->data.d, normalizationValue.data.i)) return;
+ 	if (normalizationValue.data.i != 1) {
+ 		stageNormalization.data.d = pfFPinit("1.0") / (pfLD)(normalizationValue.data.i);
+ 	}
+@@ -617,7 +590,7 @@
+ 	return;
+ }
+ static inline void appendRadixShuffle(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, PfContainer* stageRadixNext, pfUINT stageID, pfUINT shuffleType) {
+-	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::stage_dispatch_valid(sc, stageID, stageRadix->data.i, shuffleType)) return;
+ 	if (sc->rader_generator[stageID] == 0) {
+ 		switch (shuffleType % 10) {
+ 		case 0: {

@@ -24,6 +24,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/codegen_temporary.hpp");
     println!("cargo:rerun-if-changed=src/codegen_stage_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_stage_layout.hpp");
+    println!("cargo:rerun-if-changed=src/codegen_stage_policy.hpp");
+    println!("cargo:rerun-if-changed=src/codegen_stage_policy_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_radix_stage_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_permutation_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_name_tests.hpp");
@@ -156,6 +158,18 @@ fn main() {
         (
             "vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h",
             include_str!("patches/arithmetic_temporary.patch"),
+        ),
+        (
+            "vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixStage.h",
+            include_str!("patches/stage_dispatch.patch"),
+        ),
+        (
+            "vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixShuffle.h",
+            include_str!("patches/shuffle_policy.patch"),
+        ),
+        (
+            "vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RaderKernels.h",
+            include_str!("patches/rader_policy.patch"),
         ),
     ] {
         let path = vkfft_include.join("vkFFT").join(header);

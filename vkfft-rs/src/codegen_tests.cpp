@@ -439,3 +439,4 @@ extern "C" int vkfft_test_codegen_formatting() {
 #include "codegen_permutation_tests.hpp"
 #include "codegen_stage_tests.hpp"
 #include "codegen_radix_stage_tests.hpp"
+#include "codegen_stage_policy_tests.hpp"

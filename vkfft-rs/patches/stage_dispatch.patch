@@ -1,0 +1,26 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixStage.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixStage.h
+@@ -25,6 +25,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
++#include "codegen_stage_policy.hpp"
+ #include "codegen_stage_layout.hpp"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h"
+@@ -531,13 +532,9 @@
+ }
+ 
+ static inline void appendRadixStage(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, int stageID, int shuffleType) {
+-	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::stage_dispatch_valid(sc, stageID, stageRadix->data.i, shuffleType)) return;
+ 	if (sc->rader_generator[stageID]) {
+-		for (pfUINT i = 0; i < sc->numRaderPrimes; i++) {
+-			if (sc->raderContainer[i].prime == stageRadix->data.i) {
+-				sc->currentRaderContainer = &sc->raderContainer[i];
+-			}
+-		}
++		if (!vkfft_codegen::select_rader_stage(sc, stageID, stageRadix->data.i)) return;
+ 		if (sc->currentRaderContainer->type) {
+ 			switch (shuffleType % 10) {
+ 			case 0: {

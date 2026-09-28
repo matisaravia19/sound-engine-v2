@@ -379,6 +379,22 @@ mod tests {
     }
 
     #[test]
+    fn native_stage_policy_checks_normalization_and_dispatch() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_stage_policy() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_stage_policy() }, 0);
+    }
+
+    #[test]
+    fn native_direct_rader_avoids_allocations_and_uses_integer_radices() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_direct_rader() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_direct_rader() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;
