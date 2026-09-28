@@ -134,6 +134,7 @@ impl SoundPlayer {
 
     /// Pushes one interleaved rendered block into the playback queue.
     /// Device failure returns an error; explicit cancellation returns `false`.
+    /// Once `finish` closes production, further blocks return an invalid-state error.
     pub fn push_block(&self, block: &[f32]) -> SoundResult<bool> {
         crate::validate!(
             block.len() == self.block_samples,
@@ -144,7 +145,11 @@ impl SoundPlayer {
         );
 
         self.check_error()?;
-        let accepted = self.queue.push_block(block, self.state.stop_requested());
+        let accepted = self.queue.push_block(
+            block,
+            self.state.stop_requested(),
+            self.state.producer_done(),
+        );
         // Failure can arrive while this producer waits on a full queue.
         self.check_error()?;
         let accepted = accepted?;
@@ -157,7 +162,8 @@ impl SoundPlayer {
         Ok(accepted)
     }
 
-    /// Marks the producer as finished so the callback can complete after draining.
+    /// Closes production while allowing the callback to drain queued samples.
+    /// Pending pushes wake with an invalid-state error; repeated finishes are harmless.
     /// Returns any device/callback failure already reported by this stream.
     pub fn finish(&self) -> SoundResult<()> {
         self.state.mark_producer_done()
@@ -283,10 +289,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn finished_player_rejects_late_blocks_without_losing_its_queued_tail() {
+        for prebuffer in [false, true] {
+            let (mut player, control) = SoundPlayer::test_player(2);
+            if prebuffer {
+                player.prefill_samples = 8;
+                player.state.begin_prebuffering();
+            }
+            assert!(player.push_block(&[0.25, -0.25]).unwrap());
+            player.finish().unwrap();
+            player.finish().unwrap();
+            let mut output = [1.0; 4];
+            control.drain(&mut output);
+            assert_eq!(output, [0.25, -0.25, 0.0, 0.0]);
+            assert!(player.state.is_playback_done());
+            player.wait_until_finished().unwrap();
+            assert_eq!(
+                player.push_block(&[0.5, -0.5]).unwrap_err().code(),
+                ErrorCode::InvalidState
+            );
+            assert_eq!(control.queued_samples(), 0);
+            player.stop().unwrap();
+            assert!(!player.push_block(&[0.0; 2]).unwrap());
+            control.fail(SoundError::external("retained device failure"));
+            assert!(
+                player
+                    .push_block(&[0.0; 2])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("retained device failure")
+            );
+        }
+    }
+
+    #[test]
+    fn finish_releases_a_blocked_producer_without_draining() {
+        let state = Arc::new(PlaybackState::new());
+        let queue = state.prepare_queue(1).unwrap();
+        queue
+            .push_block(&[0.25], state.stop_requested(), state.producer_done())
+            .unwrap();
+        let producer_state = state.clone();
+        let producer_queue = queue.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = producer_queue.push_block(
+                &[0.5],
+                producer_state.stop_requested(),
+                producer_state.producer_done(),
+            );
+            result_tx.send(result).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        state.mark_producer_done().unwrap();
+        let finished = result_rx.recv_timeout(Duration::from_secs(1));
+        // Always release and join the owned producer, even against the old bug.
+        state.request_stop().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            finished.unwrap().unwrap_err().code(),
+            ErrorCode::InvalidState
+        );
+        assert_eq!(queue.queued_samples().unwrap(), 1);
+    }
+
+    #[test]
     fn device_failure_wakes_a_full_queue_and_remains_visible_to_the_runtime() {
         let state = Arc::new(PlaybackState::new());
         let queue = state.prepare_queue(1).unwrap();
-        queue.push_block(&[1.0], state.stop_requested()).unwrap();
+        queue
+            .push_block(&[1.0], state.stop_requested(), state.producer_done())
+            .unwrap();
         let handle = PlaybackStopHandle {
             state: state.clone(),
         };
@@ -294,7 +369,11 @@ mod tests {
         let (sent, received) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let accepted = queue
-                .push_block(&[2.0], worker_state.stop_requested())
+                .push_block(
+                    &[2.0],
+                    worker_state.stop_requested(),
+                    worker_state.producer_done(),
+                )
                 .unwrap();
             sent.send((accepted, worker_state.check_error())).unwrap();
         });
@@ -316,14 +395,20 @@ mod tests {
     fn stop_handle_releases_a_producer_without_an_audio_callback() {
         let state = Arc::new(PlaybackState::new());
         let queue = state.prepare_queue(1).unwrap();
-        queue.push_block(&[1.0], state.stop_requested()).unwrap();
+        queue
+            .push_block(&[1.0], state.stop_requested(), state.producer_done())
+            .unwrap();
         let handle = PlaybackStopHandle {
             state: state.clone(),
         };
         let (sent, received) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            sent.send(queue.push_block(&[2.0], state.stop_requested()).unwrap())
-                .unwrap();
+            sent.send(
+                queue
+                    .push_block(&[2.0], state.stop_requested(), state.producer_done())
+                    .unwrap(),
+            )
+            .unwrap();
         });
         handle.request_stop().unwrap();
         assert!(!received.recv_timeout(Duration::from_secs(1)).unwrap());

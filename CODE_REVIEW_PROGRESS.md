@@ -923,12 +923,39 @@ Evidence is under `output/review-scheduler-sizing-20260928/`, including
 logical shapes were not allocated or submitted to Vulkan. The finding does not
 establish the cause of the reported driver crashes.
 
+## Playback completion closes production
+
+The public player's `finish()` notification was ignored by queue producers.
+A block submitted after the callback had drained finished playback was accepted
+even though completion was already reported. A producer waiting on a full queue
+woke for finish, saw no available capacity, and went back to sleep indefinitely
+without a callback or separate stop request. Two device-free regressions fail
+against the previous implementation: late enqueue returns success and the
+blocked-producer completion check times out. The test always stops and joins its
+owned producer before reporting that failure.
+
+The queue now checks both cancellation and producer completion under its existing
+mutex, before enqueuing and after every wakeup. Finish rejects pending/later pushes
+with an invalid-state error, while cancellation still returns `false` and retained
+device errors keep priority at the player boundary. Existing queued audio drains
+normally, including a short prebuffered tail. Repeated finish calls are harmless.
+No new callback locks or allocations were added. The callback test now queues its
+last block before publishing completion, matching the public lifecycle contract.
+
+The baseline failure and corrected tests are recorded under
+`output/review-playback-finish-20260928/`. Both new regressions and all 22 playback
+tests pass. This is a playback lifecycle fix, not an identified GPU-driver crash
+cause. A read-only Windows System log query for `Display` and `nvlddmkm` events
+over the preceding ten days returned `NoMatchingEventsFound`; that result does
+not disprove the user's reported crashes.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **150 CPU tests**: 112 engine tests and
-  thirty-eight VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Current CPU regression coverage is **152 tests**: the latest debug/release runs
+  pass 114 engine tests; the unchanged thirty-eight VkFFT tests pass in both profiles
+  in the scheduler-sizing evidence below. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -1108,6 +1135,16 @@ serial hardware regressions with no Vulkan validation error markers. The
 seventeen-test audit group completed in 92.63 seconds. Workspace/all-feature
 checks, the no-playback check, Clippy and `git diff --check` pass; existing style
 warnings and line-ending advisories remain.
+
+Current playback-completion evidence is under `output/review-playback-finish-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 114 passing engine tests.
+The Vulkan runtime ownership/failure/recovery regression passes with synchronization
+validation requested in `gpu-runtime.log` (4.78 seconds), with no validation error
+markers. Workspace/all-feature checks, the no-playback check, Clippy and
+`git diff --check` pass; existing style warnings and line-ending advisories remain.
+This pass changed only playback queue/lifecycle code and its tests; the native
+FFT test results and full GPU suite from the scheduler-sizing pass remain the
+latest evidence for those unchanged paths.
 
 ## Unresolved native device-creation stall
 

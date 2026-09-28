@@ -87,7 +87,7 @@ impl PlaybackState {
         self.failure.get().cloned().map_or(Ok(()), Err)
     }
 
-    /// Returns the producer-completion flag observed by the callback.
+    /// Returns the completion flag observed by queue producers and the callback.
     pub(super) fn producer_done(&self) -> &AtomicBool {
         &self.producer_done
     }
@@ -177,6 +177,8 @@ impl PlaybackState {
         self.producer_done.store(true, Ordering::Release);
         // Short sounds may finish before reaching the prefill threshold.
         self.release_prebuffer();
+        // Taking the queue mutex also finishes any enqueue that had already
+        // accepted its block, before this method returns to the producer.
         self.notify_all();
         self.check_error()
     }
@@ -265,7 +267,9 @@ mod tests {
     fn queue_cannot_be_replaced_or_cancellation_reset() {
         let state = PlaybackState::new();
         let queue = state.prepare_queue(2).unwrap();
-        queue.push_block(&[0.5], state.stop_requested()).unwrap();
+        queue
+            .push_block(&[0.5], state.stop_requested(), state.producer_done())
+            .unwrap();
         assert!(state.prepare_queue(4).is_err());
         state.request_stop().unwrap();
         assert!(state.check_error().is_ok());

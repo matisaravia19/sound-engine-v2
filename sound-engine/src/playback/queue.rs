@@ -48,12 +48,14 @@ impl SampleQueue {
 
     /// Pushes one complete rendered block, blocking until enough capacity exists.
     ///
-    /// Returns `false` if playback is stopped before the block is enqueued. The
-    /// `stop_requested` flag lets blocked producers wake and exit cleanly.
+    /// Returns `false` on cancellation and an invalid-state error after finish.
+    /// Both flags are checked under the queue lock; their publishers must call
+    /// `notify_available_space` so a waiting producer cannot miss a transition.
     pub(super) fn push_block(
         &self,
         block: &[f32],
         stop_requested: &AtomicBool,
+        producer_done: &AtomicBool,
     ) -> SoundResult<bool> {
         crate::validate!(
             block.len() <= self.capacity,
@@ -67,19 +69,23 @@ impl SampleQueue {
             .samples
             .lock()
             .map_err(|_| SoundError::poisoned_lock("sample queue lock poisoned"))?;
-        while self.capacity.saturating_sub(samples.len()) < block.len() {
+        loop {
             if stop_requested.load(Ordering::Acquire) {
                 return Ok(false);
+            }
+            if producer_done.load(Ordering::Acquire) {
+                return Err(SoundError::invalid_state(
+                    "Cannot push audio after playback was finished",
+                ));
+            }
+            if self.capacity.saturating_sub(samples.len()) >= block.len() {
+                break;
             }
 
             samples = self
                 .available
                 .wait(samples)
                 .map_err(|_| SoundError::poisoned_lock("sample queue lock poisoned"))?;
-        }
-
-        if stop_requested.load(Ordering::Acquire) {
-            return Ok(false);
         }
 
         samples.extend(block);
@@ -117,10 +123,10 @@ impl SampleQueue {
         Ok(Some(drained))
     }
 
-    /// Wakes producers waiting for queue capacity.
+    /// Wakes producers after queue capacity or lifecycle flags change.
     pub(super) fn notify_available_space(&self) {
-        // Pair external stop notifications with the predicate mutex so a
-        // producer cannot miss shutdown between checking the flag and waiting.
+        // Pair lifecycle notifications with the predicate mutex so a producer
+        // cannot miss completion/cancellation between checking flags and waiting.
         let _samples = self
             .samples
             .lock()
@@ -148,7 +154,11 @@ mod tests {
         let queue = SampleQueue::new(1).unwrap();
         assert!(
             queue
-                .push_block(&[0.0, 0.0], &AtomicBool::new(false))
+                .push_block(
+                    &[0.0, 0.0],
+                    &AtomicBool::new(false),
+                    &AtomicBool::new(false)
+                )
                 .is_err()
         );
     }
@@ -158,13 +168,19 @@ mod tests {
         use std::sync::{Arc, mpsc};
         let queue = Arc::new(SampleQueue::new(1).unwrap());
         let stop = Arc::new(AtomicBool::new(false));
-        queue.push_block(&[0.0], &stop).unwrap();
+        queue
+            .push_block(&[0.0], &stop, &AtomicBool::new(false))
+            .unwrap();
         let (sender, receiver) = mpsc::channel();
         let worker_queue = queue.clone();
         let worker_stop = stop.clone();
         let worker = std::thread::spawn(move || {
             sender
-                .send(worker_queue.push_block(&[1.0], &worker_stop).unwrap())
+                .send(
+                    worker_queue
+                        .push_block(&[1.0], &worker_stop, &AtomicBool::new(false))
+                        .unwrap(),
+                )
                 .unwrap();
         });
         stop.store(true, Ordering::Release);
@@ -182,11 +198,11 @@ mod tests {
         let queue = SampleQueue::new(2)?;
         let stop_requested = AtomicBool::new(false);
 
-        assert!(queue.push_block(&[0.1, 0.2], &stop_requested)?);
+        assert!(queue.push_block(&[0.1, 0.2], &stop_requested, &AtomicBool::new(false))?);
         assert_eq!(queue.len()?, 2);
 
         stop_requested.store(true, Ordering::Release);
-        assert!(!queue.push_block(&[0.3], &stop_requested)?);
+        assert!(!queue.push_block(&[0.3], &stop_requested, &AtomicBool::new(false))?);
         assert_eq!(queue.len()?, 2);
         Ok(())
     }
@@ -195,7 +211,7 @@ mod tests {
     fn queue_drains_batch_with_one_call() -> SoundResult<()> {
         let queue = SampleQueue::new(4)?;
         let stop_requested = AtomicBool::new(false);
-        assert!(queue.push_block(&[0.1, 0.2, 0.3], &stop_requested)?);
+        assert!(queue.push_block(&[0.1, 0.2, 0.3], &stop_requested, &AtomicBool::new(false))?);
 
         let mut output = [0.0; 4];
         let drained = queue.drain_into(output.len(), |index, sample| output[index] = sample)?;
@@ -209,7 +225,11 @@ mod tests {
     #[test]
     fn busy_queue_preserves_samples_without_waiting() -> SoundResult<()> {
         let queue = SampleQueue::new(2)?;
-        queue.push_block(&[0.25, -0.25], &AtomicBool::new(false))?;
+        queue.push_block(
+            &[0.25, -0.25],
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+        )?;
         let guard = queue.samples.lock().unwrap();
         assert_eq!(
             queue.drain_into(2, |_, _| panic!("busy queue drained"))?,

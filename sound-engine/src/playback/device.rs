@@ -303,6 +303,7 @@ mod tests {
             .push_block(
                 &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.25],
                 state.stop_requested(),
+                state.producer_done(),
             )
             .unwrap();
         let mut output = [1.0_f32; 4];
@@ -315,7 +316,11 @@ mod tests {
         let queue = SampleQueue::new(4)?;
         let state = PlaybackState::new();
         state.prepare_queue(4)?;
-        assert!(queue.push_block(&[2.0, -2.0, 0.25, -0.25], state.stop_requested())?);
+        assert!(queue.push_block(
+            &[2.0, -2.0, 0.25, -0.25],
+            state.stop_requested(),
+            state.producer_done()
+        )?);
         let mut output = [1.0f32; 6];
 
         write_output(&mut output, 3, 2, &queue, &state);
@@ -330,8 +335,8 @@ mod tests {
         let queue = SampleQueue::new(2)?;
         let state = PlaybackState::new();
         state.prepare_queue(2)?;
+        assert!(queue.push_block(&[0.5, -0.5], state.stop_requested(), state.producer_done())?);
         state.mark_producer_done()?;
-        assert!(queue.push_block(&[0.5, -0.5], state.stop_requested())?);
         let mut output = [0.0f32; 4];
 
         write_output(&mut output, 2, 2, &queue, &state);
