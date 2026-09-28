@@ -499,6 +499,30 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_padding_search_matches_reference_and_checks_boundaries() {
+        unsafe extern "C" {
+            fn vkfft_test_padding_search() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_padding_search() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_padding_preserves_register_policy_and_errors() {
+        unsafe extern "C" {
+            fn vkfft_test_padding_register_policy() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_padding_register_policy() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_large_bluestein_plans_preserve_width_and_factors() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_wide_padding() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_wide_padding() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

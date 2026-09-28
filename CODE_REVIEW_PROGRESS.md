@@ -1006,29 +1006,71 @@ unchanged helper outputs on errors and resource cleanup. The standalone before/
 after probes are under `output/review-bluestein-padding-20260928/`. These malformed
 inputs were never allocated or submitted to a GPU. The Rust builder does not
 currently expose the DCT/DST or custom-padding controls; this pass hardens the
-native planner and its internal configuration boundary. Automatic padding search
-and remaining hardware-limit arithmetic are still under review.
+native planner and its internal configuration boundary. The automatic padding
+search is addressed below; remaining hardware-limit arithmetic is still under review.
 
-An additional bounded CPU probe using length `2^30 + 3` still times out after five
-seconds in both default padding selection and explicit radix-two selection.
-`wide-default.log` and `wide-radix-two.log` preserve these unfinished investigations;
-both owned children were terminated. The automatic search still narrows candidates
-and power-of-two rounding through `int`, unlike the newly checked custom-table
-path. This is the next native arithmetic target, not a passing regression or a
-claim that all padding paths are fixed.
+At that checkpoint, an additional bounded CPU probe using length `2^30 + 3` timed
+out after five seconds in both default padding selection and explicit radix-two selection.
+`wide-default.log` and `wide-radix-two.log` preserve these pre-fix failures;
+both owned children were terminated. The automatic search narrowed candidates
+and power-of-two rounding through `int`, unlike the checked custom-table path.
+Those search failures are addressed by the following change.
+
+## Automatic Bluestein padding search
+
+The large-plan timeout was in candidate selection, not an inherent inability to
+represent that transform. The previous scheduler successfully planned length
+`2^30 + 3` when a table provided a `2^32` convolution size. Automatic selection
+instead narrowed candidates or floating-point power-of-two rounding through a
+signed `int`, and could spend billions of iterations testing successive integers.
+
+Automatic selection now keeps unsigned full-width lengths, rounds powers of two
+with checked integer operations, and searches products of supported prime powers.
+The search allocates no containers and recurses through at most six prime factors.
+It skips gaps between admissible lengths, retains the existing three-quarter
+power-of-two preference and register-quality callback, and checks candidate
+exhaustion before advancing. Both the initial convolution and even-R2C retry use
+one selection path. The register helpers also accept full-width lengths; their
+thread-occupancy comparison no longer multiplies potentially overflowing operands.
+
+The formerly timed-out default case now plans a 2,149,908,480-element convolution;
+the explicit radix-two case plans 4,294,967,296 elements. These are CPU-only logical
+plans, without allocating or submitting those buffers. A 672-case before/after
+matrix retains identical selected sizes, workspace bytes, upload counts and
+stage/register hashes. A further 144 large cases match the previous scheduler
+when it is supplied the selected lengths through a table: 105 successful plans
+and 39 existing unsupported-length results. The native three-pass limit is
+preserved, not silently bypassed.
+
+Three native regressions add 98,304 candidate comparisons against an independent
+divisibility reference, 3,492 comparisons against a bounded sequential policy
+oracle across float/double/quad register modes, the 144 large-plan cases, integer
+boundaries, callback error propagation and resource cleanup. The initial large-
+plan test incorrectly expected success for every shape; the explicit-table
+comparison established the existing unsupported cases before correcting that
+expectation. The initial external table-control probe also needed its table
+threshold to include the halved R2C length; its timeout is retained in
+`control-initial-real-prefix.log` rather than presented as a passing check.
+
+For the CPU-only 786,433-element radix-two planning fixture, 21 samples changed
+from a median of 1,757 microseconds to 3 microseconds. This measures host planning
+only, with microsecond timer granularity; it is not an end-to-end GPU speedup.
+Evidence is under `output/review-bluestein-search-20260928/`, including the matching
+matrix logs, table controls, focused tests and timing samples. The originally
+reported system/driver-crash cause remains unconfirmed.
 
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Current CPU regression coverage is **154 tests**: the latest debug/release runs
-  pass 114 engine tests and forty VkFFT tests in the transform/padding evidence
+- Current CPU regression coverage is **157 tests**: the latest debug/release runs
+  pass 114 engine tests and forty-three VkFFT tests in the automatic-padding evidence
   below. Twenty-three hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Twenty-one serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: nineteen `audit_` regressions, staging growth and engine
   scalar-update/voice-refresh integration. No Vulkan validation error markers were
-  reported in the transform/padding run. The two long diffraction physics tests
+  reported in the automatic-padding run. The two long diffraction physics tests
   were not rerun in this pass.
 - Callback and cancellation tests use synthetic buffers/queues; they do not establish
   live-device behavior under arbitrary audio-driver failures.
@@ -1235,6 +1277,17 @@ Workspace/all-feature checks, the no-playback check, Clippy and `git diff --chec
 pass; existing style warnings and line-ending advisories remain. The `baseline-*`
 and `fixed-*` probe logs preserve the zero-length and undersized-padding evidence;
 the `wide-*` logs document the separate unresolved automatic-search timeouts.
+
+Current automatic-padding evidence is under `output/review-bluestein-search-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 157 passing CPU tests. The native
+suite completed in 137.41 seconds in debug and 69.76 seconds in release.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record twenty-one passing
+serial hardware regressions with synchronization validation requested and no
+Vulkan validation error markers. The nineteen-test audit group took 88.53 seconds.
+Workspace/all-feature checks, the no-playback check, Clippy and `git diff --check`
+pass; existing style warnings and line-ending advisories remain. The focused
+scheduler cases pass in `scheduler-final-release.log`; the earlier
+`scheduler-release.log` records the initial too-strict wide-plan test expectation.
 
 ## Unresolved native device-creation stall
 

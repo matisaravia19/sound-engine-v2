@@ -1,0 +1,211 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -26,7 +26,9 @@
+ #include "scheduler_arithmetic.hpp"
+ #include "scheduler_sizes.hpp"
+ #include "scheduler_extents.hpp"
+-static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
++#include "scheduler_padding.hpp"
++static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, pfUINT fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
++    if (!fft_length) return VKFFT_ERROR_MATH_FAILED;
+ 	for (int i = 0; i < 33; i++) {
+ 		registers_per_thread_per_radix[i] = 0;
+ 	}
+@@ -162,8 +164,7 @@
+ 						}
+ 					}
+ 					for (int i = maxRadixMinStages; i >= 1; i--) {
+-						pfUINT active_threads_x = (active_threads_y * fft_length) / ((int)pow(2, i));
+-						if (active_threads_x >= 128) {
++						if (vkfft_scheduler::product_at_least(active_threads_y, fft_length, pfUINT(128) << i)) {
+ 							max_loc_multipliers_pow2 = i;
+ 							i = 1;
+ 						}
+@@ -309,7 +310,8 @@
+ 	return VKFFT_SUCCESS;
+ }
+ 
+-static inline VkFFTResult VkFFTGetRegistersPerThread(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
++static inline VkFFTResult VkFFTGetRegistersPerThread(VkFFTApplication* app, pfUINT fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
++    if (!fft_length) return VKFFT_ERROR_MATH_FAILED;
+ 	if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory) {
+ 		VkFFTGetRegistersPerThreadQuad(app, fft_length, extraSharedMemoryForPow2, max_rhs, useRader, loc_multipliers, registers_per_thread_per_radix, registers_per_thread, min_registers_per_thread, isGoodSequence);
+ 		return VKFFT_SUCCESS;
+@@ -1212,8 +1214,7 @@
+ 								}
+ 							}
+ 							for (int i = maxRadixMinStages; i >= 1; i--) {
+-								pfUINT active_threads_x = (active_threads_y * fft_length) / ((int)pow(2, i));
+-								if (active_threads_x >= 128) {
++								if (vkfft_scheduler::product_at_least(active_threads_y, fft_length, pfUINT(128) << i)) {
+ 									max_loc_multipliers_pow2 = i;
+ 									i = 1;
+ 								}
+@@ -2210,16 +2211,10 @@
+ 			axes->specializationConstants.performBandwidthBoost = (int)app->configuration.performBandwidthBoost;
+ 	}
+ 	//initial Stockham + Rader check
+-	int multipliers[33];
+-	for (int i = 0; i < 33; i++) {
+-		multipliers[i] = 0;
+-	}
+-
+ 	pfUINT tempSequence = FFTPlan->actualFFTSizePerAxis[axis_id][axis_id];
+ 	for (int i = 2; i < app->configuration.fixMinRaderPrimeMult; i++) {
+ 		if (tempSequence % i == 0) {
+ 			tempSequence /= i;
+-			multipliers[i]++;
+ 			i--;
+ 		}
+ 	}
+@@ -2334,60 +2329,26 @@
+ 				axes->specializationConstants.performBandwidthBoost = 1;
+ 		}
+ 		app->configuration.registerBoost = 1;
+-		pfUINT minimumBluesteinLength = 0;
+-		bool FFTSizeSelected = false;
+-		res = vkfft_scheduler::initial_bluestein_padding(app->configuration, FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence, FFTSizeSelected);
+-		if (res != VKFFT_SUCCESS) return res;
+-		if (app->configuration.fixMaxRadixBluestein > 0) {
+-			while (!FFTSizeSelected) {
+-				int testSequence = (int)tempSequence;
+-				for (int i = 0; i < 33; i++) {
+-					multipliers[i] = 0;
+-				}
+-				for (int i = 2; i < app->configuration.fixMaxRadixBluestein + 1; i++) {
+-					if (testSequence % i == 0) {
+-						testSequence /= i;
+-						multipliers[i]++;
+-						i--;
+-					}
+-				}
+-				if (testSequence == 1) FFTSizeSelected = 1;
+-				else tempSequence++;
+-			}
+-		}
+-		else {
+-			while (!FFTSizeSelected) {
+-				if (axis_id == nonStridedAxisId) {
+-					if ((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < 128) || ((((int)pow(2, (int)pfceil(log2(tempSequence))) * 0.75) <= tempSequence) && (((int)pow(2, (int)pfceil(log2(tempSequence))) <= maxSequenceLengthSharedMemory) || ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) > maxSequenceLengthSharedMemory))))  tempSequence = (int)pow(2, (int)pfceil(log2(tempSequence)));
+-				}
+-				else {
+-					int maxSequenceLengthSharedMemoryStrided_temp = (app->configuration.coalescedMemory > complexSize) ? usedSharedMemory / ((int)app->configuration.coalescedMemory) : usedSharedMemory / complexSize;
+-					if ((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < 128) || ((((int)pow(2, (int)pfceil(log2(tempSequence))) * 0.75) <= tempSequence) && (((int)pow(2, (int)pfceil(log2(tempSequence))) <= maxSequenceLengthSharedMemoryStrided_temp) || ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) > maxSequenceLengthSharedMemoryStrided_temp))))  tempSequence = (int)pow(2, (int)pfceil(log2(tempSequence)));
+-				}
+-				pfUINT testSequence = tempSequence;
+-				for (int i = 0; i < 33; i++) {
+-					multipliers[i] = 0;
+-				}
+-				for (int i = 2; i < 8; i++) {
+-					if (testSequence % i == 0) {
+-						testSequence /= i;
+-						multipliers[i]++;
+-						i--;
+-					}
+-				}
+-				if (testSequence != 1) tempSequence++;
+-				else {
+-					int registers_per_thread_per_radix[33];
+-					int registers_per_thread = 0;
+-					int min_registers_per_thread = 10000000;
+-					int isGoodSequence = 0;
+-					res = VkFFTGetRegistersPerThread(app, (int)tempSequence, 0, max_rhs / tempSequence, axes->specializationConstants.useRader, multipliers, registers_per_thread_per_radix, &registers_per_thread, &min_registers_per_thread, &isGoodSequence);
+-					if (res != VKFFT_SUCCESS) return res;
+-					if (isGoodSequence) FFTSizeSelected = 1;
+-					else tempSequence++;
+-				}
+-			}
+-		}
++        // The same policy selects both the original convolution and the even-R2C retry.
++        auto selectBluesteinLength = [&](pfUINT length, pfUINT& minimum, pfUINT& padded) {
++            bool selected = false;
++            auto result = vkfft_scheduler::initial_bluestein_padding(app->configuration, length, minimum, padded, selected);
++            if (result != VKFFT_SUCCESS || selected) return result;
++            int sharedLimit = maxSequenceLengthSharedMemory;
++            if (axis_id != nonStridedAxisId)
++                sharedLimit = (app->configuration.coalescedMemory > complexSize) ? usedSharedMemory / ((int)app->configuration.coalescedMemory) : usedSharedMemory / complexSize;
++            auto accept = [&](pfUINT candidate, int (&factors)[33], bool& accepted) {
++                int registers_per_radix[33];
++                int registers = 0, minimumRegisters = 10000000, good = 0;
++                auto status = VkFFTGetRegistersPerThread(app, candidate, 0, max_rhs / candidate, axes->specializationConstants.useRader, factors, registers_per_radix, &registers, &minimumRegisters, &good);
++                accepted = good != 0;
++                return status;
++            };
++            return vkfft_scheduler::automatic_bluestein_padding(length, minimum, (int)app->configuration.fixMaxRadixBluestein, sharedLimit, accept, padded);
++        };
++        pfUINT minimumBluesteinLength = 0;
++        res = selectBluesteinLength(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence);
++        if (res != VKFFT_SUCCESS) return res;
+ 		FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = tempSequence;
+ 		//check if padded system still single upload for r2c - else redo the optimization
+ 		if ((axis_id == 0) && (app->configuration.performR2C) && (!FFTPlan->bigSequenceEvenR2C) && (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] > maxSingleSizeNonStrided) && ((app->configuration.size[axis_id] % 2) == 0) && (!app->configuration.forceCallbackVersionRealTransforms)) {
+@@ -2398,58 +2359,8 @@
+ 				FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.size[axis_id] / 2; // now in actualFFTSize - modified dimension size for R2C/DCT
+ 				FFTPlan->actualPerformR2CPerAxis[axis_id] = 0;
+ 				FFTPlan->bigSequenceEvenR2C = 1;
+-				res = vkfft_scheduler::initial_bluestein_padding(app->configuration, FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence, FFTSizeSelected);
+-				if (res != VKFFT_SUCCESS) return res;
+-				if (app->configuration.fixMaxRadixBluestein > 0) {
+-					while (!FFTSizeSelected) {
+-						pfUINT testSequence = tempSequence;
+-						for (int i = 0; i < 33; i++) {
+-							multipliers[i] = 0;
+-						}
+-						for (int i = 2; i < app->configuration.fixMaxRadixBluestein + 1; i++) {
+-							if (testSequence % i == 0) {
+-								testSequence /= i;
+-								multipliers[i]++;
+-								i--;
+-							}
+-						}
+-						if (testSequence == 1) FFTSizeSelected = 1;
+-						else tempSequence++;
+-					}
+-				}
+-				else {
+-					while (!FFTSizeSelected) {
+-						if (axis_id == nonStridedAxisId) {
+-							if ((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < 128) || ((((int)pow(2, (int)pfceil(log2(tempSequence))) * 0.75) <= tempSequence) && (((int)pow(2, (int)pfceil(log2(tempSequence))) <= maxSequenceLengthSharedMemory) || ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) > maxSequenceLengthSharedMemory))))  tempSequence = (int)pow(2, (int)pfceil(log2(tempSequence)));
+-						}
+-						else {
+-							int maxSequenceLengthSharedMemoryStrided_temp = (app->configuration.coalescedMemory > complexSize) ? usedSharedMemory / ((int)app->configuration.coalescedMemory) : usedSharedMemory / complexSize;
+-							if ((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < 128) || ((((int)pow(2, (int)pfceil(log2(tempSequence))) * 0.75) <= tempSequence) && (((int)pow(2, (int)pfceil(log2(tempSequence))) <= maxSequenceLengthSharedMemoryStrided_temp) || ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) > maxSequenceLengthSharedMemoryStrided_temp))))  tempSequence = (int)pow(2, (int)pfceil(log2(tempSequence)));
+-						}
+-						pfUINT testSequence = tempSequence;
+-						for (int i = 0; i < 33; i++) {
+-							multipliers[i] = 0;
+-						}
+-						for (int i = 2; i < 8; i++) {
+-							if (testSequence % i == 0) {
+-								testSequence /= i;
+-								multipliers[i]++;
+-								i--;
+-							}
+-						}
+-						if (testSequence != 1) tempSequence++;
+-						else {
+-							int registers_per_thread_per_radix[33];
+-							int registers_per_thread = 0;
+-							int min_registers_per_thread = 10000000;
+-							int isGoodSequence = 0;
+-							res = VkFFTGetRegistersPerThread(app, (int)tempSequence, 0, max_rhs / tempSequence, axes->specializationConstants.useRader, multipliers, registers_per_thread_per_radix, &registers_per_thread, &min_registers_per_thread, &isGoodSequence);
+-							if (res != VKFFT_SUCCESS) return res;
+-							if (isGoodSequence) FFTSizeSelected = 1;
+-							else tempSequence++;
+-						}
+-					}
+-				}
++                res = selectBluesteinLength(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence);
++                if (res != VKFFT_SUCCESS) return res;
+ 				FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = tempSequence;
+ 			}
+ 		}
+@@ -2874,7 +2785,7 @@
+ 		int isGoodSequence = 0;
+ 		int extraSharedMemoryForPow2 = ((app->configuration.sharedMemorySizePow2 < app->configuration.sharedMemorySize) || ((locAxisSplit[k] < maxSingleSizeNonStrided) && ((axis_id == nonStridedAxisId))) || ((locAxisSplit[k] < maxSingleSizeStrided) && ((axis_id != nonStridedAxisId)))) ? 1 : 0;
+ 
+-		res = VkFFTGetRegistersPerThread(app, (int)locAxisSplit[k], extraSharedMemoryForPow2, max_rhs / locAxisSplit[k], axes[k].specializationConstants.numRaderPrimes, loc_multipliers, registers_per_thread_per_radix, &registers_per_thread, &min_registers_per_thread, &isGoodSequence);
++		res = VkFFTGetRegistersPerThread(app, locAxisSplit[k], extraSharedMemoryForPow2, max_rhs / locAxisSplit[k], axes[k].specializationConstants.numRaderPrimes, loc_multipliers, registers_per_thread_per_radix, &registers_per_thread, &min_registers_per_thread, &isGoodSequence);
+ 		if (res != VKFFT_SUCCESS) return res;
+ 		//first optimizer pass
+ 		if (axes[k].specializationConstants.numRaderPrimes) {
