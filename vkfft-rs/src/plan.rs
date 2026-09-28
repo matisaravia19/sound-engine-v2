@@ -395,6 +395,22 @@ mod tests {
     }
 
     #[test]
+    fn native_rader_rejects_invalid_subgroups_and_register_layouts() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_rader_layout() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_rader_layout() }, 0);
+    }
+
+    #[test]
+    fn native_rader_accepts_batched_and_boosted_register_layouts() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_rader_layout_valid() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_rader_layout_valid() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

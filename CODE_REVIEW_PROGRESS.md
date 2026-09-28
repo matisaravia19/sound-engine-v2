@@ -749,12 +749,46 @@ cargo run -p sound-engine --example runtime_costs --release --offline -- --gpu
   `failure-result.log` preserves the baseline crash and `shader-comparison.log`
   records the intentionally changed and unchanged generation cases.
 
+## Rader subgroup and register-layout review
+
+An owned CPU-only probe reproduced a native integer divide-by-zero exception
+(`0xc0000094`) in direct Rader generation: a 17-point stage with eight local
+threads cannot form its required nine-thread subgroup. The generator divided by
+the resulting zero subgroup count. This probe did not initialize Vulkan or submit
+GPU work, and does not establish the cause of the reported driver crashes.
+
+Both Rader generators now validate their layout before emitting shader text:
+
+- Common checks cover the selected container, prime/generator, stage dimensions,
+  positive workgroup dimensions and bounded physical register allocation.
+- Direct Rader checks the subgroup divisor, initialized `x0` count and physical
+  register pairs. It also rejects overflow of the rounded workgroup extent.
+- FFT Rader checks its fixed stage array, supported inline radices, complete inner
+  factorization, transform count and logical-to-physical register mapping. This
+  prevents invalid metadata from reaching native divisions or array indexing.
+
+The helpers borrow axis-owned metadata and allocate nothing. Their requirements
+match the generators' existing indexing and the register initializer. The patch
+is applied to the generated VkFFT header copy; the pinned submodule is unchanged.
+
+CPU regressions cover 140 invalid layouts, preserving prior errors and proving
+that rejection performs no allocations or shader writes. Another 98 valid cases
+cover direct/FFT generation, both layouts, float/double, LUT/no-LUT, one/two/eight
+transforms, register boosts and the 33-element `x0` boundary. Existing allocation
+failure and normalization regressions remain enabled.
+
+All 96 before/after shader fixtures are byte-identical: 4,213,372 bytes with SHA-256
+`910908a674a8384d46cf808c808be1681b24b6328208684cdd0771a7828d28aa`.
+The formerly crashing child now returns `VKFFT_ERROR_MATH_FAILED` and exits
+normally. Evidence is under `output/review-rader-layout-20260928/`, including
+`fault-result.log`, `shader-hashes.log`, both shader files and the owned probe.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **139 CPU tests**: 112 engine tests and
-  twenty-seven VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **141 CPU tests**: 112 engine tests and
+  twenty-nine VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -887,6 +921,14 @@ The seventeen-test audit group completed in 91.53 seconds. Workspace/all-feature
 checks, the no-playback check, Clippy and `git diff --check` pass; their logs are
 alongside the tests. Existing style warnings and line-ending advisories remain.
 
+Current Rader-layout evidence is under `output/review-rader-layout-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 141 passing CPU tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record nineteen
+passing serial hardware regressions with no Vulkan validation error markers.
+The seventeen-test audit group completed in 101.30 seconds. Workspace/all-feature
+checks, the no-playback check, Clippy and `git diff --check` pass; their logs are
+alongside the tests. Existing style warnings and line-ending advisories remain.
+
 ## Unresolved native device-creation stall
 
 On this RTX 3060 / NVIDIA 591.86 installation, creating another backend **on a
@@ -940,10 +982,9 @@ in every listed path:
    whether a supported ownership/initialization change can avoid it safely.
 2. Remaining playback/runtime error paths and integration under repeated scene/voice
    changes, including actual device failure/recovery beyond synthetic callbacks.
-3. Continue checking nested Rader layout/index invariants, native scheduler
-   arithmetic and allocation failures before these layout helpers, remaining
-   native configuration/data invariants, retention outside VMA statistics and
-   repeated complete backend creation/destruction.
+3. Continue checking native scheduler arithmetic and allocation failures before
+   the Rader layout helpers, remaining native configuration/data invariants,
+   retention outside VMA statistics and repeated complete backend creation/destruction.
 4. Extend the bounded soak toward the originally reported workload if its trigger
    can be isolated. No system crash has been reproduced, and no deliberate GPU
    fault injection has been performed.

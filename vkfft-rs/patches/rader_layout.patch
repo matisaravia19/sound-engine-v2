@@ -1,0 +1,24 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RaderKernels.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RaderKernels.h
+@@ -26,11 +26,13 @@
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
+ #include "codegen_stage_policy.hpp"
++#include "codegen_rader_layout.hpp"
+ #include "codegen_storage.hpp"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
+ 
+ static inline void appendFFTRaderStage(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, int stageID) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::rader_fft_layout(sc, stageRadix->data.i, stageSize->data.i)) return;
+ 
+ 	PfContainer temp_double = VKFFT_ZERO_INIT;
+ 	temp_double.type = 22;
+@@ -1253,6 +1255,7 @@
+ }
+ static inline void appendMultRaderStage(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, int stageID) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::rader_direct_layout(sc, stageRadix->data.i, stageSize->data.i)) return;
+ 
+ 	// Numeric components have no owned names and need no heap allocation.
+ 	PfContainer components[2] = VKFFT_ZERO_INIT;

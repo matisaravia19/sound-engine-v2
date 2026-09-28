@@ -221,6 +221,7 @@ int normalization_entry_case(bool rader, bool direct, bool strided, bool overflo
     const auto length = sc.currentLen;
     state.attempts = 0;
     if (rader) {
+        sc.currentRaderContainer->type = direct;
         PfContainer stage{}, sum{}, angle{}, radix{};
         stage.type = sum.type = radix.type = 31;
         stage.data.i = 1;
