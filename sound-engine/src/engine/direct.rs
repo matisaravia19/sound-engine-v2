@@ -197,6 +197,7 @@ impl EngineCore {
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
         self.acoustics.validate_source_reference(request.source)?;
+        self.auralization.playable_sound(request.sound_id)?;
         let source_id = self.insert_sound_source(request.source, true)?;
         match self.play_sound_from_source(request.sound_id, source_id, request.volume) {
             Ok(voice_id) => Ok(voice_id),
@@ -218,6 +219,7 @@ impl EngineCore {
             return Err(SoundError::invalid_argument("sound volume must be finite"));
         }
         let source = self.source(source_id)?;
+        self.auralization.playable_sound(sound_id)?;
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
         let acoustic_ir_buffer = snapshot
             .buffer
@@ -268,6 +270,7 @@ impl EngineCore {
 
     /// Renders one interleaved block through the auralizer.
     pub(super) fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
+        self.auralization.validate_output_block(output_block)?;
         self.refresh_dirty_spatial_voices()?;
         self.auralization.render_block(output_block)?;
         self.cleanup_finished_spatial_voices();
@@ -283,6 +286,7 @@ impl EngineCore {
         output_block: &mut [f32],
         advance_spatial: bool,
     ) -> SoundResult<[f64; 3]> {
+        self.auralization.validate_output_block(output_block)?;
         let (trace_ms, prepare_ms) = if advance_spatial {
             self.advance_spatial_update()?
         } else {

@@ -122,6 +122,22 @@ impl AuralizationEngine {
         self.sound_bank.insert(asset)
     }
 
+    /// Borrows a valid dry asset so spatial callers can reject it before preparing GPU IRs.
+    pub(crate) fn playable_sound(&self, sound_id: SoundId) -> SoundResult<&SoundAsset> {
+        let asset = self.sound_bank.get(sound_id)?;
+        if asset.sample_rate() != self.config.sound.sample_rate {
+            return Err(SoundError::invalid_argument(
+                "Sound sample rate must match the engine",
+            ));
+        }
+        if asset.is_empty() {
+            return Err(SoundError::invalid_argument(
+                "sound asset must not be empty",
+            ));
+        }
+        Ok(asset)
+    }
+
     /// Registers an impulse response for later playback.
     pub fn register_impulse_response(
         &mut self,
@@ -198,17 +214,7 @@ impl AuralizationEngine {
         if !request.gain.is_finite() {
             return Err(SoundError::invalid_argument("sound gain must be finite"));
         }
-        let asset = self.sound_bank.get(request.sound_id)?;
-        if asset.sample_rate() != self.config.sound.sample_rate {
-            return Err(SoundError::invalid_argument(
-                "Sound sample rate must match the engine",
-            ));
-        }
-        if asset.is_empty() {
-            return Err(SoundError::invalid_argument(
-                "sound asset must not be empty",
-            ));
-        }
+        let asset = self.playable_sound(request.sound_id)?.clone();
 
         let impulse_response = self
             .impulse_responses
@@ -223,7 +229,7 @@ impl AuralizationEngine {
         self.active_voices.insert(
             voice_id,
             ActiveVoice {
-                asset: asset.clone(),
+                asset,
                 voice: Voice::new(
                     voice_id,
                     request.sound_id,
@@ -248,6 +254,19 @@ impl AuralizationEngine {
         self.active_voices.contains_key(&voice_id)
     }
 
+    /// Checks the output shape before spatial updates or voice cursors can advance.
+    pub(crate) fn validate_output_block(&self, output_block: &[f32]) -> SoundResult<()> {
+        crate::validate!(
+            output_block.len() == self.wet_block.len(),
+            ErrorCode::InvalidArgument,
+            "output_block length {} must equal block size {} times channel count {}",
+            output_block.len(),
+            self.block_size(),
+            self.output_channels()
+        );
+        Ok(())
+    }
+
     /// Renders and mixes one output block from all active voices.
     ///
     /// The provided `output_block` must have length equal to `block_size * output_channels`.
@@ -255,15 +274,7 @@ impl AuralizationEngine {
     /// audio from all active voices into it. For multichannel output (e.g. stereo),
     /// samples are written interleaved (e.g. L,R,L,R...).
     pub fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
-        let output_channels = self.config.sound.output_channels.count();
-        crate::validate!(
-            output_block.len() == self.config.auralization.block_size * output_channels,
-            ErrorCode::InvalidArgument,
-            "output_block length {} must equal block size {} times channel count {}",
-            output_block.len(),
-            self.config.auralization.block_size,
-            output_channels
-        );
+        self.validate_output_block(output_block)?;
 
         output_block.fill(0.0);
         self.finished_voices.clear();

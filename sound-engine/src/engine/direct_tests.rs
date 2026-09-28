@@ -6,6 +6,148 @@ use crate::core::config::*;
 use crate::scene::{DiffractionEdge, Material, MeshAsset, SceneObject};
 use glam::{Mat4, Vec3, vec3};
 
+fn preflight_config() -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate: 48_000,
+            ir_num_samples: 1024,
+        },
+        acoustics: AcousticsConfig {
+            listener_ray_count: 1,
+            max_bounces: 0,
+            maximum_path_length: 15.0,
+            minimum_throughput: 0.0,
+            sampling_seed: 7,
+        },
+        cache: IrCacheConfig::default(),
+        binaural: BinauralConfig::default(),
+        auralization: AuralizationConfig {
+            block_size: 64,
+        },
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn audit_spatial_preflight_rejects_invalid_sounds_without_gpu_resources() {
+    let mut core = EngineCore::new(preflight_config()).unwrap();
+    core.load_scene(box_scene()).unwrap();
+    let source = PointSource::new(vec3(-2.0, 0.0, 0.0));
+    let source_id = core.create_sound_source(source).unwrap();
+    let empty = core
+        .insert_sound(SoundAsset::from_mono_samples(48_000, Vec::new()).unwrap())
+        .unwrap();
+    // Exercise the lower-level registry API, which intentionally permits other rates.
+    let wrong_rate = core
+        .auralization
+        .sound_bank_mut()
+        .insert(SoundAsset::from_mono_samples(44_100, vec![0.1; 64]).unwrap())
+        .unwrap();
+    let baseline = core.gpu.memory().live_allocation_stats().unwrap();
+    let next_ir = core.next_impulse_response_id;
+    let next_source = core.next_sound_source_id;
+    for (sound, code) in [
+        (u64::MAX, crate::core::error::ErrorCode::NotFound),
+        (empty, crate::core::error::ErrorCode::InvalidArgument),
+        (wrong_rate, crate::core::error::ErrorCode::InvalidArgument),
+    ] {
+        for tracked in [true, false] {
+            let error = if tracked {
+                core.play_sound_from_source(sound, source_id, 1.0)
+            } else {
+                core.play_sound(PlaySpatialSoundRequest::new(sound, source.position))
+            }
+            .unwrap_err();
+            assert_eq!(error.code(), code);
+            assert_eq!(
+                core.next_impulse_response_id, next_ir,
+                "failed play prepared an IR"
+            );
+            assert_eq!(
+                core.next_sound_source_id, next_source,
+                "failed play consumed a source ID"
+            );
+            assert_eq!(core.sound_sources.len(), 1);
+            assert!(core.spatial_voices.is_empty());
+            assert!(!core.has_active_voices());
+            assert_eq!(core.gpu.memory().live_allocation_stats().unwrap(), baseline);
+        }
+    }
+    let valid = core
+        .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.1; 64]).unwrap())
+        .unwrap();
+    let voice = core.play_sound_from_source(valid, source_id, 1.0).unwrap();
+    assert!(core.has_active_voices());
+    core.stop_voice(voice);
+    core.remove_sound_source(source_id).unwrap();
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
+    let mut core = EngineCore::new(preflight_config()).unwrap();
+    core.load_scene(box_scene()).unwrap();
+    let sound = core
+        .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.1; 1024]).unwrap())
+        .unwrap();
+    let voice = core
+        .play_sound(PlaySpatialSoundRequest::new(sound, vec3(-2.0, 0.0, 0.0)))
+        .unwrap();
+    let mut step = 0;
+    for realtime in [false, true] {
+        for invalid_len in [0, 127, 129] {
+            step += 1;
+            core.set_listener_pose(ListenerPose::new(
+                vec3(step as f32, 0.0, 0.0),
+                Vec3::Z,
+                Vec3::Y,
+            ))
+            .unwrap();
+            let old_ir = core.spatial_voices[&voice].acoustic_ir_buffer.clone();
+            let old_ir_id = core.spatial_voices[&voice].impulse_response_id;
+            let next_ir = core.next_impulse_response_id;
+            let updates = core.spatial_updates;
+            let cursor = core.last_spatial_voice;
+            let baseline = core.gpu.memory().live_allocation_stats().unwrap();
+            let mut invalid = vec![77.0; invalid_len];
+            let error = if realtime {
+                core.render_realtime_block(&mut invalid, true).map(|_| ())
+            } else {
+                core.render_block(&mut invalid)
+            }
+            .unwrap_err();
+            assert_eq!(error.code(), crate::core::error::ErrorCode::InvalidArgument);
+            assert!(invalid.iter().all(|&sample| sample == 77.0));
+            assert!(
+                core.spatial_voices[&voice].dirty,
+                "failed render consumed a spatial update"
+            );
+            assert!(Arc::ptr_eq(
+                &old_ir,
+                &core.spatial_voices[&voice].acoustic_ir_buffer
+            ));
+            assert_eq!(core.spatial_voices[&voice].impulse_response_id, old_ir_id);
+            assert_eq!(core.next_impulse_response_id, next_ir);
+            assert_eq!(core.spatial_updates, updates);
+            assert_eq!(core.last_spatial_voice, cursor);
+            assert_eq!(core.gpu.memory().live_allocation_stats().unwrap(), baseline);
+
+            let mut valid = vec![0.0; 128];
+            if realtime {
+                core.render_realtime_block(&mut valid, true).unwrap();
+            } else {
+                core.render_block(&mut valid).unwrap();
+            }
+            assert!(valid.iter().all(|sample| sample.is_finite()));
+            assert!(!core.spatial_voices[&voice].dirty);
+            assert_ne!(core.spatial_voices[&voice].impulse_response_id, old_ir_id);
+        }
+    }
+    core.stop_voice(voice);
+    assert!(core.sound_sources.is_empty());
+}
+
 fn box_scene() -> SceneDescription {
     let mut vertices = Vec::new();
     for corners in [

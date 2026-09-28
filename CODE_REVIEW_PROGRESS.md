@@ -949,18 +949,46 @@ cause. A read-only Windows System log query for `Display` and `nvlddmkm` events
 over the preceding ten days returned `NoMatchingEventsFound`; that result does
 not disprove the user's reported crashes.
 
+## Spatial request validation before GPU work
+
+Two rejected-call paths performed expensive, stateful work too early. Starting
+an unknown or unplayable sound traced/cached an acoustic IR and transformed it
+before the auralizer checked the dry asset. One-shot failures also consumed a
+source ID. Rendering into an incorrectly sized output buffer refreshed pending
+spatial IRs and started filter transitions before returning an argument error.
+The regression baseline confirms both behaviors: a failed play advances the IR
+identifier, and a failed render clears the voice's pending spatial update.
+
+The auralizer now exposes shared crate-visible checks for playable assets and
+output shape. Both spatial play entry points validate the asset before creating
+sources or querying acoustics; direct and realtime rendering validate the output
+before refreshing voices. Lower-level auralization entry points use the same
+checks. Unknown IDs, empty assets and mismatched sample rates return the existing
+error categories, without allocating an IR or consuming a source identifier.
+
+Two serial hardware regressions cover both play entry points and both render
+entry points. Rejected calls preserve live VMA allocations/bytes, identifiers,
+spatial filter ownership, pending updates and caller output. Valid playback and
+rendering still succeed after rejection. This removes unnecessary ray tracing,
+FFT preparation and cache retention from these error paths; it does not establish
+the cause of the originally reported driver crashes. Evidence is under
+`output/review-spatial-preflight-20260928/`; `baseline.log` records both failures.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
 - Current CPU regression coverage is **152 tests**: the latest debug/release runs
   pass 114 engine tests; the unchanged thirty-eight VkFFT tests pass in both profiles
-  in the scheduler-sizing evidence below. Twenty-one hardware tests and one compiler-CLI test are excluded
+  in the scheduler-sizing evidence below. Twenty-three hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
   scalar-update/voice-refresh integration. No Vulkan validation error markers were
-  reported. The two long diffraction physics tests were not rerun in this pass.
+  reported in the scheduler-sizing run. The spatial-validation pass adds two passing
+  hardware regressions and reruns the asset-ownership, spatial-update and runtime
+  regressions, for five passing targeted GPU checks. The two long diffraction
+  physics tests were not rerun in this pass.
 - Callback and cancellation tests use synthetic buffers/queues; they do not establish
   live-device behavior under arbitrary audio-driver failures.
 - Clippy completes for all targets/features. Style/API-shape warnings remain;
@@ -1145,6 +1173,16 @@ markers. Workspace/all-feature checks, the no-playback check, Clippy and
 This pass changed only playback queue/lifecycle code and its tests; the native
 FFT test results and full GPU suite from the scheduler-sizing pass remain the
 latest evidence for those unchanged paths.
+
+Current spatial-validation evidence is under `output/review-spatial-preflight-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 114 passing engine tests.
+`gpu-preflight.log` records the two new passing regressions; `gpu-assets.log`,
+`gpu-spatial.log` and `gpu-runtime.log` record three passing integration checks.
+All five ran serially with synchronization validation requested, without Vulkan
+validation error markers. Workspace/all-feature checks, the no-playback check,
+Clippy and `git diff --check` pass; existing style warnings and line-ending
+advisories remain. Native FFT and unrelated GPU implementation code were unchanged;
+their latest full-suite evidence remains the scheduler-sizing pass above.
 
 ## Unresolved native device-creation stall
 
