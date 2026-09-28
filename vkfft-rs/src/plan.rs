@@ -483,6 +483,22 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_checks_real_transform_extents_before_factorization() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_transform_extents() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_transform_extents() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_validates_bluestein_padding_and_real_retry() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_padding_extents() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_padding_extents() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

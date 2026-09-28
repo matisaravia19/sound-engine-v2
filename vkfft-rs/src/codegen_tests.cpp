@@ -446,3 +446,4 @@ extern "C" int vkfft_test_codegen_formatting() {
 #include "scheduler_retry_tests.hpp"
 #include "scheduler_arithmetic_tests.hpp"
 #include "scheduler_sizes_tests.hpp"
+#include "scheduler_extents_tests.hpp"

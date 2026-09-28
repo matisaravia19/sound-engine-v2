@@ -974,21 +974,62 @@ FFT preparation and cache retention from these error paths; it does not establis
 the cause of the originally reported driver crashes. Evidence is under
 `output/review-spatial-preflight-20260928/`; `baseline.log` records both failures.
 
+## Real-transform extents and custom Bluestein padding
+
+CPU-only probes reproduced two nonterminating planning inputs: DCT-I length one
+produced a zero FFT length, and DST-I length `2^63 - 1` wrapped its `2*N + 2`
+extension to zero. The scheduler repeatedly divided zero while factoring it.
+Both owned probe processes were stopped after five-second deadlines. They now
+return `VKFFT_ERROR_MATH_FAILED` promptly, without allocations or a published
+workspace requirement. Checked arithmetic also covers DCT-I expansion and the
+Bluestein `2*N - 1` minimum; valid endpoint arithmetic does not overflow merely
+because the intermediate `2*N` would be too large.
+
+Both a custom padding-table entry and a forced padding size allowed a seventeen-
+sample transform to plan a sixteen-sample FFT, despite the required convolution
+minimum of thirty-three. The old scheduler returned success and requested only
+128 bytes. Both now fail before stage construction or workspace publication.
+Selected padding must contain the convolution and factor into supported primes
+2 through 13. Missing table pointers, excessive counts, zero thresholds and
+unsorted/duplicate thresholds are also rejected.
+
+The two duplicated table-selection blocks now call one documented helper, used
+again after even-R2C decomposition. Forced padding is checked against the final
+effective convolution length, preserving valid cases where the real transform
+is split first. The final table entry still falls back to automatic search when
+its capacity is exceeded, and an explicit radix limit still bypasses the table.
+The native API retains responsibility for supplying arrays of the declared length.
+
+Two new native tests cover arithmetic boundaries, thirty-two float/double
+scheduler scenarios, automatic/custom table selection, real-transform retry,
+unchanged helper outputs on errors and resource cleanup. The standalone before/
+after probes are under `output/review-bluestein-padding-20260928/`. These malformed
+inputs were never allocated or submitted to a GPU. The Rust builder does not
+currently expose the DCT/DST or custom-padding controls; this pass hardens the
+native planner and its internal configuration boundary. Automatic padding search
+and remaining hardware-limit arithmetic are still under review.
+
+An additional bounded CPU probe using length `2^30 + 3` still times out after five
+seconds in both default padding selection and explicit radix-two selection.
+`wide-default.log` and `wide-radix-two.log` preserve these unfinished investigations;
+both owned children were terminated. The automatic search still narrows candidates
+and power-of-two rounding through `int`, unlike the newly checked custom-table
+path. This is the next native arithmetic target, not a passing regression or a
+claim that all padding paths are fixed.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Current CPU regression coverage is **152 tests**: the latest debug/release runs
-  pass 114 engine tests; the unchanged thirty-eight VkFFT tests pass in both profiles
-  in the scheduler-sizing evidence below. Twenty-three hardware tests and one compiler-CLI test are excluded
+- Current CPU regression coverage is **154 tests**: the latest debug/release runs
+  pass 114 engine tests and forty VkFFT tests in the transform/padding evidence
+  below. Twenty-three hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
-- **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
-  validation requested: seventeen `audit_` regressions, staging growth and engine
+- **Twenty-one serial release GPU tests pass** with Khronos validation and synchronization
+  validation requested: nineteen `audit_` regressions, staging growth and engine
   scalar-update/voice-refresh integration. No Vulkan validation error markers were
-  reported in the scheduler-sizing run. The spatial-validation pass adds two passing
-  hardware regressions and reruns the asset-ownership, spatial-update and runtime
-  regressions, for five passing targeted GPU checks. The two long diffraction
-  physics tests were not rerun in this pass.
+  reported in the transform/padding run. The two long diffraction physics tests
+  were not rerun in this pass.
 - Callback and cancellation tests use synthetic buffers/queues; they do not establish
   live-device behavior under arbitrary audio-driver failures.
 - Clippy completes for all targets/features. Style/API-shape warnings remain;
@@ -1183,6 +1224,17 @@ validation error markers. Workspace/all-feature checks, the no-playback check,
 Clippy and `git diff --check` pass; existing style warnings and line-ending
 advisories remain. Native FFT and unrelated GPU implementation code were unchanged;
 their latest full-suite evidence remains the scheduler-sizing pass above.
+
+Current transform/padding evidence is under `output/review-bluestein-padding-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 154 passing CPU tests. The native
+suite completed in 119.00 seconds in debug and 51.05 seconds in release.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record twenty-one passing
+serial hardware regressions with synchronization validation requested and no
+Vulkan validation error markers. The nineteen-test audit group took 86.01 seconds.
+Workspace/all-feature checks, the no-playback check, Clippy and `git diff --check`
+pass; existing style warnings and line-ending advisories remain. The `baseline-*`
+and `fixed-*` probe logs preserve the zero-length and undersized-padding evidence;
+the `wide-*` logs document the separate unresolved automatic-search timeouts.
 
 ## Unresolved native device-creation stall
 

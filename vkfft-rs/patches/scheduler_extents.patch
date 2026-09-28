@@ -1,0 +1,106 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -25,6 +25,7 @@
+ #include "scheduler_stages.hpp"
+ #include "scheduler_arithmetic.hpp"
+ #include "scheduler_sizes.hpp"
++#include "scheduler_extents.hpp"
+ static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
+ 	for (int i = 0; i < 33; i++) {
+ 		registers_per_thread_per_radix[i] = 0;
+@@ -2199,16 +2200,8 @@
+ 			FFTPlan->bigSequenceEvenR2C = 1;
+ 		}
+ 	}
+-	if (app->configuration.performDCT == 1) {
+-		FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = 2 * app->configuration.size[axis_id] - 2; // now in actualFFTSize - modified dimension size for R2C/DCT
+-	}
+-	if (app->configuration.performDST == 1) {
+-		FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = 2 * app->configuration.size[axis_id] + 2; // now in actualFFTSize - modified dimension size for R2C/DCT
+-	}
+-	if (((app->configuration.performDCT == 4) || (app->configuration.performDST == 4)) && (app->configuration.size[axis_id] % 2 == 0)) {
+-		FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.size[axis_id] / 2; // now in actualFFTSize - modified dimension size for R2C/DCT
+-		//FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.size[axis_id] * 8; // now in actualFFTSize - modified dimension size for R2C/DCT
+-	}
++    res = vkfft_scheduler::real_transform_length(app->configuration, app->configuration.size[axis_id], FFTPlan->actualFFTSizePerAxis[axis_id][axis_id]);
++    if (res != VKFFT_SUCCESS) return res;
+ 	if ((axis_id > 0) && (app->configuration.performR2C)) {
+ 		FFTPlan->actualFFTSizePerAxis[axis_id][0] = FFTPlan->actualFFTSizePerAxis[axis_id][0] / 2 + 1;
+ 	}
+@@ -2341,29 +2334,10 @@
+ 				axes->specializationConstants.performBandwidthBoost = 1;
+ 		}
+ 		app->configuration.registerBoost = 1;
+-		tempSequence = 2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1;
+-		int FFTSizeSelected = 0;
+-		if (((app->configuration.useCustomBluesteinPaddingPattern > 0) || (app->configuration.autoCustomBluesteinPaddingPattern)) && (!app->configuration.fixMaxRadixBluestein)) {
+-			int arr_limit = (app->configuration.useCustomBluesteinPaddingPattern) ? (int)app->configuration.useCustomBluesteinPaddingPattern : (int)app->configuration.autoCustomBluesteinPaddingPattern;
+-			for (int i = 0; i < arr_limit; i++) {
+-				if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] >= app->configuration.primeSizes[i]) {
+-					if (i != (arr_limit - 1)) {
+-						if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < app->configuration.primeSizes[i + 1]) {
+-							tempSequence = app->configuration.paddedSizes[i];
+-							FFTSizeSelected = 1;
+-							i = arr_limit;
+-						}
+-					}
+-					else {
+-						if ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) <= app->configuration.paddedSizes[i]) {
+-							tempSequence = app->configuration.paddedSizes[i];
+-							FFTSizeSelected = 1;
+-							i = arr_limit;
+-						}
+-					}
+-				}
+-			}
+-		}
++		pfUINT minimumBluesteinLength = 0;
++		bool FFTSizeSelected = false;
++		res = vkfft_scheduler::initial_bluestein_padding(app->configuration, FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence, FFTSizeSelected);
++		if (res != VKFFT_SUCCESS) return res;
+ 		if (app->configuration.fixMaxRadixBluestein > 0) {
+ 			while (!FFTSizeSelected) {
+ 				int testSequence = (int)tempSequence;
+@@ -2424,27 +2398,8 @@
+ 				FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.size[axis_id] / 2; // now in actualFFTSize - modified dimension size for R2C/DCT
+ 				FFTPlan->actualPerformR2CPerAxis[axis_id] = 0;
+ 				FFTPlan->bigSequenceEvenR2C = 1;
+-				tempSequence = 2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1;
+-				FFTSizeSelected = 0;
+-				if (((app->configuration.useCustomBluesteinPaddingPattern > 0) || (app->configuration.autoCustomBluesteinPaddingPattern)) && (!app->configuration.fixMaxRadixBluestein)) {
+-					int arr_limit = (app->configuration.useCustomBluesteinPaddingPattern) ? (int)app->configuration.useCustomBluesteinPaddingPattern : (int)app->configuration.autoCustomBluesteinPaddingPattern;
+-					for (int i = 0; i < arr_limit; i++) {
+-						if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] >= app->configuration.primeSizes[i]) {
+-							if (i != (arr_limit - 1)) {
+-								if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] < app->configuration.primeSizes[i + 1]) {
+-									tempSequence = app->configuration.paddedSizes[i];
+-									FFTSizeSelected = 1;
+-								}
+-							}
+-							else {
+-								if ((2 * FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1) <= app->configuration.paddedSizes[i]) {
+-									tempSequence = app->configuration.paddedSizes[i];
+-									FFTSizeSelected = 1;
+-								}
+-							}
+-						}
+-					}
+-				}
++				res = vkfft_scheduler::initial_bluestein_padding(app->configuration, FFTPlan->actualFFTSizePerAxis[axis_id][axis_id], minimumBluesteinLength, tempSequence, FFTSizeSelected);
++				if (res != VKFFT_SUCCESS) return res;
+ 				if (app->configuration.fixMaxRadixBluestein > 0) {
+ 					while (!FFTSizeSelected) {
+ 						pfUINT testSequence = tempSequence;
+@@ -2499,7 +2454,11 @@
+ 			}
+ 		}
+ 
+-		if (app->configuration.forceBluesteinSequenceSize) FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.forceBluesteinSequenceSize;
++        if (app->configuration.forceBluesteinSequenceSize) {
++            res = vkfft_scheduler::validate_bluestein_padding(app->configuration.forceBluesteinSequenceSize, minimumBluesteinLength);
++            if (res != VKFFT_SUCCESS) return res;
++            FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] = app->configuration.forceBluesteinSequenceSize;
++        }
+ 
+ 		if ((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] & (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1)) == 0) {
+ 			usedSharedMemory = (int)app->configuration.sharedMemorySizePow2;
