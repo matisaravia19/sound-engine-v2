@@ -411,6 +411,22 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_bounds_stages_and_resolves_nested_registers() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_metadata() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_metadata() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_plans_preserve_dimensions_and_release_failed_allocations() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_plans() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_plans() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

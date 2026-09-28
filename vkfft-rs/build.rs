@@ -28,6 +28,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/codegen_stage_policy_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_rader_layout.hpp");
     println!("cargo:rerun-if-changed=src/codegen_rader_layout_tests.hpp");
+    println!("cargo:rerun-if-changed=src/scheduler_stages.hpp");
+    println!("cargo:rerun-if-changed=src/scheduler_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_radix_stage_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_permutation_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_name_tests.hpp");
@@ -176,6 +178,10 @@ fn main() {
         (
             "vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RaderKernels.h",
             include_str!("patches/rader_layout.patch"),
+        ),
+        (
+            "vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h",
+            include_str!("patches/scheduler_stages.patch"),
         ),
     ] {
         let path = vkfft_include.join("vkFFT").join(header);

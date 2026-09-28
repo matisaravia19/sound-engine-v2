@@ -43,9 +43,10 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
     let fence = OwnedFence::new(gpu.device_context()).unwrap();
     // Small lengths cover the specialized radix/permutation kernels. Prime
     // lengths exercise VkFFT's LUT/recursive FFT initialization transfers;
+    // 41 and 3*41 also cover Rader stages with unequal register demands.
     // 65,537 exceeds the bundled Rader cutoff and exercises Bluestein setup.
     for size in [
-        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 17, 257, 1009, 65_537,
+        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 17, 41, 123, 257, 1009, 65_537,
     ] {
         let (plan, buffer) =
             PartitionedConvolver::build_fft_plan(&gpu, size as u64, true, fence.handle).unwrap();

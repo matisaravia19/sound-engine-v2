@@ -783,12 +783,53 @@ The formerly crashing child now returns `VKFFT_ERROR_MATH_FAILED` and exits
 normally. Evidence is under `output/review-rader-layout-20260928/`, including
 `fault-result.log`, `shader-hashes.log`, both shader files and the owned probe.
 
+## Scheduler stage construction and recursive sizing
+
+CPU probes against the previous scheduler confirmed two failures before shader
+generation: adding a Rader stage to full 33-element arrays overwrote the adjacent
+guard values with `17` and `3`, and a nested stage tree reported four required
+registers instead of six because it used the outer stage index inside an inner
+generator array. The native plan was not submitted to Vulkan in either probe.
+
+Stage construction now preserves the actual array extents in C++ template
+references. A shared checked append keeps radix/generator pairs together and
+rejects capacity exhaustion before writing. It covers outer stages, nested
+Rader stages, ordinary stages and the final register-boost stage. Failed appends
+leave that slot/count unchanged; callers still own and tear down any earlier
+partial plan. Factor-tree traversal rejects invalid counts and bounds recursion.
+
+Recursive register sizing now inspects each selected subtree using its own
+stage indexes and publishes extrema only after success. The final reorder only
+indexes the ordinary register table for ordinary stages: a Rader prime such as
+41 must never index that 33-element array. It moves the generator tag with the
+selected radix. Thread-count sizing uses checked integer ceil division/products,
+avoiding floating conversion and signed multiplication overflow.
+
+The regression suite covers both 20/33-element capacities, the last valid slot,
+partial append failure, nested/cyclic metadata, unchanged sizing outputs on
+failure, thread-count overflow and the ordinary/Rader reorder distinction.
+Another matrix runs 128 actual CPU scheduler configurations, checks their stage
+products, and injects allocation failure and `std::bad_alloc` at every observed
+allocation position. Axis teardown releases all tracked allocations in each case.
+The hardware DFT/round-trip regression now also covers lengths 41 and 123,
+exercising Rader stages whose inner radices require different register counts.
+
+Before/after plan summaries for all 128 configurations are byte-identical:
+16,872 bytes, SHA-256
+`8e7fc86f2a42dbba74046ab2b8b77743b780b918913e851bbbc1e42abbfc21b4`.
+The matrix covers float/double, strided/contiguous, register boosts 1/4, ordinary
+and prime lengths through 65,537, using the derived power-of-two shared-memory
+limit. Logs and the owned native probe are under
+`output/review-scheduler-20260928/`; `baseline-limits-result.log`,
+`final-limits-result.log` and `plan-hashes.log` preserve the comparisons.
+These host-side findings do not establish the cause of the original driver crashes.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **141 CPU tests**: 112 engine tests and
-  twenty-nine VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **143 CPU tests**: 112 engine tests and
+  thirty-one VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -929,6 +970,17 @@ The seventeen-test audit group completed in 101.30 seconds. Workspace/all-featur
 checks, the no-playback check, Clippy and `git diff --check` pass; their logs are
 alongside the tests. Existing style warnings and line-ending advisories remain.
 
+Current scheduler evidence is under `output/review-scheduler-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 143 passing CPU tests.
+The two scheduler tests were rerun in both profiles after correcting the fixture's
+derived shared-memory limit; `scheduler-final-debug.log` and
+`scheduler-final-release.log` record those final cases. `gpu-audit.log`,
+`gpu-staging.log` and `gpu-integration.log` record nineteen passing serial hardware
+regressions. The expanded FFT cases also pass in `gpu-fft-final.log`. No Vulkan
+validation error markers were reported. The seventeen-test audit group completed
+in 95.24 seconds. Workspace/all-feature checks, the no-playback check, Clippy and
+`git diff --check` pass; existing style warnings and line-ending advisories remain.
+
 ## Unresolved native device-creation stall
 
 On this RTX 3060 / NVIDIA 591.86 installation, creating another backend **on a
@@ -982,8 +1034,8 @@ in every listed path:
    whether a supported ownership/initialization change can avoid it safely.
 2. Remaining playback/runtime error paths and integration under repeated scene/voice
    changes, including actual device failure/recovery beyond synthetic callbacks.
-3. Continue checking native scheduler arithmetic and allocation failures before
-   the Rader layout helpers, remaining native configuration/data invariants,
+3. Continue checking native configuration/factor limits, primitive-root and
+   scheduling arithmetic before stage construction, remaining data invariants,
    retention outside VMA statistics and repeated complete backend creation/destruction.
 4. Extend the bounded soak toward the originally reported workload if its trigger
    can be isolated. No system crash has been reproduced, and no deliberate GPU

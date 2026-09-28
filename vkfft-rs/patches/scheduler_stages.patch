@@ -1,0 +1,236 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -22,6 +22,7 @@
+ #ifndef VKFFT_SCHEDULER_H
+ #define VKFFT_SCHEDULER_H
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
++#include "scheduler_stages.hpp"
+ static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
+ 	for (int i = 0; i < 33; i++) {
+ 		registers_per_thread_per_radix[i] = 0;
+@@ -1861,8 +1862,8 @@
+ 				if (res != VKFFT_SUCCESS) return res;
+ 				for (int j = 0; j < raderContainer[i].numSubPrimes; j++) {
+ 					for (int t = 0; t < raderContainer[i].container[j].multiplier; t++) {
+-						raderContainer[i].stageRadix[stageID] = raderContainer[i].container[j].prime;
+-						stageID++;
++						res = vkfft_scheduler::append_stage(stageID, raderContainer[i].stageRadix, raderContainer[i].stage_rader_generator, raderContainer[i].container[j].prime, raderContainer[i].container[j].generator);
++						if (res != VKFFT_SUCCESS) return res;
+ 					}
+ 				}
+ 			}
+@@ -2102,122 +2103,56 @@
+ 	}
+ 	return res;
+ }
+-static inline VkFFTResult VkFFTGetRaderFFTStages(VkFFTRaderContainer* raderContainer, int numRaderPrimes, int* stageid, int* stageRadix, int* stage_rader_generator) {
+-	VkFFTResult res = VKFFT_SUCCESS;
+-	for (pfINT i = 0; i < (pfINT)numRaderPrimes; i++) {
+-		if (raderContainer[i].multiplier > 0) {
+-			stageRadix[stageid[0]] = raderContainer[i].prime;
+-			stage_rader_generator[stageid[0]] = raderContainer[i].generator;
+-			raderContainer[i].multiplier--;
+-			i--;
+-			stageid[0]++;
+-			//axes[k].specializationConstants.numStages++;
+-			//find primitive root
+-		}
+-	}
+-	for (pfINT i = 0; i < (pfINT)numRaderPrimes; i++) {
+-		if (raderContainer[i].type == 0) {
+-			if (raderContainer[i].numSubPrimes > 0) {
+-				res = VkFFTGetRaderFFTStages(raderContainer[i].container, raderContainer[i].numSubPrimes, &raderContainer[i].numStages, raderContainer[i].stageRadix, raderContainer[i].stage_rader_generator);
+-				if (res != VKFFT_SUCCESS) return res;
+-			}
+-			for (int j = 32; j > 1; j--) {
+-				if (raderContainer[i].loc_multipliers[j] > 0) {
+-					raderContainer[i].stageRadix[raderContainer[i].numStages] = j;
+-					raderContainer[i].loc_multipliers[j]--;
+-					j++;
+-					raderContainer[i].numStages++;
+-				}
+-			}
+-			/*//make that convolution step uses min_regs radix - max working threads
+-			int stage_id_swap = axes[k].specializationConstants.raderContainer[i].numStages - 1;
+-			int temp_radix = axes[k].specializationConstants.raderContainer[i].stageRadix[axes[k].specializationConstants.raderContainer[i].numStages - 1];
+-			int temp_regs = axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[axes[k].specializationConstants.raderContainer[i].numStages - 1]];
+-
+-			for (int j = 0; j < axes[k].specializationConstants.raderContainer[i].numStages-1; j++) {
+-				if (axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[j]] < axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]])
+-					stage_id_swap = j;
+-			}
+-			axes[k].specializationConstants.raderContainer[i].stageRadix[axes[k].specializationConstants.raderContainer[i].numStages - 1] = axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap];
+-			axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[axes[k].specializationConstants.raderContainer[i].numStages - 1]] = axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]];
+-			axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap] = temp_radix;
+-			axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]] = temp_regs;
+-
+-			//make that first step uses second to min_regs radix
+-			stage_id_swap = 0;
+-			temp_radix = axes[k].specializationConstants.raderContainer[i].stageRadix[0];
+-			temp_regs = axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[0]];
+-
+-			for (int j = 1; j < axes[k].specializationConstants.raderContainer[i].numStages - 1; j++) {
+-				if (axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[j]] < axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]])
+-					stage_id_swap = j;
+-			}
+-			axes[k].specializationConstants.raderContainer[i].stageRadix[0] = axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap];
+-			axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[0]] = axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]];
+-			axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap] = temp_radix;
+-			axes[k].specializationConstants.raderContainer[i].registers_per_thread_per_radix[axes[k].specializationConstants.raderContainer[i].stageRadix[stage_id_swap]] = temp_regs;
+-			*/
+-		}
+-	}
+-	return res;
++template<size_t N>
++static inline VkFFTResult VkFFTGetRaderFFTStages(VkFFTRaderContainer* raderContainer, int numRaderPrimes, int* stageid, int (&stageRadix)[N], int (&stage_rader_generator)[N], unsigned depth = 0) {
++    if (!stageid || *stageid < 0 || static_cast<size_t>(*stageid) > N ||
++        !vkfft_scheduler::tree_list_valid(raderContainer, numRaderPrimes, depth)) return VKFFT_ERROR_MATH_FAILED;
++    for (int i = 0; i < numRaderPrimes; ++i) {
++        auto& rader = raderContainer[i];
++        if (rader.multiplier < 0 || rader.prime < 2 || rader.generator <= 0 || rader.generator >= rader.prime ||
++            (rader.type != 0 && rader.type != 1)) return VKFFT_ERROR_MATH_FAILED;
++        while (rader.multiplier > 0) {
++            auto res = vkfft_scheduler::append_stage(*stageid, stageRadix, stage_rader_generator, rader.prime, rader.generator);
++            if (res != VKFFT_SUCCESS) return res;
++            --rader.multiplier;
++        }
++    }
++    for (int i = 0; i < numRaderPrimes; ++i) {
++        auto& rader = raderContainer[i];
++        if (rader.type != 0) continue;
++        if (rader.numStages < 0 || rader.numStages > static_cast<int>(sizeof(rader.stageRadix) / sizeof(rader.stageRadix[0])))
++            return VKFFT_ERROR_MATH_FAILED;
++        if (rader.numSubPrimes != 0) {
++            auto res = VkFFTGetRaderFFTStages(rader.container, rader.numSubPrimes, &rader.numStages, rader.stageRadix, rader.stage_rader_generator, depth + 1);
++            if (res != VKFFT_SUCCESS) return res;
++        }
++        for (int radix = 32; radix > 1; --radix) {
++            if (rader.loc_multipliers[radix] < 0) return VKFFT_ERROR_MATH_FAILED;
++            while (rader.loc_multipliers[radix] > 0) {
++                auto res = vkfft_scheduler::append_stage(rader.numStages, rader.stageRadix, rader.stage_rader_generator, radix, 0);
++                if (res != VKFFT_SUCCESS) return res;
++                --rader.loc_multipliers[radix];
++            }
++        }
++    }
++    return VKFFT_SUCCESS;
+ }
+-static inline VkFFTResult VkFFTMinMaxRegisterCheck(int numStages, int* stageRadix, int* min_registers_per_thread, int* registers_per_thread, int* registers_per_thread_per_radix, VkFFTRaderContainer* raderContainer, int numRaderPrimes, int* stage_rader_generator) {
+-	VkFFTResult res = VKFFT_SUCCESS;
+-	for (pfINT j = 0; j < (pfINT)numStages; j++) {
+-		if (stage_rader_generator[j] == 0) {
+-			if (registers_per_thread_per_radix[stageRadix[j]] > 0) {
+-				if (registers_per_thread_per_radix[stageRadix[j]] < min_registers_per_thread[0]) {
+-					min_registers_per_thread[0] = registers_per_thread_per_radix[stageRadix[j]];
+-				}
+-				if (registers_per_thread_per_radix[stageRadix[j]] > registers_per_thread[0]) {
+-					registers_per_thread[0] = registers_per_thread_per_radix[stageRadix[j]];
+-				}
+-			}
+-		}
+-		else {
+-			for (pfINT i = 0; i < (pfINT)numRaderPrimes; i++) {
+-				if (raderContainer[i].prime == stageRadix[j]) {
+-					if (raderContainer[i].type == 0) {
+-						for (pfINT j2 = 0; j2 < (pfINT)raderContainer[i].numStages; j2++) {
+-							if (raderContainer[i].stage_rader_generator[j] == 0) {
+-								if (raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j2]] > 0) {
+-									if (raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j2]] < min_registers_per_thread[0]) {
+-										min_registers_per_thread[0] = raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j2]];
+-									}
+-									if (raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j2]] > registers_per_thread[0]) {
+-										registers_per_thread[0] = raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j2]];
+-									}
+-								}
+-							}
+-							else {
+-								res = VkFFTMinMaxRegisterCheck(raderContainer[i].numStages, raderContainer[i].stageRadix, min_registers_per_thread, registers_per_thread, raderContainer[i].registers_per_thread_per_radix, raderContainer[i].container, raderContainer[i].numSubPrimes, raderContainer[i].stage_rader_generator);
+-								if (res != VKFFT_SUCCESS) return res;
+-							}
+-						}
+-					}
+-				}
+-			}
+-		}
+-	}
+-	return res;
++template<size_t N>
++static inline VkFFTResult VkFFTMinMaxRegisterCheck(int numStages, const int (&stageRadix)[N], int* min_registers_per_thread, int* registers_per_thread, const int (&registers_per_thread_per_radix)[33], const VkFFTRaderContainer* raderContainer, int numRaderPrimes, const int (&stage_rader_generator)[N]) {
++    int minimum = *min_registers_per_thread;
++    int maximum = *registers_per_thread;
++    auto res = vkfft_scheduler::register_limits(numStages, stageRadix, stage_rader_generator, registers_per_thread_per_radix, raderContainer, numRaderPrimes, minimum, maximum);
++    if (res == VKFFT_SUCCESS) {
++        *min_registers_per_thread = minimum;
++        *registers_per_thread = maximum;
++    }
++    return res;
+ }
+-static inline VkFFTResult VkFFTGetRaderFFTThreadsNum(VkFFTRaderContainer* raderContainer, int numRaderPrimes, int* numThreads) {
+-	VkFFTResult res = VKFFT_SUCCESS;
+-
+-	for (pfINT i = 0; i < (pfINT)numRaderPrimes; i++) {
+-		if (raderContainer[i].type == 0) {
+-			if (raderContainer[i].numSubPrimes > 0) {
+-				res = VkFFTGetRaderFFTThreadsNum(raderContainer[i].container, raderContainer[i].numSubPrimes, numThreads);
+-				if (res != VKFFT_SUCCESS) return res;
+-			}
+-			for (pfINT j = 0; j < (pfINT)raderContainer[i].numStages; j++) {
+-				if (raderContainer[i].stage_rader_generator[j] == 0) {
+-					if (raderContainer[i].containerFFTNum * (int)pfceil(raderContainer[i].containerFFTDim / (double)raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j]]) > numThreads[0]) numThreads[0] = raderContainer[i].containerFFTNum * (int)pfceil(raderContainer[i].containerFFTDim / (double)raderContainer[i].registers_per_thread_per_radix[raderContainer[i].stageRadix[j]]);
+-				}
+-			}
+-		}
+-	}
+-	return res;
++static inline VkFFTResult VkFFTGetRaderFFTThreadsNum(const VkFFTRaderContainer* raderContainer, int numRaderPrimes, int* numThreads) {
++    int maximum = *numThreads;
++    auto res = vkfft_scheduler::rader_threads(raderContainer, numRaderPrimes, maximum);
++    if (res == VKFFT_SUCCESS) *numThreads = maximum;
++    return res;
+ }
+ 
+ static inline VkFFTResult VkFFTScheduler(VkFFTApplication* app, VkFFTPlan* FFTPlan, int axis_id) {
+@@ -3229,10 +3164,10 @@
+ 
+ 		for (int i = 32; i > 1; i--) {
+ 			if (loc_multipliers[i] > 0) {
+-				axes[k].specializationConstants.stageRadix[axes[k].specializationConstants.numStages] = i;
++				res = vkfft_scheduler::append_stage(axes[k].specializationConstants.numStages, axes[k].specializationConstants.stageRadix, axes[k].specializationConstants.rader_generator, i, 0);
++				if (res != VKFFT_SUCCESS) return res;
+ 				loc_multipliers[i]--;
+ 				i++;
+-				axes[k].specializationConstants.numStages++;
+ 			}
+ 		}
+ 		
+@@ -3273,25 +3208,14 @@
+ 			axes[k].specializationConstants.min_registers_per_thread = 2;
+ 		}
+ 		if (switchRegisterBoost > 0) {
+-			axes[k].specializationConstants.stageRadix[axes[k].specializationConstants.numStages] = switchRegisterBoost;
+-			axes[k].specializationConstants.numStages++;
++			res = vkfft_scheduler::append_stage(axes[k].specializationConstants.numStages, axes[k].specializationConstants.stageRadix, axes[k].specializationConstants.rader_generator, switchRegisterBoost, 0);
++			if (res != VKFFT_SUCCESS) return res;
+ 		}
+ 		else {
+-			//try to read directly to registers
++			// Prefer an ordinary stage that can read directly into its physical registers.
+ 			if (min_registers_per_thread != registers_per_thread) {
+-				for (int i = 0; i < axes[k].specializationConstants.numStages; i++) {
+-					if (axes[k].specializationConstants.registers_per_thread_per_radix[axes[k].specializationConstants.stageRadix[i]] == min_registers_per_thread) {
+-						int stageid = axes[k].specializationConstants.stageRadix[i];
+-						axes[k].specializationConstants.stageRadix[i] = axes[k].specializationConstants.stageRadix[0];
+-						axes[k].specializationConstants.stageRadix[0] = stageid;
+-						if (axes[k].specializationConstants.useRader) {
+-							stageid = axes[k].specializationConstants.rader_generator[i];
+-							axes[k].specializationConstants.rader_generator[i] = axes[k].specializationConstants.rader_generator[0];
+-							axes[k].specializationConstants.rader_generator[0] = stageid;
+-						}
+-						i = axes[k].specializationConstants.numStages;
+-					}
+-				}
++				res = vkfft_scheduler::prioritize_register_stage(axes[k].specializationConstants, min_registers_per_thread);
++				if (res != VKFFT_SUCCESS) return res;
+ 			}
+ 		}
+ 	}
