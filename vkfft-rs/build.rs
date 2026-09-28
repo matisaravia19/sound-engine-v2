@@ -32,6 +32,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/scheduler_tests.hpp");
     println!("cargo:rerun-if-changed=src/scheduler_retry.hpp");
     println!("cargo:rerun-if-changed=src/scheduler_retry_tests.hpp");
+    println!("cargo:rerun-if-changed=src/scheduler_arithmetic.hpp");
+    println!("cargo:rerun-if-changed=src/scheduler_arithmetic_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_radix_stage_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_permutation_tests.hpp");
     println!("cargo:rerun-if-changed=src/codegen_name_tests.hpp");
@@ -188,6 +190,10 @@ fn main() {
         (
             "vkFFT_AppManagement/vkFFT_InitializeApp.h",
             include_str!("patches/scheduler_retry.patch"),
+        ),
+        (
+            "vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h",
+            include_str!("patches/scheduler_arithmetic.patch"),
         ),
     ] {
         let path = vkfft_include.join("vkFFT").join(header);

@@ -1,0 +1,107 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -23,6 +23,7 @@
+ #define VKFFT_SCHEDULER_H
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "scheduler_stages.hpp"
++#include "scheduler_arithmetic.hpp"
+ static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
+ 	for (int i = 0; i < 33; i++) {
+ 		registers_per_thread_per_radix[i] = 0;
+@@ -1732,10 +1733,15 @@
+ 	return VKFFT_SUCCESS;
+ }
+ static inline VkFFTResult VkFFTConstructRaderTree(VkFFTApplication* app, VkFFTRaderContainer** raderContainer_input, pfUINT* tempSequence, int* numRaderPrimes, int fft_radix_part) {
++    // Output slots belong to the axis; never overwrite an existing allocation.
++    if (!app || !raderContainer_input || !tempSequence || !numRaderPrimes ||
++        *raderContainer_input || *numRaderPrimes || !*tempSequence || fft_radix_part <= 0 ||
++        !vkfft_scheduler::factor_limits_valid(app->configuration)) return VKFFT_ERROR_MATH_FAILED;
++    if (*tempSequence == 1) return VKFFT_SUCCESS;
+ 	VkFFTResult res = VKFFT_SUCCESS;
+ 	pfUINT locTempSequence = tempSequence[0];
+ 	pfUINT tempSequence_copy = tempSequence[0];
+-	pfUINT limit = ((tempSequence[0] + 1) > app->configuration.fixMaxRaderPrimeFFT) ? app->configuration.fixMaxRaderPrimeFFT : (tempSequence[0] + 1);
++	pfUINT limit = (tempSequence[0] < app->configuration.fixMaxRaderPrimeFFT) ? tempSequence[0] + 1 : app->configuration.fixMaxRaderPrimeFFT;
+ 	for (int i = (int)app->configuration.fixMinRaderPrimeMult; i < limit; i++) {
+ 		if (locTempSequence % i == 0) {
+ 			numRaderPrimes[0]++;
+@@ -1749,11 +1755,12 @@
+ 		}
+ 	}
+ 
++	if (!numRaderPrimes[0]) return VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+ 	raderContainer_input[0] = (VkFFTRaderContainer*)calloc(sizeof(VkFFTRaderContainer), numRaderPrimes[0]);
+ 	if (raderContainer_input[0] == 0) return VKFFT_ERROR_MALLOC_FAILED;
+ 	VkFFTRaderContainer* raderContainer = raderContainer_input[0];
+ 	pfUINT tempSequence_temp = 1;
+-	limit = ((tempSequence[0] + 1) > app->configuration.fixMaxRaderPrimeFFT) ? app->configuration.fixMaxRaderPrimeFFT : (tempSequence[0] + 1);
++	limit = (tempSequence[0] < app->configuration.fixMaxRaderPrimeFFT) ? tempSequence[0] + 1 : app->configuration.fixMaxRaderPrimeFFT;
+ 	for (int i = (int)app->configuration.fixMinRaderPrimeMult; i < limit; i++) {
+ 		if (tempSequence[0] % i == 0) {
+ 			if (i < app->configuration.fixMinRaderPrimeFFT) {
+@@ -1815,21 +1822,8 @@
+ 	}
+ 	//main loop for all primes
+ 	for (int i = 0; i < numRaderPrimes[0]; i++) {
+-		//generator loop
+-		for (int r = 2; r < raderContainer[i].prime; r++) {
+-			int test = r;
+-			for (int iter = 0; iter < raderContainer[i].prime - 2; iter++) {
+-				if (test == 1) {
+-					test = 0;
+-					iter = raderContainer[i].prime;
+-				}
+-				test = ((test * r) % raderContainer[i].prime);
+-			}
+-			if (test == 1) {
+-				raderContainer[i].generator = r;
+-				r = raderContainer[i].prime;
+-			}
+-		}
++        res = vkfft_scheduler::primitive_root(raderContainer[i].prime, raderContainer[i].generator);
++        if (res != VKFFT_SUCCESS) return res;
+ 
+ 		//subsplit and information initialization
+ 		if (raderContainer[i].type) {//Multiplication
+@@ -1839,7 +1833,9 @@
+ 		else {//FFT
+ 			locTempSequence = raderContainer[i].prime - 1;
+ 			raderContainer[i].containerFFTDim = raderContainer[i].prime - 1;
+-			raderContainer[i].containerFFTNum = fft_radix_part * (int)tempSequence_copy / raderContainer[i].prime;
++            res = vkfft_scheduler::rader_fft_count(fft_radix_part, tempSequence_copy,
++                                                  raderContainer[i].prime, raderContainer[i].containerFFTNum);
++            if (res != VKFFT_SUCCESS) return res;
+ 			int stageID = 0;
+ 			for (int j = 2; j < app->configuration.fixMinRaderPrimeMult; j++) {
+ 				if (locTempSequence % j == 0) {
+@@ -1858,7 +1854,7 @@
+ 				//res = VkFFTGetRegistersPerThread(raderContainer[i].prime - 1, 0, 0, 1, raderContainer[i].loc_multipliers, raderContainer[i].registers_per_thread_per_radix, &raderContainer[i].registers_per_thread, &raderContainer[i].min_registers_per_thread, &isGoodSequence);
+ 			if (res != VKFFT_SUCCESS) return res;
+ 			if (locTempSequence != 1) {
+-				res = VkFFTConstructRaderTree(app, &raderContainer[i].container, &locTempSequence, &raderContainer[i].numSubPrimes, fft_radix_part * (int)tempSequence_copy / raderContainer[i].prime);
++				res = VkFFTConstructRaderTree(app, &raderContainer[i].container, &locTempSequence, &raderContainer[i].numSubPrimes, raderContainer[i].containerFFTNum);
+ 				if (res != VKFFT_SUCCESS) return res;
+ 				for (int j = 0; j < raderContainer[i].numSubPrimes; j++) {
+ 					for (int t = 0; t < raderContainer[i].container[j].multiplier; t++) {
+@@ -2156,6 +2152,12 @@
+ }
+ 
+ static inline VkFFTResult VkFFTScheduler(VkFFTApplication* app, VkFFTPlan* FFTPlan, int axis_id) {
++    if (!app || !FFTPlan || !app->configuration.FFTdim ||
++        app->configuration.FFTdim > VKFFT_MAX_FFT_DIMENSIONS || axis_id < 0 ||
++        static_cast<pfUINT>(axis_id) >= app->configuration.FFTdim ||
++        !vkfft_scheduler::factor_limits_valid(app->configuration)) return VKFFT_ERROR_MATH_FAILED;
++    for (pfUINT axis = 0; axis < app->configuration.FFTdim; ++axis)
++        if (!app->configuration.size[axis]) return VKFFT_ERROR_MATH_FAILED;
+ 	VkFFTResult res = VKFFT_SUCCESS;
+ 	VkFFTAxis* axes = FFTPlan->axes[axis_id];
+ 
+@@ -2924,6 +2926,8 @@
+ 		axes[k].specializationConstants.useRaderMult = 0;
+ 		axes[k].specializationConstants.useRaderFFT = 0;
+ 		if (tempSequence != 1) {
++            if (!tempSequence || locAxisSplit[k] / tempSequence > INT_MAX)
++                return VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+ 			res = VkFFTConstructRaderTree(app, &axes[k].specializationConstants.raderContainer, &tempSequence, &axes[k].specializationConstants.numRaderPrimes, (int)(locAxisSplit[k] / tempSequence));
+ 			if (res != VKFFT_SUCCESS) return res;
+ 		}

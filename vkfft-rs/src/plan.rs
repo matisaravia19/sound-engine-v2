@@ -443,6 +443,30 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_primitive_roots_match_independent_orders() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_primitive_roots() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_primitive_roots() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_rader_counts_do_not_overflow_or_lose_ownership() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_rader_counts() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_rader_counts() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_rejects_invalid_factor_limits_before_allocation() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_factor_limits() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_factor_limits() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

@@ -854,12 +854,48 @@ before/after logs and owned native probe. The large natural shape was scheduled
 on the CPU only; it allocated no transform buffers and submitted no Vulkan work.
 This verified host leak does not establish the cause of the reported driver crashes.
 
+## Rader arithmetic and factor bounds
+
+The native Rader constructor multiplied and narrowed values before dividing by
+the prime factor. CPU-only probes reproduced successful plans with corrupted
+counts: `INT_MAX * 17 / 17` yielded 126,322,566 instead of 2,147,483,647, and
+`17^8 / 17` yielded -94,951,597 instead of 410,338,673. A count exceeding `int`
+also returned success with a negative value. Counts now divide first, check the
+remaining multiplication against `INT_MAX`, and publish only representable
+results. Recursive construction reuses the checked count, and the scheduler
+checks its quotient before narrowing it for the constructor.
+
+Primitive-root selection now uses checked-width modular exponentiation and the
+distinct prime factors of `p-1`, instead of enumerating every power for every
+candidate using signed-int products. It preserves the smallest generator and
+rejects composite metadata. An independent sieve and power-enumeration oracle
+verify every prime/composite through 16,384; further known-generator cases reach
+`INT_MAX`. In 21 paired CPU-only runs for prime 786,433, median full constructor
+time fell from 13,359 to 2,757 microseconds (about 4.8 times faster). This is a
+host-planning measurement, not an end-to-end GPU or audio performance claim.
+
+The scheduler and constructor now reject factor limits outside their supported
+radix ranges before indexing tables or entering factor loops. They also reject
+invalid pointers, ranks, axes and zero dimensions as applicable. Constructor
+re-entry preserves existing ownership instead of replacing the pointer, an
+empty factor sequence needs no allocation, and a disabled/unavailable Rader
+range returns an unsupported-length error. Exclusive-bound calculation avoids
+overflowing `sequence + 1`. Native-only malformed configurations and oversized
+constructor inputs in these tests are not exposed by the Rust plan builder.
+
+The arithmetic helpers live in one small header; the pinned vendor checkout is
+unchanged. Evidence and the owned probes are under
+`output/review-rader-arithmetic-20260928/`: `baseline-result.log`,
+`fixed-result.log`, and `constructor-timings.csv`/`.log`. Every constructor probe
+returns to zero tracked allocations. These findings do not establish the cause
+of the original driver crashes.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **145 CPU tests**: 112 engine tests and
-  thirty-three VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **148 CPU tests**: 112 engine tests and
+  thirty-six VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -1023,6 +1059,15 @@ After naming the synthetic exit scenarios for readability, both retry tests
 were rerun in debug and release; `retry-final-debug.log` and
 `retry-final-release.log` record those passing checks.
 
+Current Rader-arithmetic evidence is under `output/review-rader-arithmetic-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 148 passing CPU tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record nineteen passing
+serial hardware regressions with no Vulkan validation error markers. The
+seventeen-test audit group completed in 95.94 seconds. Workspace/all-feature
+checks, the no-playback check, Clippy and `git diff --check` pass; existing style
+warnings and line-ending advisories remain. These suites include the new
+primitive-root, checked-count and malformed-input regressions.
+
 ## Unresolved native device-creation stall
 
 On this RTX 3060 / NVIDIA 591.86 installation, creating another backend **on a
@@ -1076,8 +1121,8 @@ in every listed path:
    whether a supported ownership/initialization change can avoid it safely.
 2. Remaining playback/runtime error paths and integration under repeated scene/voice
    changes, including actual device failure/recovery beyond synthetic callbacks.
-3. Continue checking native configuration/factor limits, primitive-root and
-   scheduling arithmetic before stage construction, remaining data invariants,
+3. Continue checking native dimension/buffer-size arithmetic and resource limits
+   before stage construction, remaining data invariants,
    retention outside VMA statistics and repeated complete backend creation/destruction.
 4. Extend the bounded soak toward the originally reported workload if its trigger
    can be isolated. No system crash has been reproduced, and no deliberate GPU

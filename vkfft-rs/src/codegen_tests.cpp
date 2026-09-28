@@ -444,3 +444,4 @@ extern "C" int vkfft_test_codegen_formatting() {
 #include "codegen_rader_layout_tests.hpp"
 #include "scheduler_tests.hpp"
 #include "scheduler_retry_tests.hpp"
+#include "scheduler_arithmetic_tests.hpp"
