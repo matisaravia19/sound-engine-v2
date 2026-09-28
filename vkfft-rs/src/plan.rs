@@ -467,6 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_preserves_full_width_batches_and_workspace_sizes() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_wide_sizes() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_wide_sizes() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_rejects_overflow_before_publishing_buffer_sizes() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_size_failures() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_size_failures() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;
@@ -561,6 +577,17 @@ mod tests {
     #[test]
     fn configuration_rejects_null_fence_short_buffer_and_dimension_overflow() {
         assert_eq!(builder().validate(), Ok(()));
+        // Large logical batches are supported by the public builder. Native
+        // scheduling must retain their width rather than silently narrowing them.
+        let batches = u64::from(u32::MAX) + 2;
+        assert_eq!(
+            builder()
+                .with_single_dimension(16)
+                .with_batch_count(batches)
+                .with_buffer(ash::vk::Buffer::from_raw(1), 128 * batches)
+                .validate(),
+            Ok(())
+        );
         let mut invalid = builder();
         invalid.handles.fence = 0;
         assert_eq!(invalid.validate(), Err(VkFFTResult::ErrorInvalidFence));

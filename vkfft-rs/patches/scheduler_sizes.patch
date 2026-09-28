@@ -1,0 +1,101 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -24,6 +24,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "scheduler_stages.hpp"
+ #include "scheduler_arithmetic.hpp"
++#include "scheduler_sizes.hpp"
+ static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
+ 	for (int i = 0; i < 33; i++) {
+ 		registers_per_thread_per_radix[i] = 0;
+@@ -2156,9 +2157,10 @@
+         app->configuration.FFTdim > VKFFT_MAX_FFT_DIMENSIONS || axis_id < 0 ||
+         static_cast<pfUINT>(axis_id) >= app->configuration.FFTdim ||
+         !vkfft_scheduler::factor_limits_valid(app->configuration)) return VKFFT_ERROR_MATH_FAILED;
+-    for (pfUINT axis = 0; axis < app->configuration.FFTdim; ++axis)
+-        if (!app->configuration.size[axis]) return VKFFT_ERROR_MATH_FAILED;
+-	VkFFTResult res = VKFFT_SUCCESS;
++    if (!app->configuration.tempBufferSize) return VKFFT_ERROR_MATH_FAILED;
++    pfUINT max_rhs = 0;
++    auto res = vkfft_scheduler::element_count(*app, app->configuration.size, false, max_rhs);
++    if (res != VKFFT_SUCCESS) return res;
+ 	VkFFTAxis* axes = FFTPlan->axes[axis_id];
+ 
+ 	int complexSize;
+@@ -2179,20 +2181,12 @@
+ 	int maxSingleSizeNonStrided = maxSequenceLengthSharedMemory;
+ 
+ 	int nonStridedAxisId = (app->configuration.considerAllAxesStrided) ? -1 : 0;
+-	pfUINT max_rhs = 1;
+ 	for (int i = 0; i < app->configuration.FFTdim; i++) {
+ 		FFTPlan->actualFFTSizePerAxis[axis_id][i] = app->configuration.size[i];
+-		if ((FFTPlan->actualFFTSizePerAxis[axis_id][i] > 0)) max_rhs *= FFTPlan->actualFFTSizePerAxis[axis_id][i];
+ 	}
+ 	for (int i = (int)app->configuration.FFTdim; i < VKFFT_MAX_FFT_DIMENSIONS; i++) {
+ 		FFTPlan->actualFFTSizePerAxis[axis_id][i] = 1;
+ 	}
+-	if (app->configuration.numberBatches > app->actualNumBatches)
+-		max_rhs *= app->configuration.numberBatches;
+-	else
+-		max_rhs *= app->actualNumBatches;
+-	if (app->configuration.coordinateFeatures > 0) max_rhs *= app->configuration.coordinateFeatures;
+-	if (app->configuration.numberKernels > 0) max_rhs *= app->configuration.numberKernels;
+ 
+ 	FFTPlan->actualPerformR2CPerAxis[axis_id] = (axis_id == 0) ? app->configuration.performR2C : 0;
+ 	if ((axis_id == 0) && (app->configuration.performR2C) && (app->configuration.size[axis_id] > maxSingleSizeNonStrided) && ((app->configuration.size[axis_id] % 2) == 0) && (!app->configuration.forceCallbackVersionRealTransforms)) {
+@@ -2514,7 +2508,6 @@
+ 		}
+ 	}
+ 	int isPowOf2 = (pow(2, (int)log2(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id])) == FFTPlan->actualFFTSizePerAxis[axis_id][axis_id]) ? 1 : 0;
+-	int locNumBatches = (app->configuration.numberBatches > app->actualNumBatches) ? (int)app->configuration.numberBatches : (int)app->actualNumBatches;
+ 	//return VKFFT_ERROR_UNSUPPORTED_RADIX;
+ 	int registerBoost = 1;
+ 	for (int i = 1; i <= app->configuration.registerBoost; i++) {
+@@ -2836,44 +2829,9 @@
+ 		//printf("sequence length exceeds boundaries\n");
+ 		//return VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH_R2C;
+ 	}
+-	pfUINT tempBufferSize = 0;
+-	if ((app->configuration.performR2C) && (axis_id == 0)) {
+-		if (FFTPlan->bigSequenceEvenR2C) {
+-			tempBufferSize = (FFTPlan->actualFFTSizePerAxis[axis_id][0] + 1) * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;
+-		}
+-		else {
+-			tempBufferSize = (FFTPlan->actualFFTSizePerAxis[axis_id][0]) * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;
+-		}
+-		for (int i = 1; i < app->configuration.FFTdim; i++)
+-			tempBufferSize *= FFTPlan->actualFFTSizePerAxis[axis_id][i];
+-	}
+-	else {
+-		tempBufferSize = FFTPlan->actualFFTSizePerAxis[axis_id][0] * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;
+-		for (int i = 1; i < app->configuration.FFTdim; i++)
+-			tempBufferSize *= FFTPlan->actualFFTSizePerAxis[axis_id][i];
+-	}
+-	if (app->useBluesteinFFT[axis_id]) {
+-		if ((app->configuration.performR2C) && (axis_id == 0)) {
+-			pfUINT tempSize = 0;
+-			if (FFTPlan->bigSequenceEvenR2C) {
+-				tempSize = (FFTPlan->actualFFTSizePerAxis[axis_id][0] + 1) * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;	
+-			}
+-			else {
+-				tempSize = (FFTPlan->actualFFTSizePerAxis[axis_id][0]) * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;	
+-			}
+-			for (int i = 1; i < app->configuration.FFTdim; i++)
+-					tempSize *= FFTPlan->actualFFTSizePerAxis[axis_id][i];
+-		
+-			if (tempSize > tempBufferSize) tempBufferSize = tempSize;
+-		}
+-		else {
+-			pfUINT tempSize = FFTPlan->actualFFTSizePerAxis[axis_id][0] * app->configuration.coordinateFeatures * locNumBatches * app->configuration.numberKernels * complexSize;
+-			for (int i = 1; i < app->configuration.FFTdim; i++)
+-				tempSize *= FFTPlan->actualFFTSizePerAxis[axis_id][i];
+-		
+-			if (tempSize > tempBufferSize) tempBufferSize = tempSize;
+-		}
+-	}
++    pfUINT tempBufferSize = 0;
++    res = vkfft_scheduler::temporary_bytes(*app, *FFTPlan, axis_id, complexSize, tempBufferSize);
++    if (res != VKFFT_SUCCESS) return res;
+ 	if (tempBufferSize > app->configuration.tempBufferSize[0]) {
+ 		if (app->configuration.userTempBuffer)
+ 			return VKFFT_ERROR_INVALID_user_tempBuffer_too_small;

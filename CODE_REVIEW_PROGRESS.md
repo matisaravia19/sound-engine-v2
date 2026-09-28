@@ -890,12 +890,45 @@ unchanged. Evidence and the owned probes are under
 returns to zero tracked allocations. These findings do not establish the cause
 of the original driver crashes.
 
+## Scheduler workload and temporary sizes
+
+The scheduler narrowed the maximum configured/internal batch count to `int`
+before calculating temporary storage. In a CPU-only length-16 reproduction,
+2,147,483,648 batches requested 18,446,743,798,831,644,672 bytes instead of
+274,877,906,944, and 4,294,967,297 batches requested just 128 bytes instead of
+549,755,814,016. A batch count of `2^60` returned success with zero temporary
+bytes after both workload and storage multiplication wrapped.
+
+Batch counts now remain full width. A shared checked element-count helper
+validates dimensions, batches, coordinate features and kernels before scheduling.
+Temporary storage uses the scheduled shape, checks even-R2C padding and the
+conversion to bytes, and publishes a requirement only after every factor fits.
+The duplicate Bluestein sizing branch was removed: it recomputed the same
+already-expanded shape. Missing size storage and zero scalar extents are rejected.
+The fixed probe returns the two correct byte counts and a math error for the
+overflowing workload, with zero tracked allocations after teardown.
+
+The regression matrix covers 168 combinations of rank/axis, float/double,
+real/complex transforms, configured/internal batches and 32-bit boundary values.
+Additional cases cover the even-R2C decomposition, exact/oversized/undersized user
+temporary buffers, overflowing dimensions/features/kernels/batches/byte counts,
+and 8/16/32-byte element-size boundaries. A 512-byte user buffer that previously
+passed the truncated calculation is now rejected without changing its capacity.
+The Rust builder test confirms that representable 64-bit batch counts remain
+accepted. Its existing byte-size
+validation already rejects overflowing public input-buffer requirements.
+
+Evidence is under `output/review-scheduler-sizing-20260928/`, including
+`baseline-result.log`, `fixed-result.log` and the owned CPU probe. These large
+logical shapes were not allocated or submitted to Vulkan. The finding does not
+establish the cause of the reported driver crashes.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **148 CPU tests**: 112 engine tests and
-  thirty-six VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **150 CPU tests**: 112 engine tests and
+  thirty-eight VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -1067,6 +1100,14 @@ seventeen-test audit group completed in 95.94 seconds. Workspace/all-feature
 checks, the no-playback check, Clippy and `git diff --check` pass; existing style
 warnings and line-ending advisories remain. These suites include the new
 primitive-root, checked-count and malformed-input regressions.
+
+Current scheduler-sizing evidence is under `output/review-scheduler-sizing-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 150 passing CPU tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record nineteen passing
+serial hardware regressions with no Vulkan validation error markers. The
+seventeen-test audit group completed in 92.63 seconds. Workspace/all-feature
+checks, the no-playback check, Clippy and `git diff --check` pass; existing style
+warnings and line-ending advisories remain.
 
 ## Unresolved native device-creation stall
 
