@@ -1,0 +1,13 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel2/vkFFT_R2C_even_decomposition.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel2/vkFFT_R2C_even_decomposition.h
+@@ -71,6 +71,10 @@ static inline VkFFTResult shaderGen_R2C_even_decomposition(VkFFTSpecializationCo
+ 	appendKernelStart_R2C(sc, type);
+ 
+ 	appendRegisterInitialization_R2C(sc, type);
++	if (sc->res != VKFFT_SUCCESS) {
++		freeRegisterInitialization_R2C(sc, type);
++		return sc->res;
++	}
+ 	if (sc->performWorkGroupShift[0]) {
+ 		PfMul(sc, &sc->shiftX, &sc->workGroupShiftX, &sc->localSize[0], 0);
+ 		PfAdd(sc, &sc->shiftX, &sc->shiftX, &sc->gl_GlobalInvocationID_x);

@@ -59,6 +59,11 @@ impl Voice {
         self.id
     }
 
+    /// Returns the original dry asset identifier, even after its bank entry is removed.
+    pub fn sound_id(&self) -> SoundId {
+        self.sound_id
+    }
+
     /// Starts a sample-ramped transition from the current IR to `impulse_response`.
     pub(crate) fn transition_impulse_response(
         &mut self,

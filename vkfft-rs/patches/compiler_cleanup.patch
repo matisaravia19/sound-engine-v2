@@ -1,0 +1,168 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_CompileKernel.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_CompileKernel.h
+@@ -38,16 +38,20 @@ static inline VkFFTResult VkFFT_CompileKernel(VkFFTApplication* app, VkFFTAxis*
+ #endif
+ 	char* code0 = axis->specializationConstants.code0;
+ #if(VKFFT_BACKEND==0)
+-	uint32_t* code;
++	vkfft_compiler::Binary binary;
++	uint32_t*& code = binary.data;
+ 	pfUINT codeSize;
+ 	if (app->configuration.loadApplicationFromString) {
++		if (app->currentApplicationStringPos > app->applicationStringSize ||
++			app->applicationStringSize - app->currentApplicationStringPos < sizeof(pfUINT))
++			return VKFFT_ERROR_EMPTY_FILE;
+ 		char* localStrPointer = (char*)app->configuration.loadApplicationString + app->currentApplicationStringPos;
+ 		memcpy(&codeSize, localStrPointer, sizeof(pfUINT));
++		if (!codeSize || codeSize % sizeof(uint32_t) || codeSize > SIZE_MAX ||
++			codeSize > app->applicationStringSize - app->currentApplicationStringPos - sizeof(pfUINT))
++			return VKFFT_ERROR_EMPTY_FILE;
+ 		code = (uint32_t*)malloc(codeSize);
+ 		if (!code) {
+-			free(code0);
+-			code0 = 0;
+-			deleteVkFFT(app);
+ 			return VKFFT_ERROR_MALLOC_FAILED;
+ 		}
+ 		memcpy(code, localStrPointer + sizeof(pfUINT), codeSize);
+@@ -178,91 +182,70 @@ static inline VkFFTResult VkFFT_CompileKernel(VkFFTApplication* app, VkFFTAxis*
+ 			(const glslang_resource_t*)&default_resource,
+ 		};
+ 		//printf("%s\n", code0);
+-		glslang_shader_t* shader = glslang_shader_create((const glslang_input_t*)&input);
++		vkfft_compiler::Shader shader(glslang_shader_create(&input), glslang_shader_delete);
++		if (!shader) return VKFFT_ERROR_MALLOC_FAILED;
+ 		const char* err;
+-		if (!glslang_shader_preprocess(shader, &input))
++		if (!glslang_shader_preprocess(shader.get(), &input))
+ 		{
+-			err = glslang_shader_get_info_log(shader);
++			err = glslang_shader_get_info_log(shader.get());
+ 			printf("%s\n", code0);
+ 			printf("%s\n", err);
+-			glslang_shader_delete(shader);
+-			free(code0);
+-			code0 = 0;
+-			deleteVkFFT(app);
+ 			return VKFFT_ERROR_FAILED_SHADER_PREPROCESS;
+ 
+ 		}
+ 
+-		if (!glslang_shader_parse(shader, &input))
++		if (!glslang_shader_parse(shader.get(), &input))
+ 		{
+-			err = glslang_shader_get_info_log(shader);
++			err = glslang_shader_get_info_log(shader.get());
+ 			printf("%s\n", code0);
+ 			printf("%s\n", err);
+-			glslang_shader_delete(shader);
+-			free(code0);
+-			code0 = 0;
+-			deleteVkFFT(app);
+ 			return VKFFT_ERROR_FAILED_SHADER_PARSE;
+ 
+ 		}
+-		glslang_program_t* program = glslang_program_create();
+-		glslang_program_add_shader(program, shader);
+-		if (!glslang_program_link(program, GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT))
++		vkfft_compiler::Program program(glslang_program_create(), glslang_program_delete);
++		if (!program) return VKFFT_ERROR_MALLOC_FAILED;
++		glslang_program_add_shader(program.get(), shader.get());
++		if (!glslang_program_link(program.get(), GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT))
+ 		{
+-			err = glslang_program_get_info_log(program);
++			err = glslang_program_get_info_log(program.get());
+ 			printf("%s\n", code0);
+ 			printf("%s\n", err);
+-			glslang_shader_delete(shader);
+-			glslang_program_delete(program);
+-			free(code0);
+-			code0 = 0;
+-			deleteVkFFT(app);
+ 			return VKFFT_ERROR_FAILED_SHADER_LINK;
+ 
+ 		}
+ 
+-		glslang_program_SPIRV_generate(program, input.stage);
++		glslang_program_SPIRV_generate(program.get(), input.stage);
+ 
+-		if (glslang_program_SPIRV_get_messages(program))
++		if (glslang_program_SPIRV_get_messages(program.get()))
+ 		{
+-			printf("%s", glslang_program_SPIRV_get_messages(program));
+-			glslang_shader_delete(shader);
+-			glslang_program_delete(program);
+-			free(code0);
+-			code0 = 0;
+-			deleteVkFFT(app);
++			printf("%s", glslang_program_SPIRV_get_messages(program.get()));
+ 			return VKFFT_ERROR_FAILED_SPIRV_GENERATE;
+ 		}
+ 
+-		glslang_shader_delete(shader);
+-		uint32_t* tempCode = glslang_program_SPIRV_get_ptr(program);
+-		codeSize = glslang_program_SPIRV_get_size(program) * sizeof(uint32_t);
+-		axis->binarySize = codeSize;
++		uint32_t* tempCode = glslang_program_SPIRV_get_ptr(program.get());
++		const size_t words = glslang_program_SPIRV_get_size(program.get());
++		if (!tempCode || !words || words > SIZE_MAX / sizeof(uint32_t))
++			return VKFFT_ERROR_FAILED_SPIRV_GENERATE;
++		codeSize = words * sizeof(uint32_t);
+ 		code = (uint32_t*)malloc(codeSize);
+ 		if (!code) {
+-			free(code0);
+-			code0 = 0;
+-			glslang_program_delete(program);
+-			deleteVkFFT(app);
+ 			return VKFFT_ERROR_MALLOC_FAILED;
+ 		}
+-		axis->binary = code;
+ 		memcpy(code, tempCode, codeSize);
+-		glslang_program_delete(program);
+ 	}
++	vkfft_compiler::ShaderModule module(app->configuration.device[0]);
+ 	VkPipelineShaderStageCreateInfo pipelineShaderStageCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+ 	VkComputePipelineCreateInfo computePipelineCreateInfo = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+ 	pipelineShaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+ 	VkShaderModuleCreateInfo createInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+ 	createInfo.pCode = code;
+ 	createInfo.codeSize = codeSize;
+-	res = vkCreateShaderModule(app->configuration.device[0], &createInfo, 0, &pipelineShaderStageCreateInfo.module);
++	res = vkCreateShaderModule(app->configuration.device[0], &createInfo, 0, &module.handle);
+ 	if (res != VK_SUCCESS) {
+-		free(code0);
+-		code0 = 0;
+-		deleteVkFFT(app);
++		module.handle = VK_NULL_HANDLE;
+ 		return VKFFT_ERROR_FAILED_TO_CREATE_SHADER_MODULE;
+ 	}
++	pipelineShaderStageCreateInfo.module = module.handle;
+ 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+ 	pipelineLayoutCreateInfo.setLayoutCount = 1;
+ 	pipelineLayoutCreateInfo.pSetLayouts = &axis->descriptorSetLayout;
+@@ -276,7 +259,7 @@ static inline VkFFTResult VkFFT_CompileKernel(VkFFTApplication* app, VkFFTAxis*
+ 	}
+ 	res = vkCreatePipelineLayout(app->configuration.device[0], &pipelineLayoutCreateInfo, 0, &axis->pipelineLayout);
+ 	if (res != VK_SUCCESS) {
+-		deleteVkFFT(app);
++		axis->pipelineLayout = VK_NULL_HANDLE;
+ 		return VKFFT_ERROR_FAILED_TO_CREATE_PIPELINE_LAYOUT;
+ 	}
+ 	pipelineShaderStageCreateInfo.pName = "main";
+@@ -288,14 +271,10 @@ static inline VkFFTResult VkFFT_CompileKernel(VkFFTApplication* app, VkFFTAxis*
+ 	else
+ 		res = vkCreateComputePipelines(app->configuration.device[0], 0, 1, &computePipelineCreateInfo, 0, &axis->pipeline);
+ 	if (res != VK_SUCCESS) {
+-		deleteVkFFT(app);
+ 		return VKFFT_ERROR_FAILED_TO_CREATE_PIPELINE;
+ 	}
+-	vkDestroyShaderModule(app->configuration.device[0], pipelineShaderStageCreateInfo.module, 0);
+-	if (!app->configuration.saveApplicationToString) {
+-		free(code);
+-		code = 0;
+-	}
++	axis->binarySize = codeSize;
++	if (app->configuration.saveApplicationToString) axis->binary = binary.release();
+ #elif(VKFFT_BACKEND==1)
+ 	char* code;
+ 	pfUINT codeSize;

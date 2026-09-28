@@ -1,4 +1,3 @@
-#[cfg(debug_assertions)]
 use crate::core::error::ErrorCode;
 use crate::core::error::{SoundError, SoundResult};
 use crate::playback::queue::SampleQueue;
@@ -127,8 +126,8 @@ fn build_stream_for_sample_format(
 
 /// Installs the realtime callback for one CPAL sample type.
 ///
-/// The scratch buffer is allocated once and then reused by the callback so the
-/// audio thread does not allocate on each device wakeup.
+/// Samples are converted directly into the device buffer without scratch
+/// allocation. A busy producer queue yields silence until the next callback.
 fn build_typed_output_stream<T>(
     device: &cpal::Device,
     stream_config: &cpal::StreamConfig,
@@ -140,19 +139,21 @@ fn build_typed_output_stream<T>(
 where
     T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let mut scratch = Vec::new();
-    let err_fn = |err| eprintln!("Audio stream error: {err}");
+    let error_state = state.clone();
+    let err_fn = move |err| {
+        // A failed device may never issue another callback to drain the queue.
+        // Retain its cause before waking producers so failure cannot look like
+        // a successful user-requested stop.
+        error_state.report_failure(SoundError::with_source(
+            ErrorCode::External,
+            format!("Audio stream failed: {err}"),
+            err,
+        ));
+    };
     device.build_output_stream(
         stream_config,
         move |data: &mut [T], _| {
-            write_output(
-                data,
-                device_channels,
-                output_channels,
-                &queue,
-                &state,
-                &mut scratch,
-            )
+            write_output(data, device_channels, output_channels, &queue, &state)
         },
         err_fn,
         None,
@@ -163,114 +164,89 @@ where
 ///
 /// The queue stores only engine channels, so each output frame copies those
 /// channels first and writes silence to any extra physical device channels.
-fn write_output<T>(
+pub(super) fn write_output<T>(
     data: &mut [T],
     device_channels: usize,
     output_channels: usize,
     queue: &SampleQueue,
     state: &PlaybackState,
-    scratch: &mut Vec<f32>,
 ) where
     T: cpal::Sample + cpal::FromSample<f32>,
 {
-    #[cfg(debug_assertions)]
     if let Err(error) = validate_callback_sample_shape(data.len(), device_channels, output_channels)
     {
-        eprintln!("Audio callback shape error: {error}");
-        let _ = state.request_stop();
+        state.report_failure(error);
         silence_output(data);
         return;
     }
 
+    silence_output(data);
     let frames = data.len() / device_channels;
     if !state.ready_to_play() || state.is_stop_requested() {
-        silence_output(data);
         return;
     }
     let required_samples = frames * output_channels;
-
-    // The queue is packed as engine-channel samples only; scratch mirrors that
-    // smaller shape before samples are expanded into the physical device buffer.
-    scratch.resize(required_samples, 0.0);
-    let drained = match queue.pop_into(scratch) {
-        Ok(drained) => drained,
+    // If finish races the drain, the producer may still enqueue its last block.
+    // Observe completion first so an empty tail proves no later enqueue remains.
+    let producer_done = state.producer_done().load(Ordering::Acquire);
+    let drained = match queue.drain_into(required_samples, |index, input| {
+        let output_index = (index / output_channels) * device_channels + index % output_channels;
+        // DSP overflow must never reach the device or integer sample conversion.
+        let finite = if input.is_finite() {
+            input.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        data[output_index] = T::from_sample(finite);
+    }) {
+        Ok(Some(drained)) => drained,
+        Ok(None) => {
+            // Contention leaves queued audio intact, even after producer shutdown.
+            // Only an observed empty tail can establish playback completion.
+            state.record_callback(0, frames);
+            return;
+        }
         Err(error) => {
-            eprintln!("Audio queue error: {error}");
-
-            // A poisoned queue cannot be recovered from inside the realtime
-            // callback, so request shutdown and keep the device fed with silence.
-            let _ = state.request_stop();
-            silence_output(data);
+            state.report_failure(error);
             return;
         }
     };
-
-    #[cfg(debug_assertions)]
     if let Err(error) = validate_drained_sample_shape(drained, output_channels) {
-        eprintln!("Audio queue shape error: {error}");
-        let _ = state.request_stop();
+        state.report_failure(error);
         silence_output(data);
         return;
     }
 
-    let rendered_frame_count = drained / output_channels;
-    state.record_callback(rendered_frame_count, frames);
-    let mut device_frames = data.chunks_exact_mut(device_channels);
-    let engine_frames = scratch[..drained].chunks_exact(output_channels);
-
-    for (device_frame, engine_frame) in device_frames
-        .by_ref()
-        .take(rendered_frame_count)
-        .zip(engine_frames)
-    {
-        let (rendered_channels, extra_device_channels) = device_frame.split_at_mut(output_channels);
-
-        // Copy a complete rendered frame into the matching leading device
-        // channels. Queue producers push complete interleaved blocks, so partial
-        // rendered frames would indicate a broken playback contract.
-        for (output_sample, input_sample) in rendered_channels.iter_mut().zip(engine_frame) {
-            *output_sample = T::from_sample(input_sample.clamp(-1.0, 1.0));
-        }
-
-        // Devices can expose more channels than the engine renders. Those tail
-        // channels must be cleared every callback to avoid stale output samples.
-        silence_output(extra_device_channels);
-    }
-
+    state.record_callback(drained / output_channels, frames);
     let missing_sample = drained < required_samples;
-
-    // `device_frames` has already advanced past every rendered frame above.
-    // On underflow, only the unwritten tail of the device buffer is silenced.
-    if missing_sample {
-        for device_frame in device_frames {
-            silence_output(device_frame);
-        }
-    }
 
     // An underrun means "finished" only after the producer has explicitly
     // stopped writing; otherwise it is just a temporary starvation.
-    if missing_sample && state.producer_done().load(Ordering::Acquire) {
+    if missing_sample && producer_done {
         state.mark_playback_done();
     }
 }
-
-#[cfg(debug_assertions)]
 fn validate_callback_sample_shape(
     data_len: usize,
     device_channels: usize,
     output_channels: usize,
 ) -> SoundResult<()> {
-    crate::debug_validate!(
+    crate::validate!(
         device_channels > 0,
         ErrorCode::InvalidArgument,
         "device channel count must be > 0"
     );
-    crate::debug_validate!(
+    crate::validate!(
         output_channels > 0,
         ErrorCode::InvalidArgument,
         "output channel count must be > 0"
     );
-    crate::debug_validate!(
+    if output_channels > device_channels {
+        return Err(SoundError::invalid_argument(
+            "Output channel count exceeds the device callback layout",
+        ));
+    }
+    crate::validate!(
         data_len % device_channels == 0,
         ErrorCode::InvalidArgument,
         "CPAL output buffer length {} must be divisible by device channel count {}",
@@ -280,10 +256,8 @@ fn validate_callback_sample_shape(
 
     Ok(())
 }
-
-#[cfg(debug_assertions)]
 fn validate_drained_sample_shape(drained: usize, output_channels: usize) -> SoundResult<()> {
-    crate::debug_validate!(
+    crate::validate!(
         drained % output_channels == 0,
         ErrorCode::InvalidState,
         "playback queue drained {} sample(s), which is not divisible by output channel count {}",
@@ -308,15 +282,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_callback_reports_failure_and_silences_output() {
+        let state = PlaybackState::new();
+        let queue = state.prepare_queue(4).unwrap();
+        let mut output = [1.0_f32; 3];
+        write_output(&mut output, 2, 2, &queue, &state);
+        assert_eq!(output, [0.0; 3]);
+        assert_eq!(
+            state.check_error().unwrap_err().code(),
+            ErrorCode::InvalidArgument
+        );
+        assert!(state.is_stop_requested());
+    }
+
+    #[test]
+    fn write_output_silences_non_finite_samples() {
+        let state = PlaybackState::new();
+        let queue = state.prepare_queue(4).unwrap();
+        queue
+            .push_block(
+                &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.25],
+                state.stop_requested(),
+            )
+            .unwrap();
+        let mut output = [1.0_f32; 4];
+        write_output(&mut output, 2, 2, &queue, &state);
+        assert_eq!(output, [0.0, 0.0, 0.0, 0.25]);
+    }
+
+    #[test]
     fn write_output_maps_engine_channels_and_zeros_extra_device_channels() -> SoundResult<()> {
-        let queue = SampleQueue::new(4);
+        let queue = SampleQueue::new(4)?;
         let state = PlaybackState::new();
         state.prepare_queue(4)?;
         assert!(queue.push_block(&[2.0, -2.0, 0.25, -0.25], state.stop_requested())?);
         let mut output = [1.0f32; 6];
-        let mut scratch = Vec::new();
 
-        write_output(&mut output, 3, 2, &queue, &state, &mut scratch);
+        write_output(&mut output, 3, 2, &queue, &state);
 
         assert_eq!(output, [1.0, -1.0, 0.0, 0.25, -0.25, 0.0]);
         assert!(!state.is_playback_done());
@@ -325,15 +327,14 @@ mod tests {
 
     #[test]
     fn write_output_marks_done_after_final_underflow() -> SoundResult<()> {
-        let queue = SampleQueue::new(2);
+        let queue = SampleQueue::new(2)?;
         let state = PlaybackState::new();
         state.prepare_queue(2)?;
         state.mark_producer_done()?;
         assert!(queue.push_block(&[0.5, -0.5], state.stop_requested())?);
         let mut output = [0.0f32; 4];
-        let mut scratch = Vec::new();
 
-        write_output(&mut output, 2, 2, &queue, &state, &mut scratch);
+        write_output(&mut output, 2, 2, &queue, &state);
 
         assert_eq!(output, [0.5, -0.5, 0.0, 0.0]);
         assert!(state.is_playback_done());

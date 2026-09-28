@@ -1,0 +1,17 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryInitialization/vkFFT_Registers.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryInitialization/vkFFT_Registers.h
+@@ -138,11 +138,11 @@
+ 	if (sc->res != VKFFT_SUCCESS) return;
+ 	sprintf(name, "loc_0");
+ 	if (((sc->floatTypeCode % 100) / 10) == 3) {
+-		sprintf(sc->tempFloat.data.dd[0].name, "%s.x.x\n", name);
+-		sprintf(sc->tempFloat.data.dd[1].name, "%s.x.y\n", name);
++		PfFormatName(sc, &sc->tempFloat.data.dd[0], "%s.x.x\n", name);
++		PfFormatName(sc, &sc->tempFloat.data.dd[1], "%s.x.y\n", name);
+ 	}
+ 	else {
+-		sprintf(sc->tempFloat.name, "%s.x", sc->temp.name);
++		PfFormatName(sc, &sc->tempFloat, "%s.x", sc->temp.name);
+ 	}
+ 	//PfDefineReference(sc, &sc->tempFloat, name);
+ 

@@ -16,11 +16,8 @@ pub struct VkBackend {
     memory: Arc<GpuAllocator>,
     shaders: Arc<ShaderLibrary>,
     compute: Arc<ComputeContext>,
-    rt: RtContext,
+    rt: Arc<RtContext>,
     device: Arc<VkDeviceContext>,
-    // Rust drops fields in declaration order. Keep the dynamically loaded
-    // Vulkan library alive until every instance/device owner has been dropped.
-    entry: Entry,
 }
 
 /// Shared Vulkan handles used by GPU subsystems.
@@ -28,6 +25,15 @@ pub struct VkBackend {
 /// This is intentionally low-level: modules such as memory, compute, and RT
 /// use it to create Vulkan objects while still centralizing device lifetime.
 pub struct VkDeviceContext {
+    handles: VkDeviceHandles,
+    // Device contexts can outlive VkBackend. Keep its function pointers loaded
+    // until the final device/instance destructor has run.
+    _entry: Entry,
+}
+
+/// Read-only Vulkan handles and limits borrowed from an owning device context.
+/// Raw ash operations still require Vulkan's lifetime and synchronization contracts.
+pub struct VkDeviceHandles {
     /// Vulkan instance that owns the selected physical device.
     pub instance: ash::Instance,
     /// Physical device chosen for compute and KHR ray tracing support.
@@ -40,6 +46,16 @@ pub struct VkDeviceContext {
     pub ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device,
     /// Ray tracing limits and alignment requirements queried from the device.
     pub rt_properties: RayTracingProperties,
+    /// Core limits used to reject invalid allocations, layouts and dispatches.
+    pub limits: vk::PhysicalDeviceLimits,
+}
+
+impl std::ops::Deref for VkDeviceContext {
+    type Target = VkDeviceHandles;
+
+    fn deref(&self) -> &VkDeviceHandles {
+        &self.handles
+    }
 }
 
 /// Device properties needed by acceleration-structure and RT pipeline code.
@@ -73,10 +89,20 @@ impl VkBackend {
         let instance = Self::create_instance(&entry)?;
 
         // Pick a single compute-capable queue family that can also run RT work.
-        let (physical_device, compute_family, rt_properties) =
-            Self::select_physical_device_and_compute_family(&instance)?;
-        let device_creation_result =
-            Self::create_device_and_queues(&instance, physical_device, compute_family)?;
+        let setup = (|| {
+            let (physical_device, compute_family, rt_properties) =
+                Self::select_physical_device_and_compute_family(&instance)?;
+            let created =
+                Self::create_device_and_queues(&instance, physical_device, compute_family)?;
+            Ok::<_, SoundError>((physical_device, rt_properties, created))
+        })();
+        let (physical_device, rt_properties, device_creation_result) = match setup {
+            Ok(created) => created,
+            Err(error) => {
+                unsafe { instance.destroy_instance(None) };
+                return Err(error);
+            }
+        };
         let acceleration_structure = ash::khr::acceleration_structure::Device::new(
             &instance,
             &device_creation_result.device,
@@ -84,13 +110,18 @@ impl VkBackend {
         let ray_tracing_pipeline =
             ash::khr::ray_tracing_pipeline::Device::new(&instance, &device_creation_result.device);
 
+        let limits = unsafe { instance.get_physical_device_properties(physical_device) }.limits;
         let device = Arc::new(VkDeviceContext {
-            instance,
-            physical_device,
-            device: device_creation_result.device,
-            acceleration_structure,
-            ray_tracing_pipeline,
-            rt_properties,
+            handles: VkDeviceHandles {
+                instance,
+                physical_device,
+                device: device_creation_result.device,
+                acceleration_structure,
+                ray_tracing_pipeline,
+                rt_properties,
+                limits,
+            },
+            _entry: entry,
         });
 
         let shaders = Arc::new(ShaderLibrary::new(device.clone()));
@@ -107,9 +138,13 @@ impl VkBackend {
             memory: memory.clone(),
             shaders: shaders.clone(),
             compute: compute.clone(),
-            rt: RtContext::new(device.clone(), memory, shaders.clone(), compute),
+            rt: Arc::new(RtContext::new(
+                device.clone(),
+                memory,
+                shaders.clone(),
+                compute,
+            )),
             device,
-            entry,
         })
     }
 
@@ -141,6 +176,11 @@ impl VkBackend {
     /// Returns the ray tracing context used for AS builds and RT pipelines.
     pub fn rt(&self) -> &RtContext {
         &self.rt
+    }
+
+    /// Keeps the RT registry alive for scene-owned acceleration structures.
+    pub(crate) fn rt_context(&self) -> Arc<RtContext> {
+        self.rt.clone()
     }
 
     fn create_instance(entry: &Entry) -> SoundResult<Instance> {
@@ -234,7 +274,14 @@ impl VkBackend {
         let compute_pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(compute_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let compute_command_pool = unsafe { device.create_command_pool(&compute_pool_info, None)? };
+        let compute_command_pool =
+            match unsafe { device.create_command_pool(&compute_pool_info, None) } {
+                Ok(pool) => pool,
+                Err(error) => {
+                    unsafe { device.destroy_device(None) };
+                    return Err(error.into());
+                }
+            };
 
         Ok(DeviceCreationResult {
             device,
@@ -285,6 +332,13 @@ impl VkBackend {
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
     ) -> SoundResult<RayTracingProperties> {
+        if unsafe { instance.get_physical_device_properties(physical_device) }.api_version
+            < vk::API_VERSION_1_3
+        {
+            return Err(SoundError::unsupported_feature(
+                "Vulkan 1.3 is required by the bundled shaders and allocator",
+            ));
+        }
         Self::require_device_extensions(instance, physical_device)?;
 
         let mut buffer_device_address_features =
@@ -333,6 +387,9 @@ impl VkBackend {
             instance.get_physical_device_properties2(physical_device, &mut properties);
         }
 
+        // The queried pNext chain points at stack locals and must not escape.
+        acceleration_structure_properties.p_next = std::ptr::null_mut();
+        ray_tracing_pipeline_properties.p_next = std::ptr::null_mut();
         Ok(RayTracingProperties {
             acceleration_structure: acceleration_structure_properties,
             ray_tracing_pipeline: ray_tracing_pipeline_properties,
@@ -377,12 +434,6 @@ impl VkDeviceContext {
         let fence_info = vk::FenceCreateInfo::default();
         let fence = unsafe { self.device.create_fence(&fence_info, None)? };
         Ok(fence)
-    }
-}
-
-impl Drop for VkBackend {
-    fn drop(&mut self) {
-        let _ = &self.entry;
     }
 }
 

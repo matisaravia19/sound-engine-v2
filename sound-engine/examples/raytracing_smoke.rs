@@ -49,10 +49,13 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
         opaque: true,
     })?;
 
-    let blas_id = gpu.rt().build_blas(BlasBuildSpec {
-        mesh: &mesh,
-        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-    })?;
+    // Fresh mesh upload validates triangle data and remains alive through the build.
+    let blas_id = unsafe {
+        gpu.rt().build_blas(BlasBuildSpec {
+            mesh: &mesh,
+            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+        })?
+    };
     let tlas_id = gpu.rt().build_tlas(TlasBuildSpec {
         instances: &[RtInstanceSpec {
             blas_id,
@@ -105,22 +108,24 @@ fn run_smoke_trace(gpu: &VkBackend) -> SoundResult<SmokeTraceResult> {
         max_ray_recursion_depth: 1,
     })?;
 
-    gpu.compute().submit_compute_and_wait(|command_buffer| {
-        gpu.rt().record_trace(
-            command_buffer,
-            &RtTraceSpec {
-                pipeline_id,
-                descriptor_writes: vec![
-                    RtDescriptorWrite::acceleration_structure(0, tlas_id),
-                    RtDescriptorWrite::storage_buffer(1, result_buffer.buffer),
-                ],
-                push_constants: Vec::new(),
-                push_constant_offset: 0,
-                dimensions: [2, 1, 1],
-                barrier_after_trace: true,
-            },
-        )
-    })?;
+    // Mesh, TLAS, pipeline and result buffer remain alive through this synchronous trace.
+    gpu.compute()
+        .submit_compute_and_wait(|command_buffer| unsafe {
+            gpu.rt().record_trace(
+                command_buffer,
+                &RtTraceSpec {
+                    pipeline_id,
+                    descriptor_writes: vec![
+                        RtDescriptorWrite::acceleration_structure(0, tlas_id),
+                        RtDescriptorWrite::storage_buffer(1, result_buffer.buffer),
+                    ],
+                    push_constants: Vec::new(),
+                    push_constant_offset: 0,
+                    dimensions: [2, 1, 1],
+                    barrier_after_trace: true,
+                },
+            )
+        })?;
 
     let mut result = [0_u32; 2];
     gpu.memory().read_mapped_bytes(

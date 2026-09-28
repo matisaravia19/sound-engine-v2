@@ -98,11 +98,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         command_pool,
         fence,
     };
-    let plan = FFTPlanBuilder::new(&device_handles)
-        .with_dimensions(&[N as u64])
-        .with_buffer(buffer, buffer_bytes)
-        .build()
-        .map_err(|e| format!("PlanBuilder::build failed: {e:?}"))?;
+    let plan = unsafe {
+        FFTPlanBuilder::new(&device_handles)
+            .with_dimensions(&[N as u64])
+            .with_buffer(buffer, buffer_bytes)
+            .build()
+    }
+    .map_err(|e| format!("PlanBuilder::build failed: {e:?}"))?;
 
     let cmd_alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(command_pool)
@@ -112,8 +114,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let begin_info = vk::CommandBufferBeginInfo::default();
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
-    plan.append(command_buffer)
-        .map_err(|e| format!("Plan::launch failed: {e:?}"))?;
+    unsafe { plan.append(command_buffer) }.map_err(|e| format!("Plan::launch failed: {e:?}"))?;
     unsafe { device.end_command_buffer(command_buffer)? };
 
     let submit_infos =

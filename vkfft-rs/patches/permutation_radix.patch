@@ -1,0 +1,65 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixKernels.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixKernels.h
+@@ -32,7 +32,10 @@
+ 
+ 	PfContainer temp_complex = VKFFT_ZERO_INIT;
+ 	temp_complex.type = 23;
+-	PfAllocateContainerFlexible(sc, &temp_complex, 50);
++	// Numeric constants have lexical lifetime; no allocation can fail here.
++	PfContainer complex_values[2] = VKFFT_ZERO_INIT;
++	complex_values[0].type = complex_values[1].type = 22;
++	temp_complex.data.c = complex_values;
+ 	PfContainer temp_double = VKFFT_ZERO_INIT;
+ 	temp_double.type = 22;
+ 	PfContainer temp_int = VKFFT_ZERO_INIT;
+@@ -2012,20 +2015,10 @@
+ 
+ 		pfUINT P = 7;
+ 		pfUINT Q = 2;
+-		PfContainer tempID[7] = VKFFT_ZERO_INIT;
+-
+-		for (int t = 0; t < 7; t++) {
+-			tempID[t].type = 100 + sc->vecTypeCode;
+-			PfAllocateContainerFlexible(sc, &tempID[t], 50);
+-		}
+-
+ 		for (pfUINT i = 0; i < Q; i++) {
+ 			pfUINT permute[7] = { 0, 1, 3, 2, 6, 4, 5 };
+ 			
+-			for (pfUINT t = 0; t < 7; t++)
+-				PfCopyContainer(sc, &tempID[t], &regID[i + Q * t]);
+-			for (pfUINT t = 0; t < 7; t++)
+-				PfCopyContainer(sc, &regID[i + Q * t], &tempID[permute[t]]);
++			PfPermuteContainers(sc, permute, P, &regID[i], radix - i, Q);
+ 
+ 			PfMov(sc, &sc->locID[0], &regID[i]);		
+ 			PfMov(sc, &sc->locID[1], &regID[i + Q]);	
+@@ -2080,16 +2073,10 @@
+ 			}
+ 			pfUINT permute2[7] = { 0, 1, 5, 6, 3, 2, 4 };
+ 						
+-			for (pfUINT t = 0; t < 7; t++)
+-				PfCopyContainer(sc, &tempID[t], &regID[i + Q * t]);
+-			for (pfUINT t = 0; t < 7; t++)
+-				PfCopyContainer(sc, &regID[i + Q * t], &tempID[permute2[t]]);
+-
+-		}
+-
+-		for (int t = 0; t < 7; t++) {
+-			PfDeallocateContainer(sc, &tempID[t]);
+-		}
++			PfPermuteContainers(sc, permute2, P, &regID[i], radix - i, Q);
++
++		}
++
+ 
+ 		for (pfUINT i = 0; i < P; i++) {
+ 			if (i > 0) {
+@@ -3374,7 +3361,6 @@
+ 		break;
+ 	}
+ 	}
+-	PfDeallocateContainer(sc, &temp_complex);
+ 	return;
+ }
+ 

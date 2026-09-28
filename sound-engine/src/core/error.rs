@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::ffi::NulError;
 use std::fmt;
+use std::sync::Arc;
 use std::time::SystemTimeError;
 
 /// Stable error categories for sound-engine failures.
@@ -28,12 +29,12 @@ pub enum ErrorCode {
     PoisonedLock,
 }
 
-/// Library-wide error type.
-#[derive(Debug)]
+/// Library-wide error type. Clones retain shared ownership of the original cause.
+#[derive(Debug, Clone)]
 pub struct SoundError {
     code: ErrorCode,
     message: String,
-    source: Option<Box<dyn Error + Send + Sync + 'static>>,
+    source: Option<Arc<dyn Error + Send + Sync + 'static>>,
 }
 
 /// Library-wide result alias.
@@ -58,7 +59,7 @@ impl SoundError {
         Self {
             code,
             message: message.into(),
-            source: Some(Box::new(source)),
+            source: Some(Arc::new(source)),
         }
     }
 
@@ -162,16 +163,18 @@ impl From<ash::vk::Result> for SoundError {
     }
 }
 
-/// Returns a categorized error when validation fails in debug builds.
-/// Release builds do not evaluate the condition or message arguments.
+/// Returns a categorized error when an API precondition fails in any build.
 #[macro_export]
-macro_rules! debug_validate {
+macro_rules! validate {
     ($condition:expr, $code:expr, $($message:tt)+) => {{
-        #[cfg(debug_assertions)]
-        {
-            if !$condition {
-                return Err($crate::core::error::SoundError::new($code, format!($($message)+)));
-            }
+        if !$condition {
+            return Err($crate::core::error::SoundError::new($code, format!($($message)+)));
         }
     }};
+}
+
+/// Compatibility alias for [`validate!`]; validation also runs in release builds.
+#[macro_export]
+macro_rules! debug_validate {
+    ($($arguments:tt)*) => { $crate::validate!($($arguments)*) };
 }

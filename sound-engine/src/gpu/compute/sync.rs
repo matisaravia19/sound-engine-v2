@@ -67,6 +67,21 @@ pub struct BufferBarrierSpec {
 }
 
 impl BufferBarrierSpec {
+    /// Orders a buffer fill before an overlapping transfer copy in the same submission.
+    pub(crate) fn transfer_write_to_transfer_write(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            dst_stage: vk::PipelineStageFlags::TRANSFER,
+            src_access: vk::AccessFlags::TRANSFER_WRITE,
+            dst_access: vk::AccessFlags::TRANSFER_WRITE,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
     /// Synchronizes ray tracing writes with compute shader reads and writes.
     pub fn ray_tracing_shader_write_to_compute_shader_read_write(buffer: vk::Buffer) -> Self {
         Self {
@@ -127,17 +142,29 @@ impl BufferBarrierSpec {
         }
     }
 
-    /// Synchronizes transfer writes with later shader or acceleration-structure reads.
+    /// Synchronizes transfer writes with later accesses on the same queue.
+    /// Generic memory masks also work when ray-query shader support is disabled.
     pub fn transfer_write_to_device_read(buffer: vk::Buffer) -> Self {
         Self {
             src_stage: vk::PipelineStageFlags::TRANSFER,
-            dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER
-                | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
-                | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            dst_stage: vk::PipelineStageFlags::ALL_COMMANDS,
             src_access: vk::AccessFlags::TRANSFER_WRITE,
-            dst_access: vk::AccessFlags::SHADER_READ
-                | vk::AccessFlags::SHADER_WRITE
-                | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            dst_access: vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+            src_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
+            buffer,
+            offset: 0,
+            size: vk::WHOLE_SIZE,
+        }
+    }
+
+    /// Makes a transfer fill visible to ray-tracing shader reads and atomic updates.
+    pub(crate) fn transfer_write_to_ray_tracing_shader_read_write(buffer: vk::Buffer) -> Self {
+        Self {
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            src_access: vk::AccessFlags::TRANSFER_WRITE,
+            dst_access: vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
             src_queue_family: vk::QUEUE_FAMILY_IGNORED,
             dst_queue_family: vk::QUEUE_FAMILY_IGNORED,
             buffer,
@@ -194,7 +221,11 @@ impl BufferBarrierSpec {
 
 impl ComputeContext {
     /// Records a memory barrier into an already recording compute command buffer.
-    pub fn record_memory_barrier(
+    ///
+    /// # Safety
+    /// The command buffer must be recording on this device and externally
+    /// synchronized. Stage/access masks must be valid for its queue family.
+    pub unsafe fn record_memory_barrier(
         &self,
         command_buffer: vk::CommandBuffer,
         spec: &MemoryBarrierSpec,
@@ -217,7 +248,12 @@ impl ComputeContext {
     }
 
     /// Records a buffer barrier into an already recording compute command buffer.
-    pub fn record_buffer_barrier(
+    ///
+    /// # Safety
+    /// The command buffer and buffer must belong to this device and remain alive
+    /// through completion. Recording, ranges, masks and ownership transfers must
+    /// satisfy Vulkan's synchronization requirements for the queue family.
+    pub unsafe fn record_buffer_barrier(
         &self,
         command_buffer: vk::CommandBuffer,
         spec: &BufferBarrierSpec,

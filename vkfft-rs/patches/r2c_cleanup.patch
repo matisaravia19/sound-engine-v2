@@ -1,0 +1,11 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_Plans/vkFFT_Plan_R2C.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_Plans/vkFFT_Plan_R2C.h
+@@ -369,6 +369,8 @@ static inline VkFFTResult VkFFTPlanR2CMultiUploadDecomposition(VkFFTApplication*
+ 			axis->specializationConstants.code0 = 0;
+ 		}
+ 	}
++	freeMemoryParametersAPI(app, &axis->specializationConstants);
++	freeParametersAPI(app, &axis->specializationConstants);
+ 	return resFFT;
+ }
+ 

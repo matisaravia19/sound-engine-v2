@@ -10,9 +10,12 @@ pub type VkPhysicalDevice = *mut c_void;
 pub type VkDevice = *mut c_void;
 pub type VkQueue = *mut c_void;
 pub type VkCommandBuffer = *mut c_void;
-pub type VkCommandPool = usize;
-pub type VkFence = usize;
-pub type VkBuffer = usize;
+/// Non-dispatchable Vulkan command pool handle, always 64 bits.
+pub type VkCommandPool = u64;
+/// Non-dispatchable Vulkan fence handle, always 64 bits.
+pub type VkFence = u64;
+/// Non-dispatchable Vulkan buffer handle, always 64 bits.
+pub type VkBuffer = u64;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

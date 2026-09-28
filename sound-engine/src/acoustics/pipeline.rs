@@ -4,12 +4,12 @@ use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
-    BlasBuildSpec, BlasId, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
-    RtMeshBuffers, RtMeshSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
-    RtShaderStageSpec, RtTraceSpec, TlasBuildSpec,
+    BlasBuildSpec, BlasId, OwnedBlas, OwnedRtPipeline, OwnedTlas, RtDescriptorBindingSpec,
+    RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec, RtPipelineSpec,
+    RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec, TlasId,
 };
 use crate::gpu::shader::ShaderStage;
-use crate::scene::SceneManager;
+use crate::scene::{GpuSceneResources, SceneManager};
 use ash::vk;
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
-const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = u32::MAX - 1;
+const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
 const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
 #[cfg(test)]
 const SURFACE_VISIBILITY_HIT_GROUP_OFFSET: u32 = 1;
@@ -49,10 +49,19 @@ pub struct AcousticQuery {
 /// depth one because hit shaders only report compact traversal results.
 pub struct AcousticPipeline {
     config: EngineConfig,
-    listener_pipeline: RtPipelineId,
+    listener_pipeline: OwnedRtPipeline,
+    // One query TLAS for the latest geometry; its registry record retains every BLAS.
+    query_tlas: Option<CachedQueryTlas>,
     /// Triangle storage kept alive for the mask-zero empty-scene sentinel BLAS.
     _empty_scene_mesh: RtMeshBuffers,
-    empty_scene_blas: BlasId,
+    empty_scene_blas: OwnedBlas,
+}
+
+/// Stable AS IDs distinguish separate scene managers even at the same scene version.
+struct CachedQueryTlas {
+    scene_tlas: Option<TlasId>,
+    diffraction_blas: Option<BlasId>,
+    tlas: OwnedTlas,
 }
 
 #[repr(C)]
@@ -79,6 +88,12 @@ unsafe impl bytemuck::Zeroable for ListenerTracePushConstants {}
 unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 
 impl AcousticPipeline {
+    /// Rejects a foreign backend even when a caller can satisfy its query from a cache.
+    pub(crate) fn validate_backend(&self, gpu: &VkBackend) -> SoundResult<()> {
+        gpu.memory()
+            .validate_owner(&self._empty_scene_mesh.vertex_buffer)
+    }
+
     /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
     pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
         validate_config(config)?;
@@ -153,6 +168,7 @@ impl AcousticPipeline {
             )],
             max_ray_recursion_depth: 1,
         })?;
+        let listener_pipeline = gpu.rt_context().own_pipeline(listener_pipeline);
         // RtContext currently rejects an empty TLAS. This masked triangle keeps
         // direct-path queries valid without participating in traversal.
         let empty_scene_mesh = gpu.rt().upload_mesh(RtMeshSpec {
@@ -164,15 +180,19 @@ impl AcousticPipeline {
             indices: None,
             opaque: true,
         })?;
-        let empty_scene_blas = gpu.rt().build_blas(BlasBuildSpec {
-            mesh: &empty_scene_mesh,
-            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        })?;
+        // upload_mesh validates the immutable triangle and supplies AS input usage.
+        let empty_scene_blas = unsafe {
+            gpu.rt().build_blas(BlasBuildSpec {
+                mesh: &empty_scene_mesh,
+                flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            })?
+        };
         Ok(Self {
             config,
             listener_pipeline,
+            query_tlas: None,
             _empty_scene_mesh: empty_scene_mesh,
-            empty_scene_blas,
+            empty_scene_blas: gpu.rt_context().own_blas(empty_scene_blas),
         })
     }
 
@@ -194,6 +214,7 @@ impl AcousticPipeline {
         scene: &mut SceneManager,
         query: AcousticQuery,
     ) -> SoundResult<GpuIrSnapshot> {
+        self.validate_backend(gpu)?;
         validate_query(query)?;
         let ray_count = if self.config.acoustics.max_bounces == 0 || query.source_amplitude == 0.0 {
             1
@@ -204,15 +225,13 @@ impl AcousticPipeline {
         let profile = std::env::var_os("SOUND_ENGINE_TRACE_PROFILE").is_some();
         let started = std::time::Instant::now();
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id =
-            self.build_query_tlas(gpu, gpu_scene.instances(), gpu_scene.diffraction_blas_id())?;
+        let tlas_id = self.query_tlas(gpu, gpu_scene)?;
         let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_count = self.config.sound.ir_num_samples;
         let bytes = ir_buffer_size(storage_count) as u64;
         let ir_buffer = Arc::new(gpu.memory().create_storage_buffer(bytes)?);
 
-        gpu.memory().clear_buffer(&ir_buffer)?;
-        let clear_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let allocation_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         let constants = ListenerTracePushConstants {
             source_position: query.source_position.to_array(),
@@ -237,43 +256,58 @@ impl AcousticPipeline {
             max_ild_db: self.config.binaural.max_ild_db,
         };
         let mut record_ms = 0.0;
-        let token = gpu.compute().submit_compute(|command_buffer| {
-            let record_started = profile.then(std::time::Instant::now);
-            gpu.rt().record_trace(
-                command_buffer,
-                &RtTraceSpec {
-                    pipeline_id: self.listener_pipeline,
-                    descriptor_writes: vec![
-                        RtDescriptorWrite::acceleration_structure(0, tlas_id),
-                        RtDescriptorWrite::storage_buffer(1, ir_buffer.buffer),
-                        RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
-                        RtDescriptorWrite::storage_buffer(3, gpu_scene.material_buffer().buffer),
-                        RtDescriptorWrite::storage_buffer(
-                            4,
-                            gpu_scene.diffraction_edge_buffer().buffer,
-                        ),
-                    ],
-                    push_constants: bytemuck::bytes_of(&constants).to_vec(),
-                    push_constant_offset: 0,
-                    // Invocation zero owns direct visibility. No other lane
-                    // contributes when vertex paths are disabled or silent.
-                    dimensions: [ray_count, 1, 1],
-                    barrier_after_trace: false,
-                },
-            )?;
-            // Ray-generation float atomics are shader writes. Make them visible
-            // to IR download, caching, or convolution.
-            gpu.compute().record_buffer_barrier(
-                command_buffer,
-                &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(
-                    ir_buffer.buffer,
-                ),
-            );
-            if let Some(record_started) = record_started {
-                record_ms = record_started.elapsed().as_secs_f64() * 1000.0;
-            }
-            Ok(())
-        })?;
+        // Scene, query TLAS, pipeline and IR storage are retained until the wait below.
+        let token = unsafe {
+            gpu.compute().submit_compute(|command_buffer| {
+                let record_started = profile.then(std::time::Instant::now);
+                gpu.memory()
+                    .record_clear_buffer(command_buffer, &ir_buffer)?;
+                // IR accumulation uses atomic read/modify/write after the transfer fill.
+                gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::transfer_write_to_ray_tracing_shader_read_write(
+                        ir_buffer.buffer,
+                    ),
+                );
+                gpu.rt().record_trace(
+                    command_buffer,
+                    &RtTraceSpec {
+                        pipeline_id: self.listener_pipeline.id,
+                        descriptor_writes: vec![
+                            RtDescriptorWrite::acceleration_structure(0, tlas_id),
+                            RtDescriptorWrite::storage_buffer(1, ir_buffer.buffer),
+                            RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
+                            RtDescriptorWrite::storage_buffer(
+                                3,
+                                gpu_scene.material_buffer().buffer,
+                            ),
+                            RtDescriptorWrite::storage_buffer(
+                                4,
+                                gpu_scene.diffraction_edge_buffer().buffer,
+                            ),
+                        ],
+                        push_constants: bytemuck::bytes_of(&constants).to_vec(),
+                        push_constant_offset: 0,
+                        // Invocation zero owns direct visibility. No other lane
+                        // contributes when vertex paths are disabled or silent.
+                        dimensions: [ray_count, 1, 1],
+                        barrier_after_trace: false,
+                    },
+                )?;
+                // Ray-generation float atomics are shader writes. Make them visible
+                // to IR download, caching, or convolution.
+                gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::ray_tracing_shader_write_to_compute_or_transfer_read(
+                        ir_buffer.buffer,
+                    ),
+                );
+                if let Some(record_started) = record_started {
+                    record_ms = record_started.elapsed().as_secs_f64() * 1000.0;
+                }
+                Ok(())
+            })?
+        };
         let submitted_ms = if profile {
             started.elapsed().as_secs_f64() * 1000.0
         } else {
@@ -281,18 +315,12 @@ impl AcousticPipeline {
         };
         gpu.compute().wait_for(token)?;
         let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
-        // The submission above is synchronous, so no descriptor or command
-        // buffer can still reference this per-query TLAS. Releasing it here
-        // prevents moving sources/listeners from retaining one acceleration
-        // structure and backing allocation per acoustic update.
-        gpu.rt().destroy_tlas(tlas_id)?;
         if profile {
             eprintln!(
-                "Trace stages: scene={scene_ms:.3}, clear={:.3}, rays={:.3}, release={:.3}, record={record_ms:.3}, submit={:.3}, wait={:.3}, count={ray_count}, query={}",
-                clear_ms - scene_ms,
-                trace_ms - clear_ms,
-                started.elapsed().as_secs_f64() * 1000.0 - trace_ms,
-                submitted_ms - clear_ms - record_ms,
+                "Trace stages: scene={scene_ms:.3}, allocation={:.3}, rays={:.3}, record={record_ms:.3}, submit={:.3}, wait={:.3}, count={ray_count}, query={}",
+                allocation_ms - scene_ms,
+                trace_ms - allocation_ms,
+                submitted_ms - allocation_ms - record_ms,
                 trace_ms - submitted_ms,
                 query.query_id,
             );
@@ -333,6 +361,11 @@ impl AcousticPipeline {
             .buffer
             .as_ref()
             .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
+        if snapshot.sample_count as u64 * size_of::<IrSample>() as u64 > ir_buffer.size {
+            return Err(SoundError::invalid_argument(
+                "IR sample count exceeds its GPU buffer",
+            ));
+        }
         let mut samples = vec![IrSample::zero(); snapshot.sample_count as usize];
         gpu.memory()
             .download_typed::<IrSample>(ir_buffer, samples.len(), &mut samples)?;
@@ -348,6 +381,23 @@ impl AcousticPipeline {
             scene_version: snapshot.scene_version,
             query_id: snapshot.query_id,
         })
+    }
+
+    fn query_tlas(&mut self, gpu: &VkBackend, scene: &GpuSceneResources) -> SoundResult<TlasId> {
+        let scene_tlas = scene.tlas_id();
+        let diffraction_blas = scene.diffraction_blas_id();
+        if let Some(cached) = &self.query_tlas {
+            if cached.scene_tlas == scene_tlas && cached.diffraction_blas == diffraction_blas {
+                return Ok(cached.tlas.id);
+            }
+        }
+        let id = self.build_query_tlas(gpu, scene.instances(), diffraction_blas)?;
+        self.query_tlas = Some(CachedQueryTlas {
+            scene_tlas,
+            diffraction_blas,
+            tlas: gpu.rt_context().own_tlas(id),
+        });
+        Ok(id)
     }
 
     fn build_query_tlas(
@@ -373,7 +423,7 @@ impl AcousticPipeline {
             // The RT wrapper requires a non-empty TLAS. A zero mask makes this
             // sentinel unreachable while preserving direct empty-scene queries.
             instances.push(RtInstanceSpec {
-                blas_id: self.empty_scene_blas,
+                blas_id: self.empty_scene_blas.id,
                 transform: Mat4::IDENTITY,
                 custom_index: 0,
                 mask: 0,
@@ -636,6 +686,190 @@ mod tests {
             listener_up: Vec3::Y,
             source_amplitude: 1.0,
         }
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
+        let gpu = VkBackend::new().unwrap();
+        let mut pipeline = AcousticPipeline::new(&gpu, test_config()).unwrap();
+        let mut scene = SceneManager::new();
+        let device = Arc::downgrade(&gpu.device_context());
+        let mut previous_tlas = None;
+        for _ in 0..4 {
+            let ir = pipeline.build_ir(&gpu, &mut scene, test_query()).unwrap();
+            assert!(
+                ir.samples
+                    .iter()
+                    .all(|sample| sample.left.is_finite() && sample.right.is_finite())
+            );
+            assert!(ir.energy > 0.0);
+            assert_eq!(gpu.rt().resource_counts(), (1, 1));
+            let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
+            assert!(previous_tlas.is_none_or(|previous| previous == id));
+            previous_tlas = Some(id);
+        }
+        let snapshot = pipeline
+            .build_ir_gpu(&gpu, &mut scene, test_query())
+            .unwrap();
+        drop(pipeline);
+        assert_eq!(gpu.rt().pipeline_count(), 0);
+        for _ in 0..2 {
+            let temporary = AcousticPipeline::new(&gpu, test_config()).unwrap();
+            assert_eq!(gpu.rt().pipeline_count(), 1);
+            drop(temporary);
+            assert_eq!(gpu.rt().pipeline_count(), 0);
+        }
+        drop(scene);
+        assert_eq!(gpu.rt().resource_counts(), (0, 0));
+        drop(gpu);
+        assert!(device.upgrade().is_some());
+        drop(snapshot);
+        assert!(device.upgrade().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+    fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
+        use crate::scene::*;
+        let gpu = VkBackend::new().unwrap();
+        let mut config = test_config();
+        config.sound.ir_num_samples = 1024;
+        config.acoustics.max_bounces = 1;
+        config.acoustics.listener_ray_count = 1024;
+        let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
+        let wall = SceneDescription {
+            meshes: vec![MeshAsset {
+                id: 1,
+                vertices: vec![
+                    Vec3::new(-10.0, -10.0, 0.5),
+                    Vec3::new(10.0, -10.0, 0.5),
+                    Vec3::new(0.0, 10.0, 0.5),
+                ],
+                indices: vec![],
+                opaque: true,
+            }],
+            materials: vec![Material {
+                id: 1,
+                absorption_bands: vec![1.0],
+                scattering: 0.0,
+                roughness: 0.0,
+                transmission: None,
+            }],
+            objects: vec![SceneObject {
+                id: 1,
+                mesh_id: 1,
+                material_id: 1,
+                transform: Mat4::IDENTITY,
+                active: true,
+            }],
+            diffraction_edges: vec![],
+        };
+        let mut obstructed = SceneManager::new();
+        obstructed.load(wall.clone()).unwrap();
+        let mut open_description = wall;
+        open_description.objects[0].transform = Mat4::from_translation(Vec3::X * 100.0);
+        let mut open = SceneManager::new();
+        open.load(open_description).unwrap();
+        assert_eq!(obstructed.version(), open.version());
+        for _ in 0..4 {
+            assert_eq!(
+                pipeline
+                    .build_ir(&gpu, &mut obstructed, test_query())
+                    .unwrap()
+                    .energy,
+                0.0
+            );
+            assert!(
+                pipeline
+                    .build_ir(&gpu, &mut open, test_query())
+                    .unwrap()
+                    .energy
+                    > 0.0
+            );
+            assert_eq!(gpu.rt().resource_counts(), (3, 3));
+        }
+        pipeline
+            .build_ir(&gpu, &mut obstructed, test_query())
+            .unwrap();
+        let material_query_tlas = pipeline.query_tlas.as_ref().unwrap().tlas.id;
+        obstructed
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::ReplaceMaterial(Material {
+                    id: 1,
+                    absorption_bands: vec![0.0],
+                    scattering: 0.0,
+                    roughness: 0.0,
+                    transmission: Some(vec![1.0]),
+                })],
+            })
+            .unwrap();
+        let transmitted = pipeline
+            .build_ir(&gpu, &mut obstructed, test_query())
+            .unwrap();
+        assert!(transmitted.energy > 0.0);
+        assert_eq!(
+            pipeline.query_tlas.as_ref().unwrap().tlas.id,
+            material_query_tlas
+        );
+        obstructed
+            .apply_updates(SceneUpdates {
+                updates: vec![SceneUpdate::SetActive {
+                    id: 1,
+                    active: false,
+                }],
+            })
+            .unwrap();
+        assert!(
+            pipeline
+                .build_ir(&gpu, &mut obstructed, test_query())
+                .unwrap()
+                .energy
+                > 0.0
+        );
+        drop(open);
+        drop(obstructed);
+        // Edge-only scenes have no surface TLAS, so their BLAS identity must
+        // independently invalidate the cached procedural query structure.
+        let mut edges = SceneManager::new();
+        let mut edge = DiffractionEdge {
+            id: 1,
+            start: Vec3::new(0.0, -1.0, 0.5),
+            end: Vec3::new(0.0, 1.0, 0.5),
+            bisector_dir: Vec3::X,
+            edge_angle_radians: std::f32::consts::TAU,
+            diffraction_radius: 0.1,
+        };
+        edges
+            .load(SceneDescription {
+                meshes: vec![],
+                materials: vec![],
+                objects: vec![],
+                diffraction_edges: vec![edge.clone()],
+            })
+            .unwrap();
+        let mut previous = None;
+        for step in 0..4 {
+            edge.diffraction_radius = 0.1 + step as f32 * 0.1;
+            edges
+                .apply_updates(SceneUpdates {
+                    updates: vec![SceneUpdate::ReplaceDiffractionEdge(edge.clone())],
+                })
+                .unwrap();
+            let ir = pipeline.build_ir(&gpu, &mut edges, test_query()).unwrap();
+            assert!(
+                ir.samples
+                    .iter()
+                    .all(|sample| sample.left.is_finite() && sample.right.is_finite())
+            );
+            let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
+            assert!(previous.is_none_or(|previous| previous != id));
+            previous = Some(id);
+            assert_eq!(gpu.rt().resource_counts(), (2, 1));
+        }
+        drop(edges);
+        drop(pipeline);
+        assert_eq!(gpu.rt().resource_counts(), (0, 0));
     }
 
     #[test]

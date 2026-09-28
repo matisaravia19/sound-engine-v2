@@ -4,6 +4,7 @@ use super::types::{
 };
 use crate::core::error::{SoundError, SoundResult};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Canonical CPU-side scene state.
 ///
@@ -11,11 +12,68 @@ use std::collections::HashMap;
 /// mutation increments `SceneVersion`, which drives lazy GPU synchronization.
 #[derive(Clone, Default)]
 pub struct SceneStore {
+    /// Revision used to invalidate scene-derived GPU data and acoustic caches.
     pub(super) version: SceneVersion,
-    pub(super) meshes: HashMap<MeshId, MeshAsset>,
+    revisions: SceneRevisions,
+    meshes: HashMap<MeshId, StoredMesh>,
+    /// Validated acoustic materials addressable by scene objects.
     pub(super) materials: HashMap<MaterialId, Material>,
+    /// Placed objects, including inactive instances.
     pub(super) objects: HashMap<ObjectId, SceneObject>,
+    /// Authored edge geometry used by diffraction proxies.
     pub(super) diffraction_edges: HashMap<DiffractionEdgeId, DiffractionEdge>,
+}
+
+// Transactions share immutable geometry; moving one object must not copy every
+// vertex/index array. Keep the content revision beside the asset it describes.
+#[derive(Clone)]
+struct StoredMesh {
+    asset: Arc<MeshAsset>,
+    revision: SceneVersion,
+}
+
+/// Last committed edits affecting independently reusable GPU resource groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SceneRevisions {
+    /// Mesh storage, active instance membership, ordering and transforms.
+    pub(super) geometry: SceneVersion,
+    /// Material values/indices and object records, including geometry addresses.
+    pub(super) shading: SceneVersion,
+    /// Authored edge records and their procedural acceleration structures.
+    pub(super) diffraction: SceneVersion,
+}
+
+impl SceneRevisions {
+    fn invalidate(&mut self, update: &SceneUpdate, revision: SceneVersion) {
+        match update {
+            SceneUpdate::AddMesh(_)
+            | SceneUpdate::ReplaceMesh(_)
+            | SceneUpdate::RemoveMesh(_)
+            | SceneUpdate::AddObject(_)
+            | SceneUpdate::ReplaceObject(_)
+            | SceneUpdate::RemoveObject(_)
+            | SceneUpdate::SetTransform {
+                ..
+            }
+            | SceneUpdate::SetActive {
+                ..
+            } => {
+                self.geometry = revision;
+                // Object records contain geometry addresses, instance ordering
+                // and transforms, so a geometry edit also invalidates shading.
+                self.shading = revision;
+            }
+            SceneUpdate::AddMaterial(_)
+            | SceneUpdate::ReplaceMaterial(_)
+            | SceneUpdate::RemoveMaterial(_)
+            | SceneUpdate::SetMaterial {
+                ..
+            } => self.shading = revision,
+            SceneUpdate::AddDiffractionEdge(_)
+            | SceneUpdate::ReplaceDiffractionEdge(_)
+            | SceneUpdate::RemoveDiffractionEdge(_) => self.diffraction = revision,
+        }
+    }
 }
 
 impl SceneStore {
@@ -26,10 +84,21 @@ impl SceneStore {
 
     /// Replaces the entire CPU scene and increments the version.
     pub fn load(&mut self, scene: SceneDescription) -> SoundResult<()> {
+        let revision = self.next_version()?;
         let mut next = Self::default();
         for mesh in scene.meshes {
             validate_mesh(&mesh)?;
-            if next.meshes.insert(mesh.id, mesh).is_some() {
+            if next
+                .meshes
+                .insert(
+                    mesh.id,
+                    StoredMesh {
+                        asset: Arc::new(mesh),
+                        revision,
+                    },
+                )
+                .is_some()
+            {
                 return Err(SoundError::invalid_argument("Duplicate mesh id in scene"));
             }
         }
@@ -56,24 +125,30 @@ impl SceneStore {
             }
         }
 
-        next.version = self.version.saturating_add(1);
+        next.version = revision;
+        next.revisions = SceneRevisions {
+            geometry: revision,
+            shading: revision,
+            diffraction: revision,
+        };
         *self = next;
         Ok(())
     }
 
     /// Applies incremental changes and increments the version if anything changed.
     pub fn apply_updates(&mut self, updates: SceneUpdates) -> SoundResult<()> {
-        let changed = !updates.updates.is_empty();
+        if updates.updates.is_empty() {
+            return Ok(());
+        }
+        let revision = self.next_version()?;
         let mut next = self.clone();
 
         for update in updates.updates {
-            next.apply_update(update)?;
+            next.apply_update(update, revision)?;
         }
 
-        if changed {
-            next.version = self.version.saturating_add(1);
-            *self = next;
-        }
+        next.version = revision;
+        *self = next;
         Ok(())
     }
 
@@ -82,9 +157,24 @@ impl SceneStore {
         self.version
     }
 
+    /// Returns committed resource revisions; failed transactions leave them unchanged.
+    pub(super) fn revisions(&self) -> SceneRevisions {
+        self.revisions
+    }
+
     /// Iterates over all mesh assets in unspecified order.
     pub fn meshes(&self) -> impl Iterator<Item = &MeshAsset> {
-        self.meshes.values()
+        self.meshes.values().map(|mesh| mesh.asset.as_ref())
+    }
+
+    /// Returns immutable geometry without exposing the transaction's shared owner.
+    pub(super) fn mesh(&self, id: MeshId) -> Option<&MeshAsset> {
+        self.meshes.get(&id).map(|mesh| mesh.asset.as_ref())
+    }
+
+    /// Returns the geometry revision used to decide whether a BLAS is reusable.
+    pub(super) fn mesh_revision(&self, id: MeshId) -> Option<SceneVersion> {
+        self.meshes.get(&id).map(|mesh| mesh.revision)
     }
 
     /// Iterates over all materials in unspecified order.
@@ -102,11 +192,30 @@ impl SceneStore {
         self.diffraction_edges.values()
     }
 
-    fn apply_update(&mut self, update: SceneUpdate) -> SoundResult<()> {
+    fn next_version(&self) -> SoundResult<SceneVersion> {
+        self.version
+            .checked_add(1)
+            .ok_or_else(|| SoundError::invalid_state("Scene revision space exhausted"))
+    }
+
+    fn apply_update(&mut self, update: SceneUpdate, revision: SceneVersion) -> SoundResult<()> {
+        // This method runs only on the transaction's clone. Revisions are
+        // published together with its records after every update succeeds.
+        self.revisions.invalidate(&update, revision);
         match update {
             SceneUpdate::AddMesh(mesh) => {
                 validate_mesh(&mesh)?;
-                if self.meshes.insert(mesh.id, mesh).is_some() {
+                if self
+                    .meshes
+                    .insert(
+                        mesh.id,
+                        StoredMesh {
+                            asset: Arc::new(mesh),
+                            revision,
+                        },
+                    )
+                    .is_some()
+                {
                     return Err(SoundError::invalid_argument(
                         "AddMesh received an existing mesh id",
                     ));
@@ -120,7 +229,13 @@ impl SceneStore {
                         mesh.id
                     )));
                 }
-                self.meshes.insert(mesh.id, mesh);
+                self.meshes.insert(
+                    mesh.id,
+                    StoredMesh {
+                        asset: Arc::new(mesh),
+                        revision,
+                    },
+                );
             }
             SceneUpdate::RemoveMesh(id) => {
                 if self.objects.values().any(|object| object.mesh_id == id) {
@@ -212,6 +327,7 @@ impl SceneStore {
                 id,
                 transform,
             } => {
+                crate::gpu::rt::validate_instance_transform(transform)?;
                 self.object_mut(id)?.transform = transform;
             }
             SceneUpdate::SetActive {
@@ -244,6 +360,10 @@ impl SceneStore {
 }
 
 fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
+    crate::gpu::rt::validate_triangle_mesh(
+        &mesh.vertices,
+        (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
+    )?;
     if mesh.vertices.is_empty() {
         return Err(SoundError::invalid_argument(format!(
             "Mesh {} has no vertices",
@@ -266,6 +386,16 @@ fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
 }
 
 fn validate_material(material: &Material) -> SoundResult<()> {
+    if material
+        .absorption_bands
+        .iter()
+        .chain(material.transmission.iter().flatten())
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(SoundError::invalid_argument(
+            "Material energy fractions must be finite and in [0, 1]",
+        ));
+    }
     if material.absorption_bands.is_empty() {
         return Err(SoundError::invalid_argument(format!(
             "Material {} must contain at least one absorption band",
@@ -288,6 +418,7 @@ fn validate_material(material: &Material) -> SoundResult<()> {
 }
 
 fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult<()> {
+    crate::gpu::rt::validate_instance_transform(object.transform)?;
     if !store.meshes.contains_key(&object.mesh_id) {
         return Err(SoundError::not_found(format!(
             "Mesh {} does not exist",
@@ -349,266 +480,5 @@ fn validate_diffraction_edge(edge: &DiffractionEdge) -> SoundResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::error::ErrorCode;
-    use glam::{Mat4, vec3};
-
-    #[test]
-    fn apply_updates_can_remove_object_and_its_mesh_in_one_batch() {
-        let mut store = populated_store();
-
-        store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::RemoveObject(10), SceneUpdate::RemoveMesh(1)],
-            })
-            .unwrap();
-
-        assert!(!store.meshes.contains_key(&1));
-        assert!(!store.objects.contains_key(&10));
-        assert!(store.meshes.contains_key(&2));
-        assert!(store.objects.contains_key(&20));
-        assert_eq!(store.version(), 2);
-    }
-
-    #[test]
-    fn apply_updates_rejects_mesh_removal_when_current_scene_still_references_it() {
-        let mut store = populated_store();
-        let original_version = store.version();
-
-        let error = store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::RemoveMesh(1)],
-            })
-            .unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidState);
-        assert!(store.meshes.contains_key(&1));
-        assert!(store.objects.contains_key(&10));
-        assert_eq!(store.version(), original_version);
-    }
-
-    #[test]
-    fn apply_updates_can_add_reassign_and_remove_materials_in_order() {
-        let mut store = populated_store();
-
-        store
-            .apply_updates(SceneUpdates {
-                updates: vec![
-                    SceneUpdate::AddMaterial(Material {
-                        id: 2,
-                        absorption_bands: vec![0.4],
-                        scattering: 0.2,
-                        roughness: 0.2,
-                        transmission: None,
-                    }),
-                    SceneUpdate::SetMaterial {
-                        id: 10,
-                        material_id: 2,
-                    },
-                    SceneUpdate::SetMaterial {
-                        id: 20,
-                        material_id: 2,
-                    },
-                    SceneUpdate::RemoveMaterial(1),
-                ],
-            })
-            .unwrap();
-
-        assert!(!store.materials.contains_key(&1));
-        assert!(store.materials.contains_key(&2));
-        assert_eq!(store.objects.get(&10).unwrap().material_id, 2);
-        assert_eq!(store.objects.get(&20).unwrap().material_id, 2);
-    }
-
-    #[test]
-    fn apply_updates_rejects_material_removal_when_current_scene_still_references_it() {
-        let mut store = populated_store();
-        let original_version = store.version();
-
-        let error = store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::RemoveMaterial(1)],
-            })
-            .unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidState);
-        assert!(store.materials.contains_key(&1));
-        assert_eq!(store.version(), original_version);
-    }
-
-    #[test]
-    fn material_roughness_must_be_finite_and_normalized() {
-        for roughness in [-0.1, 1.1, f32::NAN] {
-            let material = Material {
-                id: 1,
-                absorption_bands: vec![0.2],
-                scattering: 0.1,
-                roughness,
-                transmission: None,
-            };
-
-            assert!(validate_material(&material).is_err());
-        }
-    }
-
-    fn populated_store() -> SceneStore {
-        let mut store = SceneStore::new();
-        store
-            .load(SceneDescription {
-                meshes: vec![mesh(1), mesh(2)],
-                materials: vec![Material {
-                    id: 1,
-                    absorption_bands: vec![0.2],
-                    scattering: 0.1,
-                    roughness: 0.1,
-                    transmission: None,
-                }],
-                objects: vec![object(10, 1), object(20, 2)],
-                diffraction_edges: Vec::new(),
-            })
-            .unwrap();
-        store
-    }
-
-    fn mesh(id: MeshId) -> MeshAsset {
-        MeshAsset {
-            id,
-            vertices: vec![
-                vec3(0.0, 0.0, 0.0),
-                vec3(1.0, 0.0, 0.0),
-                vec3(0.0, 1.0, 0.0),
-            ],
-            indices: Vec::new(),
-            opaque: true,
-        }
-    }
-
-    fn object(id: ObjectId, mesh_id: MeshId) -> SceneObject {
-        SceneObject {
-            id,
-            mesh_id,
-            material_id: 1,
-            transform: Mat4::IDENTITY,
-            active: true,
-        }
-    }
-
-    fn edge(id: DiffractionEdgeId) -> DiffractionEdge {
-        DiffractionEdge {
-            id,
-            start: vec3(0.0, 0.0, 0.0),
-            end: vec3(0.0, 1.0, 0.0),
-            bisector_dir: vec3(1.0, 0.0, 0.0),
-            edge_angle_radians: 1.5 * std::f32::consts::PI,
-            diffraction_radius: 0.5,
-        }
-    }
-
-    #[test]
-    fn load_accepts_valid_diffraction_edges() {
-        let mut store = SceneStore::new();
-
-        store
-            .load(SceneDescription {
-                meshes: vec![mesh(1)],
-                materials: vec![Material {
-                    id: 1,
-                    absorption_bands: vec![0.2],
-                    scattering: 0.1,
-                    roughness: 0.1,
-                    transmission: None,
-                }],
-                objects: vec![object(10, 1)],
-                diffraction_edges: vec![edge(1)],
-            })
-            .unwrap();
-
-        assert_eq!(store.diffraction_edges().count(), 1);
-    }
-
-    #[test]
-    fn load_rejects_invalid_diffraction_edges() {
-        let mut invalid = edge(1);
-        invalid.end = invalid.start;
-
-        let mut store = SceneStore::new();
-        let error = store
-            .load(SceneDescription {
-                meshes: vec![mesh(1)],
-                materials: vec![Material {
-                    id: 1,
-                    absorption_bands: vec![0.2],
-                    scattering: 0.1,
-                    roughness: 0.1,
-                    transmission: None,
-                }],
-                objects: vec![object(10, 1)],
-                diffraction_edges: vec![invalid],
-            })
-            .unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
-
-    #[test]
-    fn load_rejects_diffraction_angles_outside_exterior_range() {
-        for angle in [std::f32::consts::PI - 0.01, std::f32::consts::TAU + 0.01] {
-            let mut invalid = edge(1);
-            invalid.edge_angle_radians = angle;
-
-            let mut store = SceneStore::new();
-            let error = store
-                .load(SceneDescription {
-                    meshes: vec![mesh(1)],
-                    materials: vec![Material {
-                        id: 1,
-                        absorption_bands: vec![0.2],
-                        scattering: 0.1,
-                        roughness: 0.1,
-                        transmission: None,
-                    }],
-                    objects: vec![object(10, 1)],
-                    diffraction_edges: vec![invalid],
-                })
-                .unwrap_err();
-
-            assert_eq!(error.code(), ErrorCode::InvalidArgument);
-        }
-    }
-
-    #[test]
-    fn apply_updates_can_add_replace_and_remove_diffraction_edges() {
-        let mut store = populated_store();
-
-        store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::AddDiffractionEdge(edge(1))],
-            })
-            .unwrap();
-        assert_eq!(
-            store.diffraction_edges.get(&1).unwrap().diffraction_radius,
-            0.5
-        );
-
-        let mut replacement = edge(1);
-        replacement.diffraction_radius = 1.0;
-        store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::ReplaceDiffractionEdge(replacement)],
-            })
-            .unwrap();
-        assert_eq!(
-            store.diffraction_edges.get(&1).unwrap().diffraction_radius,
-            1.0
-        );
-
-        store
-            .apply_updates(SceneUpdates {
-                updates: vec![SceneUpdate::RemoveDiffractionEdge(1)],
-            })
-            .unwrap();
-
-        assert!(!store.diffraction_edges.contains_key(&1));
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;

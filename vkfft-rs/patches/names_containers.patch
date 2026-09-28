@@ -1,0 +1,164 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
+@@ -23,128 +23,10 @@
+ #define VKFFT_MATHUTILS_H
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
++#include "codegen_names.hpp"
+ 
+ static inline void PfPrintReg(VkFFTSpecializationConstantsLayout* sc, PfContainer* inoutID, PfContainer* in);
+ //register manipulation functions: mov, add, sub, etc.
+-static inline void PfCopyContainer(VkFFTSpecializationConstantsLayout* sc, PfContainer* out, PfContainer* in) {
+-	if (sc->res != VKFFT_SUCCESS) return;
+-	if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfCopyContainer(sc, &out->data.dd[0], &in->data.dd[0]);
+-		PfCopyContainer(sc, &out->data.dd[1], &in->data.dd[1]);
+-	}
+-	if (out->type > 100) {
+-		if (in->type > 100) {
+-			if (out->type == in->type) {
+-				int len = 0;
+-				len = sprintf(out->name, "%s", in->name);
+-				if (len > out->size) sc->res = VKFFT_ERROR_MATH_FAILED;
+-
+-				switch (out->type % 10) {
+-				case 3:
+-					PfCopyContainer(sc, &out->data.c[0], &in->data.c[0]);
+-					PfCopyContainer(sc, &out->data.c[1], &in->data.c[1]);
+-					return;
+-				}
+-				return;
+-			}
+-		}
+-		else {
+-		}
+-	}
+-	else {
+-		if (in->type > 100) {
+-		}
+-		else {
+-			if (out->type == in->type) {
+-				switch (out->type % 10) {
+-				case 1:
+-					out->data.i = in->data.i;
+-					return;
+-				case 2:
+-					out->data.d = in->data.d;
+-					return;
+-				case 3:
+-					out->data.c[0].data.d = in->data.c[0].data.d;
+-					out->data.c[1].data.d = in->data.c[1].data.d;
+-					return;
+-				}
+-			}
+-		}
+-	}
+-	sc->res = VKFFT_ERROR_MATH_FAILED;
+-	return;
+-}
+-static inline void PfSwapContainers(VkFFTSpecializationConstantsLayout* sc, PfContainer* out, PfContainer* in) {
+-	if (sc->res != VKFFT_SUCCESS) return;
+-	if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfSwapContainers(sc, &out->data.dd[0], &in->data.dd[0]);
+-		PfSwapContainers(sc, &out->data.dd[1], &in->data.dd[1]);
+-	}
+-	if (out->type > 100) {
+-		if (in->type > 100) {
+-			if (out->type == in->type) {
+-				int len = in->size;
+-				in->size = out->size;
+-				out->size = len;
+-
+-				char* temp = in->name;
+-				in->name = out->name;
+-				out->name = temp;
+-
+-				switch (out->type % 10) {
+-				case 3:
+-					PfSwapContainers(sc, &out->data.c[0], &in->data.c[0]);
+-					PfSwapContainers(sc, &out->data.c[1], &in->data.c[1]);
+-					return;
+-				}
+-				return;
+-			}
+-		}
+-		else {
+-		}
+-	}
+-	else {
+-		if (in->type > 100) {
+-		}
+-		else {
+-			if (out->type == in->type) {
+-				switch (out->type % 10) {
+-				case 1:
+-				{
+-					pfINT temp;
+-					temp = in->data.i;
+-					in->data.i = out->data.i;
+-					out->data.i = temp;
+-					return;
+-				}
+-				case 2:
+-				{
+-					pfLD temp;
+-					temp = in->data.d;
+-					in->data.d = out->data.d;
+-					out->data.d = temp;
+-					return;
+-				}
+-				case 3:
+-				{
+-					pfLD temp;
+-					temp = in->data.c[0].data.d;
+-					in->data.c[0].data.d = out->data.c[0].data.d;
+-					out->data.c[0].data.d = temp;
+-
+-					temp = in->data.c[1].data.d;
+-					in->data.c[1].data.d = out->data.c[1].data.d;
+-					out->data.c[1].data.d = temp;
+-					return;
+-				}
+-				}
+-			}
+-		}
+-	}
+-	sc->res = VKFFT_ERROR_MATH_FAILED;
+-	return;
+-}
+-
+ static inline void PfAllocateContainerFlexible(VkFFTSpecializationConstantsLayout* sc, PfContainer* container, int size) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
+ 	if (container->size != 0) return;
+@@ -506,31 +388,6 @@
+ 	return;
+ }
+ 
+-static inline void PfSetContainerName(VkFFTSpecializationConstantsLayout* sc, PfContainer* out, const char* name) {
+-	if (sc->res != VKFFT_SUCCESS) return;
+-	if (out->type > 100) {
+-		sprintf(out->name, "%s", name);
+-		if(out->type < 200){
+-			if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)){
+-				sprintf(out->data.dd[0].name, "%s.x", name);
+-				sprintf(out->data.dd[1].name, "%s.y", name);
+-			}else{
+-				if (((out->type % 10) == 3) && (out->type > 100)) {
+-					sprintf(out->data.c[0].name, "%s.x", name);
+-					sprintf(out->data.c[1].name, "%s.y", name);
+-					if (((out->type % 100) / 10) == 3){
+-						sprintf(out->data.c[0].data.dd[0].name, "%s.x.x", name);
+-						sprintf(out->data.c[0].data.dd[1].name, "%s.x.y", name);
+-						sprintf(out->data.c[1].data.dd[0].name, "%s.y.x", name);
+-						sprintf(out->data.c[1].data.dd[1].name, "%s.y.y", name);
+-					}
+-				}
+-			}
+-		}
+-		return;
+-	}
+-	return;
+-}
+ static inline void PfDefine(VkFFTSpecializationConstantsLayout* sc, PfContainer* out, const char* name) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
+ 	if (out->type > 100) {

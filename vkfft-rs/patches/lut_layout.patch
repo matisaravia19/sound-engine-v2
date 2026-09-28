@@ -1,0 +1,335 @@
+--- a/vkFFT_ManageLUT.h
++++ b/vkFFT_ManageLUT.h
+@@ -22,6 +22,7 @@
+ #ifndef VKFFT_MANAGELUT_H
+ #define VKFFT_MANAGELUT_H
+ #include "lut_storage.hpp"
++#include "lut_layout.hpp"
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_ManageMemory.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
+@@ -47,222 +48,22 @@
+ #endif
+ 	//allocate LUT
+ 	if (app->configuration.useLUT == 1) {
+-		pfUINT dimMult = 1;
+ 		pfUINT maxStageSum = 0;
+-		for (pfUINT i = 0; i < axis->specializationConstants.numStages; i++) {
+-			if (i > 0) {
+-				switch (axis->specializationConstants.stageRadix[i]) {
+-				case 2:
+-					maxStageSum += dimMult;
+-					break;
+-				case 3:
+-					maxStageSum += dimMult * 2;
+-					break;
+-				case 4:
+-					maxStageSum += dimMult * 2;
+-					break;
+-				case 5:
+-					maxStageSum += dimMult * 4;
+-					break;
+-				case 6:
+-					maxStageSum += dimMult * 5;
+-					break;
+-				case 7:
+-						maxStageSum += dimMult * 6;
+-					break;
+-				case 8:
+-					maxStageSum += dimMult * 3;
+-					break;
+-				case 9:
+-					maxStageSum += dimMult * 8;
+-					break;
+-				case 10:
+-					maxStageSum += dimMult * 9;
+-					break;
+-				case 11:
+-					if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-						maxStageSum += dimMult * 11;
+-					else 
+-						maxStageSum += dimMult * 10;
+-					break;
+-				case 12:
+-					maxStageSum += dimMult * 11;
+-					break;
+-				case 13:
+-					if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-						maxStageSum += dimMult * 13;
+-					else 
+-						maxStageSum += dimMult * 12;
+-					break;
+-				case 14:
+-					maxStageSum += dimMult * 13;
+-					break;
+-				case 15:
+-					maxStageSum += dimMult * 14;
+-					break;
+-				case 16:
+-					maxStageSum += dimMult * 4;
+-					break;
+-				case 32:
+-					maxStageSum += dimMult * 5;
+-					break;
+-				default:
+-					maxStageSum += dimMult * (axis->specializationConstants.stageRadix[i]);
+-					break;
+-				}
+-			}
+-			dimMult *= axis->specializationConstants.stageRadix[i];
+-		}
+-		axis->specializationConstants.maxStageSumLUT = (int)maxStageSum;
+-
+-		dimMult = 1;
+-		for (pfUINT k = 0; k < axis->specializationConstants.numRaderPrimes; k++) {
+-			if (axis->specializationConstants.raderContainer[k].type == 0) {
+-				axis->specializationConstants.raderContainer[k].RaderRadixOffsetLUT = maxStageSum;
+-				for (pfUINT i = 0; i < axis->specializationConstants.raderContainer[k].numStages; i++) {
+-					if (i > 0) {
+-						switch (axis->specializationConstants.raderContainer[k].stageRadix[i]) {
+-						case 2:
+-							maxStageSum += dimMult;
+-							break;
+-						case 3:
+-							maxStageSum += dimMult * 2;
+-							break;
+-						case 4:
+-							maxStageSum += dimMult * 2;
+-							break;
+-						case 5:
+-							maxStageSum += dimMult * 4;
+-							break;
+-						case 6:
+-							maxStageSum += dimMult * 5;
+-							break;
+-						case 7:
+-								maxStageSum += dimMult * 6;
+-							break;
+-						case 8:
+-							maxStageSum += dimMult * 3;
+-							break;
+-						case 9:
+-							maxStageSum += dimMult * 8;
+-							break;
+-						case 10:
+-							maxStageSum += dimMult * 9;
+-							break;
+-						case 11:
+-							if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-								maxStageSum += dimMult * 11;
+-							else 
+-								maxStageSum += dimMult * 10;
+-							break;
+-						case 12:
+-							maxStageSum += dimMult * 11;
+-							break;
+-						case 13:
+-							if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-								maxStageSum += dimMult * 13;
+-							else 
+-								maxStageSum += dimMult * 12;
+-							break;
+-						case 14:
+-							maxStageSum += dimMult * 13;
+-							break;
+-						case 15:
+-							maxStageSum += dimMult * 14;
+-							break;
+-						case 16:
+-							maxStageSum += dimMult * 4;
+-							break;
+-						case 32:
+-							maxStageSum += dimMult * 5;
+-							break;
+-						default:
+-							maxStageSum += dimMult * (axis->specializationConstants.raderContainer[k].stageRadix[i]);
+-							break;
+-						}
+-					}
+-					dimMult *= axis->specializationConstants.raderContainer[k].stageRadix[i];
+-				}
+-				axis->specializationConstants.maxStageSumLUT = (int)maxStageSum;
+-				dimMult = 1;
+-			}
+-		}
+-		//iFFT LUT
+-		dimMult = 1;
+-		for (pfUINT k = 0; k < axis->specializationConstants.numRaderPrimes; k++) {
+-			if (axis->specializationConstants.raderContainer[k].type == 0) {
+-				axis->specializationConstants.raderContainer[k].RaderRadixOffsetLUTiFFT = maxStageSum;
+-				for (pfINT i = axis->specializationConstants.raderContainer[k].numStages - 1; i >= 0; i--) {
+-					if (i < (pfINT)axis->specializationConstants.raderContainer[k].numStages - 1) {
+-						switch (axis->specializationConstants.raderContainer[k].stageRadix[i]) {
+-						case 2:
+-							maxStageSum += dimMult;
+-							break;
+-						case 3:
+-							maxStageSum += dimMult * 2;
+-							break;
+-						case 4:
+-							maxStageSum += dimMult * 2;
+-							break;
+-						case 5:
+-							maxStageSum += dimMult * 4;
+-							break;
+-						case 6:
+-							maxStageSum += dimMult * 5;
+-							break;
+-						case 7:
+-								maxStageSum += dimMult * 6;
+-							break;
+-						case 8:
+-							maxStageSum += dimMult * 3;
+-							break;
+-						case 9:
+-							maxStageSum += dimMult * 8;
+-							break;
+-						case 10:
+-							maxStageSum += dimMult * 9;
+-							break;
+-						case 11:
+-							if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-								maxStageSum += dimMult * 11;
+-							else 
+-								maxStageSum += dimMult * 10;
+-							break;
+-						case 12:
+-							maxStageSum += dimMult * 11;
+-							break;
+-						case 13:
+-							if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory)
+-								maxStageSum += dimMult * 13;
+-							else 
+-								maxStageSum += dimMult * 12;
+-							break;
+-						case 14:
+-							maxStageSum += dimMult * 13;
+-							break;
+-						case 15:
+-							maxStageSum += dimMult * 14;
+-							break;
+-						case 16:
+-							maxStageSum += dimMult * 4;
+-							break;
+-						case 32:
+-							maxStageSum += dimMult * 5;
+-							break;
+-						default:
+-							maxStageSum += dimMult * (axis->specializationConstants.raderContainer[k].stageRadix[i]);
+-							break;
+-						}
+-					}
+-					dimMult *= axis->specializationConstants.raderContainer[k].stageRadix[i];
+-				}
+-				axis->specializationConstants.maxStageSumLUT = (int)maxStageSum;
+-				dimMult = 1;
+-			}
+-		}
+-
++		if (!vkfft_lut::stage_layout(app->configuration, axis->specializationConstants, maxStageSum)) {
++			deleteVkFFT(app);
++			return VKFFT_ERROR_MATH_FAILED;
++		}
++		const pfUINT tableLimit = vkfft_lut::complex_limit(app->configuration);
+ 		pfUINT currentLUTPos = maxStageSum;
+-		if ((app->configuration.useLUT_4step == 1) && (axis->specializationConstants.axis_upload_id > 0)) currentLUTPos += axis->specializationConstants.stageStartSize.data.i * axis->specializationConstants.fftDim.data.i;
++		if ((app->configuration.useLUT_4step == 1) && (axis->specializationConstants.axis_upload_id > 0)) {
++			const pfINT startSize = axis->specializationConstants.stageStartSize.data.i;
++			const pfINT fftSize = axis->specializationConstants.fftDim.data.i;
++			if (startSize <= 0 || fftSize <= 0 ||
++				!vkfft_lut::add_product(currentLUTPos, static_cast<pfUINT>(startSize), static_cast<pfUINT>(fftSize), tableLimit)) {
++				deleteVkFFT(app);
++				return VKFFT_ERROR_MATH_FAILED;
++			}
++		}
+ 		pfUINT disableReferenceLUT_DCT = 0;
+ 		if ((((((axis->specializationConstants.performDCT == 3) || (axis->specializationConstants.performDST == 3)) && (axis->specializationConstants.actualInverse == 0)) || (((axis->specializationConstants.performDCT == 2) || (axis->specializationConstants.performDST == 2)) && (axis->specializationConstants.actualInverse == 1)))) || (((((axis->specializationConstants.performDCT == 2) || (axis->specializationConstants.performDST == 2)) && (axis->specializationConstants.actualInverse == 0)) || (((axis->specializationConstants.performDCT == 3) || (axis->specializationConstants.performDST == 3)) && (axis->specializationConstants.actualInverse == 1))))) {
+ 			disableReferenceLUT_DCT = 1;
+@@ -270,26 +71,38 @@
+ 		if ((((((axis->specializationConstants.performDCT == 3) || (axis->specializationConstants.performDST == 3)) && (axis->specializationConstants.actualInverse == 0)) || (((axis->specializationConstants.performDCT == 2) || (axis->specializationConstants.performDST == 2)) && (axis->specializationConstants.actualInverse == 1))) && ((axis->specializationConstants.axis_upload_id == (axis->specializationConstants.numAxisUploads-1)) && (!((axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 1)))))) || (((((axis->specializationConstants.performDCT == 2) || (axis->specializationConstants.performDST == 2)) && (axis->specializationConstants.actualInverse == 0)) || (((axis->specializationConstants.performDCT == 3) || (axis->specializationConstants.performDST == 3)) && (axis->specializationConstants.actualInverse == 1))) && (((axis->specializationConstants.axis_upload_id == 0) && (!((axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 0) && (axis->specializationConstants.numAxisUploads > 1))))) || ((axis->specializationConstants.axis_upload_id == (axis->specializationConstants.numAxisUploads-1)) && (axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 1)))))) {
+ 			axis->specializationConstants.startDCT3LUT.type = 31;
+ 			axis->specializationConstants.startDCT3LUT.data.i = currentLUTPos;
+-			currentLUTPos += (app->configuration.size[axis->specializationConstants.axis_id] / 2 + 2);
++			if (!vkfft_lut::add_product(currentLUTPos, (app->configuration.size[axis->specializationConstants.axis_id] / 2 + 2), 1, tableLimit)) {
++				deleteVkFFT(app);
++				return VKFFT_ERROR_MATH_FAILED;
++			}
+ 			disableReferenceLUT_DCT = 1;
+ 		}
+ 		if (((axis->specializationConstants.performDCT == 4) || (axis->specializationConstants.performDST == 4)) && (app->configuration.size[axis->specializationConstants.axis_id] % 2 == 0) && ((axis->specializationConstants.axis_upload_id == (axis->specializationConstants.numAxisUploads-1)) && (!((axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 1)))))) {
+ 			axis->specializationConstants.startDCT3LUT.type = 31;
+ 			axis->specializationConstants.startDCT3LUT.data.i = currentLUTPos;
+-			currentLUTPos += (app->configuration.size[axis->specializationConstants.axis_id] / 4 + 2);
++			if (!vkfft_lut::add_product(currentLUTPos, (app->configuration.size[axis->specializationConstants.axis_id] / 4 + 2), 1, tableLimit)) {
++				deleteVkFFT(app);
++				return VKFFT_ERROR_MATH_FAILED;
++			}
+ 			disableReferenceLUT_DCT = 1;
+ 		}
+ 		if (((axis->specializationConstants.performDCT == 4) || (axis->specializationConstants.performDST == 4)) && (app->configuration.size[axis->specializationConstants.axis_id] % 2 == 0) && (((axis->specializationConstants.axis_upload_id == 0) && (!((axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 0) && (axis->specializationConstants.numAxisUploads > 1))))) || ((axis->specializationConstants.axis_upload_id == (axis->specializationConstants.numAxisUploads-1)) && (axis->specializationConstants.useBluesteinFFT && (axis->specializationConstants.reverseBluesteinMultiUpload == 1))))) {
+ 			axis->specializationConstants.startDCT4LUT.type = 31;
+ 			axis->specializationConstants.startDCT4LUT.data.i = currentLUTPos;
+-			currentLUTPos += app->configuration.size[axis->specializationConstants.axis_id] / 2;
++			if (!vkfft_lut::add_product(currentLUTPos, app->configuration.size[axis->specializationConstants.axis_id] / 2, 1, tableLimit)) {
++				deleteVkFFT(app);
++				return VKFFT_ERROR_MATH_FAILED;
++			}
+ 			disableReferenceLUT_DCT = 1;
+ 		}
+ 		if (axis->specializationConstants.useRader) {
+ 			for (pfUINT i = 0; i < axis->specializationConstants.numRaderPrimes; i++) {
+ 				if (!axis->specializationConstants.inline_rader_kernel) {
+ 					axis->specializationConstants.raderContainer[i].RaderKernelOffsetLUT = currentLUTPos;
+-					currentLUTPos += (axis->specializationConstants.raderContainer[i].prime - 1);
++					if (!vkfft_lut::add_product(currentLUTPos, (axis->specializationConstants.raderContainer[i].prime - 1), 1, tableLimit)) {
++						deleteVkFFT(app);
++						return VKFFT_ERROR_MATH_FAILED;
++					}
+ 				}
+ 			}
+ 		}
+@@ -1239,11 +1052,13 @@
+ #endif
+ 	//allocate RaderUintLUT
+ 	if (axis->specializationConstants.raderUintLUT) {
++		pfUINT tableBytes = 0;
++		if (!vkfft_lut::rader_uint_layout(axis->specializationConstants, tableBytes)) {
++			deleteVkFFT(app);
++			return VKFFT_ERROR_MATH_FAILED;
++		}
+ 		if (app->bufferRaderUintLUT[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id] == 0) {
+-			app->bufferRaderUintLUTSize[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id] = 0;
+-			for (pfUINT i = 0; i < axis->specializationConstants.numRaderPrimes; i++) {
+-				app->bufferRaderUintLUTSize[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id] += axis->specializationConstants.raderContainer[i].prime * sizeof(uint32_t);
+-			}
++			app->bufferRaderUintLUTSize[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id] = tableBytes;
+ 			vkfft_lut::HostBuffer lutStorage(app->bufferRaderUintLUTSize[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id]);
+ 			uint32_t* tempRaderUintLUT = static_cast<uint32_t*>(lutStorage.get());
+ 			if (!tempRaderUintLUT) {
+@@ -1253,7 +1068,6 @@
+ 			pfUINT current_offset = 0;
+ 			for (pfUINT i = 0; i < axis->specializationConstants.numRaderPrimes; i++) {
+ 				if (axis->specializationConstants.raderContainer[i].prime > 0) {
+-					axis->specializationConstants.raderContainer[i].raderUintLUToffset = (int)current_offset;
+ 					pfUINT g_pow = 1;
+ 					tempRaderUintLUT[current_offset] = 1;
+ 					current_offset++;
+@@ -1326,15 +1140,9 @@
+ 			}
+ #endif
+ 		}
+-		else {
+-			pfUINT current_offset = 0;
+-			for (pfUINT i = 0; i < axis->specializationConstants.numRaderPrimes; i++) {
+-				if (axis->specializationConstants.raderContainer[i].prime > 0) {
+-					axis->specializationConstants.raderContainer[i].raderUintLUToffset = (int)current_offset;
+-					pfUINT g_pow = 1;
+-					current_offset += axis->specializationConstants.raderContainer[i].prime;
+-				}
+-			}
++		else if (app->bufferRaderUintLUTSize[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id] != tableBytes) {
++			deleteVkFFT(app);
++			return VKFFT_ERROR_MATH_FAILED;
+ 		}
+ 
+ 		axis->bufferRaderUintLUT = app->bufferRaderUintLUT[axis->specializationConstants.axis_id][axis->specializationConstants.axis_upload_id];

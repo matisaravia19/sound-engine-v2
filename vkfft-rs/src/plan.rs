@@ -1,5 +1,9 @@
 use crate::ffi::*;
 use ash::vk::Handle;
+use std::sync::Mutex;
+
+// VkFFT initializes/finalizes process-global glslang state during plan creation.
+static COMPILER_ACCESS: Mutex<()> = Mutex::new(());
 
 /// Owns a VkFFT application and stable storage for the handle pointers it retains.
 /// The caller must keep the Vulkan device and buffers alive, serialize recording,
@@ -79,7 +83,16 @@ impl FFTPlanBuilder {
     }
 
     /// Initializes VkFFT and transfers configuration storage into the owned plan.
-    pub fn build(self) -> Result<FFTPlan, VkFFTResult> {
+    ///
+    /// # Safety
+    /// All handles must be valid and belong to the same live device. The caller
+    /// must exclusively synchronize queue/pool/fence access and keep the device,
+    /// loader, buffers and initialization handles alive until the plan is dropped.
+    pub unsafe fn build(self) -> Result<FFTPlan, VkFFTResult> {
+        self.validate()?;
+        let _compiler = COMPILER_ACCESS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let app = unsafe { vkfft_app_create() };
         if app.is_null() {
             return Err(VkFFTResult::ErrorEmptyApp);
@@ -95,6 +108,51 @@ impl FFTPlanBuilder {
             app,
             _handles: self.handles,
         })
+    }
+
+    fn validate(&self) -> Result<(), VkFFTResult> {
+        if self.handles.physical_device.is_null() {
+            return Err(VkFFTResult::ErrorInvalidPhysicalDevice);
+        }
+        if self.handles.device.is_null() {
+            return Err(VkFFTResult::ErrorInvalidDevice);
+        }
+        if self.handles.queue.is_null() {
+            return Err(VkFFTResult::ErrorInvalidQueue);
+        }
+        if self.handles.command_pool == 0 {
+            return Err(VkFFTResult::ErrorInvalidCommandPool);
+        }
+        if self.handles.fence == 0 {
+            return Err(VkFFTResult::ErrorInvalidFence);
+        }
+        if self.config.dimensions == 0 {
+            return Err(VkFFTResult::ErrorEmptyFftdim);
+        }
+        let sizes = &self.config.size[..self.config.dimensions as usize];
+        if sizes.contains(&0) {
+            return Err(VkFFTResult::ErrorEmptySize);
+        }
+        let bytes = sizes
+            .iter()
+            .try_fold(8_u64, |bytes, size| bytes.checked_mul(*size))
+            .and_then(|bytes| bytes.checked_mul(self.config.number_batches.max(1)))
+            .ok_or(VkFFTResult::ErrorInsufficientTempBuffer)?;
+        if self.handles.buffer == 0 {
+            return Err(VkFFTResult::ErrorEmptyBuffer);
+        }
+        if self.handles.buffer_size < bytes {
+            return Err(VkFFTResult::ErrorEmptyBufferSize);
+        }
+        if self.config.perform_convolution != 0 {
+            if self.handles.kernel == 0 {
+                return Err(VkFFTResult::ErrorEmptyKernel);
+            }
+            if self.handles.kernel_size < bytes {
+                return Err(VkFFTResult::ErrorEmptyKernelSize);
+            }
+        }
+        Ok(())
     }
 
     /// Sets transform dimensions; panics if the dimension count is outside 1..=4.
@@ -156,12 +214,19 @@ impl FFTPlanBuilder {
 
 impl FFTPlan {
     /// Records a forward FFT into a caller-owned command buffer; does not submit or wait.
-    pub fn append(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
+    ///
+    /// # Safety
+    /// The command buffer must be recording on this plan's device. Synchronize
+    /// buffer access and retain the plan and its resources until execution ends.
+    pub unsafe fn append(&self, command_buffer: ash::vk::CommandBuffer) -> Result<(), VkFFTResult> {
         self.append_internal(command_buffer, 0)
     }
 
     /// Records an inverse FFT; the caller synchronizes buffer access and completion.
-    pub fn append_inverse(
+    ///
+    /// # Safety
+    /// The same recording, lifetime and synchronization requirements as `append` apply.
+    pub unsafe fn append_inverse(
         &self,
         command_buffer: ash::vk::CommandBuffer,
     ) -> Result<(), VkFFTResult> {
@@ -189,9 +254,239 @@ impl FFTPlan {
 
 impl Drop for FFTPlan {
     fn drop(&mut self) {
+        let _compiler = COMPILER_ACCESS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         unsafe {
             vkfft_delete_plan(self.app);
             vkfft_app_destroy(self.app);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builder() -> FFTPlanBuilder {
+        // Validation-only sentinel handles: these tests never enter Vulkan or VkFFT.
+        let handles = DeviceHandles {
+            physical_device: ash::vk::PhysicalDevice::from_raw(1),
+            device: ash::vk::Device::from_raw(1),
+            queue: ash::vk::Queue::from_raw(1),
+            command_pool: ash::vk::CommandPool::from_raw(1),
+            fence: ash::vk::Fence::from_raw(1),
+        };
+        FFTPlanBuilder::new(&handles)
+            .with_single_dimension(8)
+            .with_buffer(ash::vk::Buffer::from_raw(1), 64)
+    }
+
+    #[test]
+    fn native_codegen_rader_temporaries_release_nested_and_partial_allocations() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_rader_storage() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_rader_storage() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_permutations_preserve_names_and_reject_invalid_maps() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_permutations() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_permutations() }, 0);
+    }
+
+    #[test]
+    fn native_lut_storage_releases_temporary_tables_and_skips_borrowed_r2c_work() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_ownership() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_ownership() }, 0);
+    }
+
+    #[test]
+    fn native_lut_layout_rejects_invalid_offsets_before_allocation() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_layout_bounds() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_layout_bounds() }, 0);
+    }
+
+    #[test]
+    fn native_lut_reuse_requires_compatible_initialized_storage() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_sharing_compatibility() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_sharing_compatibility() }, 0);
+    }
+
+    #[test]
+    fn native_lut_borrowers_clear_handles_without_freeing_shared_storage() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_shared_teardown() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_shared_teardown() }, 0);
+    }
+
+    #[test]
+    fn native_lut_rader_offsets_match_values_and_cached_table_extent() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_rader_layout_and_reuse() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_rader_layout_and_reuse() }, 0);
+    }
+
+    #[test]
+    fn native_lut_uploads_initialized_values_and_rejects_byte_size_overflow() {
+        unsafe extern "C" {
+            fn vkfft_test_lut_values_and_bounds() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_lut_values_and_bounds() }, 0);
+    }
+
+    #[test]
+    fn native_double_double_conversion_stops_after_allocation_failure() {
+        unsafe extern "C" {
+            fn vkfft_test_double_double_conversion_failure() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_double_double_conversion_failure() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_radix_kernels_need_no_temporary_allocations() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_radix_allocations() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_radix_allocations() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_radix_stages_release_storage_on_failures_and_exceptions() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_radix_stage_storage() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_radix_stage_storage() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_radix_stages_reject_invalid_register_layouts() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_radix_stage_layout() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_radix_stage_layout() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_names_respect_capacity_and_propagate_errors() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_names() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_names() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_copy_preserves_nested_allocation_ownership() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_copy_ownership() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_copy_ownership() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_registers_clean_up_after_errors() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_registers() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_registers() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_formatting_respects_temporary_capacity() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_formatting() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_formatting() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_parameters_clean_up_after_each_allocation_failure() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_parameters() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_parameters() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_containers_release_nested_and_partial_allocations() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_containers() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_containers() }, 0);
+    }
+
+    #[test]
+    fn native_codegen_text_checks_capacity_before_writing() {
+        unsafe extern "C" {
+            fn vkfft_test_codegen_bounds() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_codegen_bounds() }, 0);
+    }
+
+    #[test]
+    fn native_compiler_failures_release_resources_and_contain_exceptions() {
+        unsafe extern "C" {
+            fn vkfft_test_compiler_failures() -> i32;
+        }
+        assert_eq!(
+            unsafe { vkfft_test_compiler_failures() },
+            0,
+            "native compiler regression failed at this C++ source line"
+        );
+    }
+
+    #[test]
+    fn recursive_native_failures_preserve_parent_kernel_ownership() {
+        unsafe extern "C" {
+            fn vkfft_test_recursive_failures() -> i32;
+        }
+        assert_eq!(
+            unsafe { vkfft_test_recursive_failures() },
+            0,
+            "recursive initialization regression failed at this C++ source line"
+        );
+    }
+
+    #[test]
+    fn native_transfer_failures_release_resources_before_returning() {
+        unsafe extern "C" {
+            fn vkfft_test_memory_failures() -> i32;
+        }
+        assert_eq!(
+            unsafe { vkfft_test_memory_failures() },
+            0,
+            "native transfer regression failed at this C++ source line"
+        );
+    }
+
+    #[test]
+    fn configuration_rejects_null_fence_short_buffer_and_dimension_overflow() {
+        assert_eq!(builder().validate(), Ok(()));
+        let mut invalid = builder();
+        invalid.handles.fence = 0;
+        assert_eq!(invalid.validate(), Err(VkFFTResult::ErrorInvalidFence));
+        assert_eq!(
+            builder().with_batch_count(2).validate(),
+            Err(VkFFTResult::ErrorEmptyBufferSize)
+        );
+        assert_eq!(
+            builder().with_single_dimension(0).validate(),
+            Err(VkFFTResult::ErrorEmptySize)
+        );
+        assert_eq!(
+            builder().with_single_dimension(u64::MAX).validate(),
+            Err(VkFFTResult::ErrorInsufficientTempBuffer)
+        );
     }
 }

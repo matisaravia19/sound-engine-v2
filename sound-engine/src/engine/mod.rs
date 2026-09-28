@@ -1,8 +1,12 @@
 //! Public sound engine facade and shared orchestration types.
 
+#[cfg(feature = "playback")]
+mod diagnostics;
 mod direct;
 #[cfg(feature = "playback")]
 mod runtime;
+#[cfg(feature = "playback")]
+mod worker;
 
 use crate::acoustics::IrSnapshot;
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
@@ -16,7 +20,7 @@ use std::path::Path;
 #[cfg(feature = "playback")]
 use crate::playback::PlaybackConfig;
 #[cfg(feature = "playback")]
-use runtime::{EngineRuntime, RuntimeStartError};
+use runtime::EngineRuntime;
 
 /// Identifier for a tracked movable sound source.
 pub type SoundSourceId = u64;
@@ -283,21 +287,24 @@ impl SoundEngine {
     }
 
     /// Returns whether the engine currently has active or tail-flushing voices.
+    /// In runtime mode this reads the latest published registry count; queued
+    /// device audio can remain after all voices finish rendering.
     pub fn has_active_voices(&self) -> bool {
         match self.mode.as_ref() {
             Some(EngineMode::Direct(core)) => core.has_active_voices(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(_)) => true,
+            Some(EngineMode::Runtime(runtime)) => runtime.active_voice_count() != 0,
             None => false,
         }
     }
 
-    /// Returns the number of active or tail-flushing voices in direct mode.
+    /// Returns active or tail-flushing voices, including the latest worker snapshot.
+    /// A stopped worker retains voices until direct ownership is recovered.
     pub fn active_voice_count(&self) -> usize {
         match self.mode.as_ref() {
             Some(EngineMode::Direct(core)) => core.active_voice_count(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(_)) => 0,
+            Some(EngineMode::Runtime(runtime)) => runtime.active_voice_count(),
             None => 0,
         }
     }
@@ -350,11 +357,10 @@ impl SoundEngine {
                     self.mode = Some(EngineMode::Runtime(runtime));
                     Ok(())
                 }
-                Err(RuntimeStartError::Recoverable(core, error)) => {
-                    self.mode = Some(EngineMode::Direct(core));
-                    Err(error)
+                Err(error) => {
+                    self.mode = Some(EngineMode::Direct(error.core));
+                    Err(error.error)
                 }
-                Err(RuntimeStartError::Fatal(error)) => Err(error),
             },
             EngineMode::Runtime(runtime) => {
                 self.mode = Some(EngineMode::Runtime(runtime));
@@ -388,9 +394,11 @@ impl SoundEngine {
     }
 
     /// Returns whether the feature-gated background sound player is running.
+    /// After asynchronous failure, call `stop_sound_player` to retrieve the error
+    /// and recover the engine's direct ownership.
     #[cfg(feature = "playback")]
     pub fn is_sound_player_running(&self) -> bool {
-        matches!(self.mode, Some(EngineMode::Runtime(_)))
+        matches!(&self.mode, Some(EngineMode::Runtime(runtime)) if runtime.is_running())
     }
 
     /// Borrows the current mode unless ownership is being transferred.

@@ -1,0 +1,75 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
+@@ -153,12 +153,12 @@ static inline void PfAllocateContainerFlexible(VkFFTSpecializationConstantsLayou
+ 		container->name = (char*)calloc(size, sizeof(char));
+ 		container->size = size;
+ 
+-		if (container->name == 0) sc->res = VKFFT_ERROR_MALLOC_FAILED;
++		if (container->name == 0) { sc->res = VKFFT_ERROR_MALLOC_FAILED; return; }
+ 	}
+ 	if(container->type < 200){
+ 		if ((((container->type % 100) / 10) == 3) && ((container->type % 10) == 2)) {
+ 			if (container->data.dd == 0) container->data.dd = (PfContainer*) calloc(2, sizeof(PfContainer));
+-			if (container->data.dd == 0) sc->res = VKFFT_ERROR_MALLOC_FAILED;
++			if (container->data.dd == 0) { sc->res = VKFFT_ERROR_MALLOC_FAILED; return; }
+ 			container->data.dd[0].type = container->type-10;
+ 			container->data.dd[1].type = container->type-10;
+ 			PfAllocateContainerFlexible(sc, &container->data.dd[0], 50);
+@@ -166,7 +166,7 @@ static inline void PfAllocateContainerFlexible(VkFFTSpecializationConstantsLayou
+ 		}
+ 		else if ((container->type % 10) == 3){
+ 			if (container->data.c == 0) container->data.c = (PfContainer*) calloc(2, sizeof(PfContainer));
+-			if (container->data.c == 0) sc->res = VKFFT_ERROR_MALLOC_FAILED;
++			if (container->data.c == 0) { sc->res = VKFFT_ERROR_MALLOC_FAILED; return; }
+ 			container->data.c[0].type = container->type-1;
+ 			container->data.c[1].type = container->type-1;
+ 			PfAllocateContainerFlexible(sc, &container->data.c[0], 50);
+@@ -177,32 +177,32 @@ static inline void PfAllocateContainerFlexible(VkFFTSpecializationConstantsLayou
+ }
+ 
+ static inline void PfDeallocateContainer(VkFFTSpecializationConstantsLayout* sc, PfContainer* container) {
++	// Preserve the tag until nested allocations are released, even after a failed allocation.
+ 	if (container->type > 0) {
+ 		if (container->type > 100) {
+-			if (container->name)
+-				free(container->name);
++			free(container->name);
+ 			container->name = 0;
+ 		}
+-		container->size = 0;
+-		container->type = 0;
+-		if(container->type < 200){
++		if (container->type < 200) {
+ 			if ((((container->type % 100) / 10) == 3) && ((container->type % 10) == 2)) {
+-				PfDeallocateContainer(sc, &container->data.dd[0]);
+-				PfDeallocateContainer(sc, &container->data.dd[1]);
+-				if (container->data.dd)
++				if (container->data.dd) {
++					PfDeallocateContainer(sc, &container->data.dd[0]);
++					PfDeallocateContainer(sc, &container->data.dd[1]);
+ 					free(container->data.dd);
+-				container->data.dd = 0;
+-			}
+-			else if ((container->type % 10) == 3){
+-				PfDeallocateContainer(sc, &container->data.c[0]);
+-				PfDeallocateContainer(sc, &container->data.c[1]);
+-				if (container->data.c)
++					container->data.dd = 0;
++				}
++			} else if ((container->type % 10) == 3) {
++				if (container->data.c) {
++					PfDeallocateContainer(sc, &container->data.c[0]);
++					PfDeallocateContainer(sc, &container->data.c[1]);
+ 					free(container->data.c);
+-				container->data.c = 0;
++					container->data.c = 0;
++				}
+ 			}
+ 		}
++		container->size = 0;
++		container->type = 0;
+ 	}
+-	return;
+ }
+ 
+ static inline void PfConvToDoubleDouble(VkFFTSpecializationConstantsLayout* sc, PfContainer* out, PfContainer* in) {

@@ -1,0 +1,759 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_RecursiveFFTGenerators.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_RecursiveFFTGenerators.h
+@@ -40,7 +40,6 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 	if (app->configuration.quadDoubleDoublePrecision || app->configuration.quadDoubleDoublePrecisionDoubleMemory) bufferSize *= 4;
+ 	app->bufferBluesteinSize[axis_id] = bufferSize;
+ #if(VKFFT_BACKEND==0)
+-	VkResult res = VK_SUCCESS;
+ 	resFFT = allocateBufferVulkan(app, &app->bufferBluestein[axis_id], &app->bufferBluesteinDeviceMemory[axis_id], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, bufferSize);
+ 	if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 	if (!app->configuration.makeInversePlanOnly) {
+@@ -238,7 +237,8 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 	}
+ 	else {
+ #endif
+-		VkFFTApplication kernelPreparationApplication = VKFFT_ZERO_INIT;
++		vkfft_memory::Application kernelPreparationOwner;
++		VkFFTApplication& kernelPreparationApplication = kernelPreparationOwner.value;
+ 		VkFFTConfiguration kernelPreparationConfiguration = VKFFT_ZERO_INIT;
+ 		kernelPreparationConfiguration.FFTdim = 1;
+ 		kernelPreparationConfiguration.size[0] = FFTPlan->actualFFTSizePerAxis[axis_id][axis_id];
+@@ -300,9 +300,9 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 		if (kernelPreparationConfiguration.loadApplicationFromString) {
+ 			app->currentApplicationStringPos += kernelPreparationApplication.currentApplicationStringPos;
+ 		}
+-		void* phaseVectors = malloc(bufferSize);
++		vkfft_memory::HeapBuffer phaseVectorsOwner(bufferSize);
++		void* phaseVectors = phaseVectorsOwner.data;
+ 		if (!phaseVectors) {
+-			deleteVkFFT(&kernelPreparationApplication);
+ 			return VKFFT_ERROR_MALLOC_FAILED;
+ 		}
+ 		pfUINT phaseVectorsNonZeroSize = ((((app->configuration.performDCT == 4) || (app->configuration.performDST == 4)) && (app->configuration.size[axis_id] % 2 == 0)) || ((FFTPlan->bigSequenceEvenR2C) && (axis_id == 0))) ? app->configuration.size[axis_id] / 2 : app->configuration.size[axis_id];
+@@ -365,70 +365,19 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			}
+ 			resFFT = VkFFT_TransferDataFromCPU(app, phaseVectors, &app->bufferBluestein[axis_id], bufferSize);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ #if(VKFFT_BACKEND==0)
+ 			{
+-				VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+-				commandBufferAllocateInfo.commandPool = kernelPreparationApplication.configuration.commandPool[0];
+-				commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+-				commandBufferAllocateInfo.commandBufferCount = 1;
+-				VkCommandBuffer commandBuffer = VKFFT_ZERO_INIT;
+-				res = vkAllocateCommandBuffers(kernelPreparationApplication.configuration.device[0], &commandBufferAllocateInfo, &commandBuffer);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_ALLOCATE_COMMAND_BUFFERS;
+-				}
+-				VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+-				commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+-				res = vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_BEGIN_COMMAND_BUFFER;
+-				}
+-				VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+-				launchParams.commandBuffer = &commandBuffer;
+-				launchParams.inputBuffer = &app->bufferBluestein[axis_id];
+-				launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+-				//Record commands
+-				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+-				if (resFFT != VKFFT_SUCCESS) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return resFFT;
+-				}
+-				res = vkEndCommandBuffer(commandBuffer);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+-				}
+-				VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+-				submitInfo.commandBufferCount = 1;
+-				submitInfo.pCommandBuffers = &commandBuffer;
+-				res = vkQueueSubmit(kernelPreparationApplication.configuration.queue[0], 1, &submitInfo, kernelPreparationApplication.configuration.fence[0]);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+-				}
+-				res = vkWaitForFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence, VK_TRUE, 100000000000);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
+-				}
+-				res = vkResetFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence);
+-				if (res != 0) {
+-					free(phaseVectors);
+-					deleteVkFFT(&kernelPreparationApplication);
+-					return VKFFT_ERROR_FAILED_TO_RESET_FENCES;
+-				}
+-				vkFreeCommandBuffers(kernelPreparationApplication.configuration.device[0], kernelPreparationApplication.configuration.commandPool[0], 1, &commandBuffer);
++				resFFT = vkfft_memory::run_commands(&kernelPreparationApplication, [&](VkCommandBuffer commandBuffer) {
++					VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
++					launchParams.commandBuffer = &commandBuffer;
++					launchParams.inputBuffer = &app->bufferBluestein[axis_id];
++					launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
++					//Record commands
++					return VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
++				});
++				if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 			}
+ #elif(VKFFT_BACKEND==1)
+ 			VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+@@ -436,14 +385,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = cudaDeviceSynchronize();
+ 			if (res != cudaSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ #elif(VKFFT_BACKEND==2)
+@@ -452,14 +397,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = hipDeviceSynchronize();
+ 			if (res != hipSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ #elif(VKFFT_BACKEND==3)
+@@ -469,14 +410,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = clFinish(commandQueue);
+ 			if (res != CL_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ #elif(VKFFT_BACKEND==4)
+@@ -491,32 +428,22 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = zeCommandListClose(commandList);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+ 			}
+ 			res = zeCommandQueueExecuteCommandLists(app->configuration.commandQueue[0], 1, &commandList, 0);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+ 			}
+ 			res = zeCommandQueueSynchronize(app->configuration.commandQueue[0], UINT32_MAX);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 			res = zeCommandListDestroy(commandList);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_DESTROY_COMMAND_LIST;
+ 			}
+ #elif(VKFFT_BACKEND==5)
+@@ -532,8 +459,6 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			commandEncoder->endEncoding();
+@@ -623,130 +548,30 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 		}
+ 		resFFT = VkFFT_TransferDataFromCPU(app, phaseVectors, &app->bufferBluestein[axis_id], bufferSize);
+ 		if (resFFT != VKFFT_SUCCESS) {
+-			free(phaseVectors);
+-			deleteVkFFT(&kernelPreparationApplication);
+ 			return resFFT;
+ 		}
+ #if(VKFFT_BACKEND==0)
+ 		if (!app->configuration.makeInversePlanOnly) {
+-			VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+-			commandBufferAllocateInfo.commandPool = kernelPreparationApplication.configuration.commandPool[0];
+-			commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+-			commandBufferAllocateInfo.commandBufferCount = 1;
+-			VkCommandBuffer commandBuffer = VKFFT_ZERO_INIT;
+-			res = vkAllocateCommandBuffers(kernelPreparationApplication.configuration.device[0], &commandBufferAllocateInfo, &commandBuffer);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_ALLOCATE_COMMAND_BUFFERS;
+-			}
+-			VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+-			commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+-			res = vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_BEGIN_COMMAND_BUFFER;
+-			}
+-			VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+-			launchParams.commandBuffer = &commandBuffer;
+-			launchParams.inputBuffer = &app->bufferBluestein[axis_id];
+-			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+-			//Record commands
+-			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+-			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return resFFT;
+-			}
+-			res = vkEndCommandBuffer(commandBuffer);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+-			}
+-			VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+-			submitInfo.commandBufferCount = 1;
+-			submitInfo.pCommandBuffers = &commandBuffer;
+-			res = vkQueueSubmit(kernelPreparationApplication.configuration.queue[0], 1, &submitInfo, kernelPreparationApplication.configuration.fence[0]);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+-			}
+-			res = vkWaitForFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence, VK_TRUE, 100000000000);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
+-			}
+-			res = vkResetFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_RESET_FENCES;
+-			}
+-			vkFreeCommandBuffers(kernelPreparationApplication.configuration.device[0], kernelPreparationApplication.configuration.commandPool[0], 1, &commandBuffer);
++			resFFT = vkfft_memory::run_commands(&kernelPreparationApplication, [&](VkCommandBuffer commandBuffer) {
++				VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
++				launchParams.commandBuffer = &commandBuffer;
++				launchParams.inputBuffer = &app->bufferBluestein[axis_id];
++				launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
++				//Record commands
++				return VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
++			});
++			if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 		}
+ 		if ((FFTPlan->numAxisUploads[axis_id] == 1) && (!app->configuration.makeForwardPlanOnly)) {
+-			VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+-			commandBufferAllocateInfo.commandPool = kernelPreparationApplication.configuration.commandPool[0];
+-			commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+-			commandBufferAllocateInfo.commandBufferCount = 1;
+-			VkCommandBuffer commandBuffer = VKFFT_ZERO_INIT;
+-			res = vkAllocateCommandBuffers(kernelPreparationApplication.configuration.device[0], &commandBufferAllocateInfo, &commandBuffer);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_ALLOCATE_COMMAND_BUFFERS;
+-			}
+-			VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+-			commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+-			res = vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_BEGIN_COMMAND_BUFFER;
+-			}
+-			VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+-			launchParams.commandBuffer = &commandBuffer;
+-			launchParams.inputBuffer = &app->bufferBluestein[axis_id];
+-			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+-			//Record commands
+-			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+-			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return resFFT;
+-			}
+-			res = vkEndCommandBuffer(commandBuffer);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+-			}
+-			VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+-			submitInfo.commandBufferCount = 1;
+-			submitInfo.pCommandBuffers = &commandBuffer;
+-			res = vkQueueSubmit(kernelPreparationApplication.configuration.queue[0], 1, &submitInfo, kernelPreparationApplication.configuration.fence[0]);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+-			}
+-			res = vkWaitForFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence, VK_TRUE, 100000000000);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
+-			}
+-			res = vkResetFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence);
+-			if (res != 0) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+-				return VKFFT_ERROR_FAILED_TO_RESET_FENCES;
+-			}
+-			vkFreeCommandBuffers(kernelPreparationApplication.configuration.device[0], kernelPreparationApplication.configuration.commandPool[0], 1, &commandBuffer);
++			resFFT = vkfft_memory::run_commands(&kernelPreparationApplication, [&](VkCommandBuffer commandBuffer) {
++				VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
++				launchParams.commandBuffer = &commandBuffer;
++				launchParams.inputBuffer = &app->bufferBluestein[axis_id];
++				launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
++				//Record commands
++				return VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
++			});
++			if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 		}
+ #elif(VKFFT_BACKEND==1)
+ 		VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+@@ -755,14 +580,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = cudaDeviceSynchronize();
+ 			if (res != cudaSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -770,14 +591,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = cudaDeviceSynchronize();
+ 			if (res != cudaSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -788,14 +605,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = hipDeviceSynchronize();
+ 			if (res != hipSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -803,14 +616,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = hipDeviceSynchronize();
+ 			if (res != hipSuccess) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -822,14 +631,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = clFinish(commandQueue);
+ 			if (res != CL_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -837,14 +642,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = clFinish(commandQueue);
+ 			if (res != CL_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+@@ -862,33 +663,23 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 
+ 			res = zeCommandListClose(commandList);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+ 			}
+ 			res = zeCommandQueueExecuteCommandLists(app->configuration.commandQueue[0], 1, &commandList, 0);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+ 			}
+ 			res = zeCommandQueueSynchronize(app->configuration.commandQueue[0], UINT32_MAX);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 			res = zeCommandListReset(commandList);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_DESTROY_COMMAND_LIST;
+ 			}
+ 		}
+@@ -896,33 +687,23 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			res = zeCommandListClose(commandList);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+ 			}
+ 			res = zeCommandQueueExecuteCommandLists(app->configuration.commandQueue[0], 1, &commandList, 0);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+ 			}
+ 			res = zeCommandQueueSynchronize(app->configuration.commandQueue[0], UINT32_MAX);
+ 			if (res != ZE_RESULT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 			}
+ 		}
+ 		res = zeCommandListDestroy(commandList);
+ 		if (res != ZE_RESULT_SUCCESS) {
+-			free(phaseVectors);
+-			deleteVkFFT(&kernelPreparationApplication);
+ 			return VKFFT_ERROR_FAILED_TO_DESTROY_COMMAND_LIST;
+ 		}
+ #elif(VKFFT_BACKEND==5)
+@@ -939,8 +720,6 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			commandEncoder->endEncoding();
+@@ -960,8 +739,6 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			launchParams.buffer = &app->bufferBluesteinIFFT[axis_id];
+ 			resFFT = VkFFTAppend(&kernelPreparationApplication, 1, &launchParams);
+ 			if (resFFT != VKFFT_SUCCESS) {
+-				free(phaseVectors);
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return resFFT;
+ 			}
+ 			commandEncoder->endEncoding();
+@@ -981,13 +758,10 @@ static inline VkFFTResult VkFFTGeneratePhaseVectors(VkFFTApplication* app, VkFFT
+ 			app->applicationBluesteinStringSize[axis_id] = kernelPreparationApplication.applicationStringSize;
+ 			app->applicationBluesteinString[axis_id] = calloc(app->applicationBluesteinStringSize[axis_id], 1);
+ 			if (!app->applicationBluesteinString[axis_id]) {
+-				deleteVkFFT(&kernelPreparationApplication);
+ 				return VKFFT_ERROR_MALLOC_FAILED;
+ 			}
+ 			memcpy(app->applicationBluesteinString[axis_id], kernelPreparationApplication.saveApplicationString, app->applicationBluesteinStringSize[axis_id]);
+ 		}
+-		deleteVkFFT(&kernelPreparationApplication);
+-		free(phaseVectors);
+ #ifdef VkFFT_use_FP128_Bluestein_RaderFFT
+ 	}
+ #endif
+@@ -1103,7 +877,10 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 					}
+ 				}
+ 
+-				VkFFTApplication kernelPreparationApplication = VKFFT_ZERO_INIT;
++				// The parent owns the CPU kernel; temporary GPU storage outlives its nested plan.
++				vkfft_memory::Buffer raderBufferOwner(app->configuration.device[0]);
++				vkfft_memory::Application kernelPreparationOwner;
++				VkFFTApplication& kernelPreparationApplication = kernelPreparationOwner.value;
+ 				VkFFTConfiguration kernelPreparationConfiguration = VKFFT_ZERO_INIT;
+ 
+ 				kernelPreparationConfiguration.FFTdim = 1;
+@@ -1147,8 +924,8 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 
+ #if(VKFFT_BACKEND==0)
+-				VkDeviceMemory bufferRaderFFTDeviceMemory;
+-				VkBuffer bufferRaderFFT;
++				VkDeviceMemory& bufferRaderFFTDeviceMemory = raderBufferOwner.memory;
++				VkBuffer& bufferRaderFFT = raderBufferOwner.buffer;
+ #elif(VKFFT_BACKEND==1)
+ 				void* bufferRaderFFT;
+ #elif(VKFFT_BACKEND==2)
+@@ -1161,7 +938,6 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				MTL::Buffer* bufferRaderFFT;
+ #endif
+ #if(VKFFT_BACKEND==0)
+-				VkResult res = VK_SUCCESS;
+ 				resFFT = allocateBufferVulkan(app, &bufferRaderFFT, &bufferRaderFFTDeviceMemory, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, bufferSize);
+ 				if (resFFT != VKFFT_SUCCESS) return resFFT;
+ #elif(VKFFT_BACKEND==1)
+@@ -1190,83 +966,28 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 
+ 				resFFT = VkFFT_TransferDataFromCPU(app, axis->specializationConstants.raderContainer[i].raderFFTkernel, &bufferRaderFFT, bufferSize);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ #if(VKFFT_BACKEND==0)
+ 				{
+-					VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+-					commandBufferAllocateInfo.commandPool = kernelPreparationApplication.configuration.commandPool[0];
+-					commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+-					commandBufferAllocateInfo.commandBufferCount = 1;
+-					VkCommandBuffer commandBuffer = VKFFT_ZERO_INIT;
+-					res = vkAllocateCommandBuffers(kernelPreparationApplication.configuration.device[0], &commandBufferAllocateInfo, &commandBuffer);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_ALLOCATE_COMMAND_BUFFERS;
+-					}
+-					VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+-					commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+-					res = vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_BEGIN_COMMAND_BUFFER;
+-					}
+-					VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+-					launchParams.commandBuffer = &commandBuffer;
+-					launchParams.buffer = &bufferRaderFFT;
+-					//Record commands
+-					resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+-					if (resFFT != VKFFT_SUCCESS) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return resFFT;
+-					}
+-					res = vkEndCommandBuffer(commandBuffer);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+-					}
+-					VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+-					submitInfo.commandBufferCount = 1;
+-					submitInfo.pCommandBuffers = &commandBuffer;
+-					res = vkQueueSubmit(kernelPreparationApplication.configuration.queue[0], 1, &submitInfo, kernelPreparationApplication.configuration.fence[0]);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+-					}
+-					res = vkWaitForFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence, VK_TRUE, 100000000000);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
+-					}
+-					res = vkResetFences(kernelPreparationApplication.configuration.device[0], 1, kernelPreparationApplication.configuration.fence);
+-					if (res != 0) {
+-						free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-						deleteVkFFT(&kernelPreparationApplication);
+-						return VKFFT_ERROR_FAILED_TO_RESET_FENCES;
+-					}
+-					vkFreeCommandBuffers(kernelPreparationApplication.configuration.device[0], kernelPreparationApplication.configuration.commandPool[0], 1, &commandBuffer);
++					resFFT = vkfft_memory::run_commands(&kernelPreparationApplication, [&](VkCommandBuffer commandBuffer) {
++						VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
++						launchParams.commandBuffer = &commandBuffer;
++						launchParams.buffer = &bufferRaderFFT;
++						//Record commands
++						return VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
++					});
++					if (resFFT != VKFFT_SUCCESS) return resFFT;
+ 				}
+ #elif(VKFFT_BACKEND==1)
+ 				VkFFTLaunchParams launchParams = VKFFT_ZERO_INIT;
+ 				launchParams.buffer = &bufferRaderFFT;
+ 				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 				res = cudaDeviceSynchronize();
+ 				if (res != cudaSuccess) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 				}
+ #elif(VKFFT_BACKEND==2)
+@@ -1274,14 +995,10 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				launchParams.buffer = &bufferRaderFFT;
+ 				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 				res = hipDeviceSynchronize();
+ 				if (res != hipSuccess) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 				}
+ #elif(VKFFT_BACKEND==3)
+@@ -1290,14 +1007,10 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				launchParams.buffer = &bufferRaderFFT;
+ 				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 				res = clFinish(commandQueue);
+ 				if (res != CL_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 				}
+ #elif(VKFFT_BACKEND==4)
+@@ -1311,32 +1024,22 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				launchParams.buffer = &bufferRaderFFT;
+ 				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 				res = zeCommandListClose(commandList);
+ 				if (res != ZE_RESULT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
+ 				}
+ 				res = zeCommandQueueExecuteCommandLists(app->configuration.commandQueue[0], 1, &commandList, 0);
+ 				if (res != ZE_RESULT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
+ 				}
+ 				res = zeCommandQueueSynchronize(app->configuration.commandQueue[0], UINT32_MAX);
+ 				if (res != ZE_RESULT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_SYNCHRONIZE;
+ 				}
+ 				res = zeCommandListDestroy(commandList);
+ 				if (res != ZE_RESULT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return VKFFT_ERROR_FAILED_TO_DESTROY_COMMAND_LIST;
+ 				}
+ #elif(VKFFT_BACKEND==5)
+@@ -1351,8 +1054,6 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				launchParams.buffer = &bufferRaderFFT;
+ 				resFFT = VkFFTAppend(&kernelPreparationApplication, -1, &launchParams);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 				commandEncoder->endEncoding();
+@@ -1363,8 +1064,6 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ #endif
+ 				resFFT = VkFFT_TransferDataToCPU(&kernelPreparationApplication, axis->specializationConstants.raderContainer[i].raderFFTkernel, &bufferRaderFFT, bufferSize);
+ 				if (resFFT != VKFFT_SUCCESS) {
+-					free(axis->specializationConstants.raderContainer[i].raderFFTkernel);
+-					deleteVkFFT(&kernelPreparationApplication);
+ 					return resFFT;
+ 				}
+ 
+@@ -1375,8 +1074,6 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ 				if (res != CL_SUCCESS) return VKFFT_ERROR_FAILED_TO_RELEASE_COMMAND_QUEUE;
+ #endif
+ #if(VKFFT_BACKEND==0)
+-				vkDestroyBuffer(app->configuration.device[0], bufferRaderFFT, 0);
+-				vkFreeMemory(app->configuration.device[0], bufferRaderFFTDeviceMemory, 0);
+ #elif(VKFFT_BACKEND==1)
+ 				cudaFree(bufferRaderFFT);
+ #elif(VKFFT_BACKEND==2)
+@@ -1388,7 +1085,6 @@ static inline VkFFTResult VkFFTGenerateRaderFFTKernel(VkFFTApplication* app, VkF
+ #elif(VKFFT_BACKEND==5)
+ 				bufferRaderFFT->release();
+ #endif
+-				deleteVkFFT(&kernelPreparationApplication);
+ 			}
+ 		}
+ 		if (app->configuration.loadApplicationFromString) {

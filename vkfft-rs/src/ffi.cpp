@@ -1,10 +1,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <new>
 
 #define VKFFT_BACKEND 0
+// Load the scoped Vulkan helpers before VkFFT's include guard selects its own.
+// These scalar aliases match the default precision configuration in vkFFT.h.
+#define VKFFT_MAX_FFT_DIMENSIONS 4
+#define pfUINT uint64_t
+#define pfINT int64_t
+#define pfLD long double
+#include "vulkan_memory.hpp"
+#include "vulkan_init.hpp"
+#include "vulkan_compiler.hpp"
+#include "ffi_guard.hpp"
 
-#include "vkfft.h"
+#include "vkFFT.h"
+
+static_assert(VKFFT_MAX_FFT_DIMENSIONS == 4, "Rust VkFFT FFI dimensions must match the bundled library");
 
 struct FFIVkFFTConfiguration
 {
@@ -39,7 +52,7 @@ extern "C"
 {
     void *vkfft_app_create()
     {
-        return new VkFFTApplication{};
+        return new (std::nothrow) VkFFTApplication{};
     }
 
     void vkfft_app_destroy(void *app)
@@ -47,7 +60,7 @@ extern "C"
         delete reinterpret_cast<VkFFTApplication *>(app);
     }
 
-    VkFFTResult vkfft_init(void *app, const FFIVkFFTConfiguration *config_in)
+    VkFFTResult vkfft_init(void *app, const FFIVkFFTConfiguration *config_in) noexcept
     {
         VkFFTConfiguration config = {};
 
@@ -72,16 +85,23 @@ extern "C"
         config.kernelConvolution = config_in->kernelConvolution;
         config.numberBatches = config_in->numberBatches;
 
-        return initializeVkFFT(reinterpret_cast<VkFFTApplication *>(app), config);
+        auto* application = reinterpret_cast<VkFFTApplication *>(app);
+        return vkfft_ffi::invoke(
+            [&] { return initializeVkFFT(application, config); },
+            [&]() noexcept { deleteVkFFT(application); },
+            VKFFT_ERROR_FAILED_TO_INITIALIZE);
     }
 
-    VkFFTResult vkfft_exec(void *app, int inverse, const FFIVkFFTLaunchParams *launch_in)
+    VkFFTResult vkfft_exec(void *app, int inverse, const FFIVkFFTLaunchParams *launch_in) noexcept
     {
         VkFFTLaunchParams launch_params = {};
 
         launch_params.commandBuffer = launch_in->commandBuffer;
 
-        return VkFFTAppend(reinterpret_cast<VkFFTApplication *>(app), inverse, &launch_params);
+        // The caller owns the plan and will discard failed command recording.
+        return vkfft_ffi::invoke(
+            [&] { return VkFFTAppend(reinterpret_cast<VkFFTApplication *>(app), inverse, &launch_params); },
+            []() noexcept {}, VKFFT_ERROR_FAILED_TO_LAUNCH_KERNEL);
     }
 
     void vkfft_delete_plan(void *app)

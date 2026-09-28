@@ -4,7 +4,6 @@ use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
 use crate::auralization::voice::{Voice, VoiceState};
 use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
 use crate::core::config::EngineConfig;
-#[cfg(any(debug_assertions, test))]
 use crate::core::error::ErrorCode;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -43,7 +42,7 @@ pub struct AuralizationEngine {
     config: EngineConfig,
     sound_bank: SoundBank,
     impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
-    active_voices: HashMap<VoiceId, Voice>,
+    active_voices: HashMap<VoiceId, ActiveVoice>,
     next_voice_id: VoiceId,
     dry_block: Vec<f32>,
     wet_block: Vec<f32>,
@@ -51,6 +50,12 @@ pub struct AuralizationEngine {
     // Drop the registries and voices that own GPU buffers before the convolver,
     // whose backend Arc keeps the Vulkan device alive through teardown.
     convolver: PartitionedConvolver,
+}
+
+/// Retains immutable dry samples even if the application's sound bank removes them.
+struct ActiveVoice {
+    asset: SoundAsset,
+    voice: Voice,
 }
 
 impl AuralizationEngine {
@@ -114,7 +119,7 @@ impl AuralizationEngine {
                 self.config.sound.sample_rate
             )));
         }
-        Ok(self.sound_bank.insert(asset))
+        self.sound_bank.insert(asset)
     }
 
     /// Registers an impulse response for later playback.
@@ -178,7 +183,7 @@ impl AuralizationEngine {
             .auralization
             .block_size
             .saturating_mul(IR_TRANSITION_BLOCKS);
-        voice.queue_impulse_response_transition(
+        voice.voice.queue_impulse_response_transition(
             impulse_response,
             self.convolver.tail_size(),
             self.convolver.fft_size(),
@@ -194,6 +199,11 @@ impl AuralizationEngine {
             return Err(SoundError::invalid_argument("sound gain must be finite"));
         }
         let asset = self.sound_bank.get(request.sound_id)?;
+        if asset.sample_rate() != self.config.sound.sample_rate {
+            return Err(SoundError::invalid_argument(
+                "Sound sample rate must match the engine",
+            ));
+        }
         if asset.is_empty() {
             return Err(SoundError::invalid_argument(
                 "sound asset must not be empty",
@@ -209,18 +219,20 @@ impl AuralizationEngine {
                     request.impulse_response_id
                 ))
             })?;
-        let voice_id = self.next_voice_id;
-        self.next_voice_id = self.next_voice_id.saturating_add(1);
+        let voice_id = crate::core::id::allocate_id(&mut self.next_voice_id, "Voice")?;
         self.active_voices.insert(
             voice_id,
-            Voice::new(
-                voice_id,
-                request.sound_id,
-                request.gain,
-                impulse_response.clone(),
-                self.convolver.tail_size(),
-                self.convolver.fft_size(),
-            ),
+            ActiveVoice {
+                asset: asset.clone(),
+                voice: Voice::new(
+                    voice_id,
+                    request.sound_id,
+                    request.gain,
+                    impulse_response.clone(),
+                    self.convolver.tail_size(),
+                    self.convolver.fft_size(),
+                ),
+            },
         );
 
         Ok(voice_id)
@@ -243,9 +255,8 @@ impl AuralizationEngine {
     /// audio from all active voices into it. For multichannel output (e.g. stereo),
     /// samples are written interleaved (e.g. L,R,L,R...).
     pub fn render_block(&mut self, output_block: &mut [f32]) -> SoundResult<()> {
-        #[cfg(debug_assertions)]
         let output_channels = self.config.sound.output_channels.count();
-        crate::debug_validate!(
+        crate::validate!(
             output_block.len() == self.config.auralization.block_size * output_channels,
             ErrorCode::InvalidArgument,
             "output_block length {} must equal block size {} times channel count {}",
@@ -257,11 +268,14 @@ impl AuralizationEngine {
         output_block.fill(0.0);
         self.finished_voices.clear();
 
-        for (voice_id, voice) in self.active_voices.iter_mut() {
+        for (voice_id, active) in self.active_voices.iter_mut() {
+            let ActiveVoice {
+                asset,
+                voice,
+            } = active;
             self.wet_block.fill(0.0);
             match voice.state {
                 VoiceState::Playing => {
-                    let asset = self.sound_bank.get(voice.sound_id)?;
                     render_asset_block(asset, voice, &mut self.dry_block);
                     self.convolver
                         .process_block(voice, &self.dry_block, &mut self.wet_block)?;
@@ -338,6 +352,43 @@ fn mix_into(output: &mut [f32], wet_block: &[f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires Vulkan; run hardware tests serially"]
+    fn audit_voices_retain_assets_and_reject_invalid_registry_state() {
+        let gpu = Arc::new(VkBackend::new().unwrap());
+        let mut engine = AuralizationEngine::new(gpu, test_config()).unwrap();
+        engine
+            .register_impulse_response(1, &[IrSample::new(1.0, 0.5)])
+            .unwrap();
+        let sound = engine
+            .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.25; 128]).unwrap())
+            .unwrap();
+        let voice = engine.play_sound(PlaySoundRequest::new(sound, 1)).unwrap();
+        engine.sound_bank_mut().remove(sound).unwrap();
+        let mut block = vec![0.0; 128];
+        engine.render_block(&mut block).unwrap();
+        for frame in block.chunks_exact(2) {
+            assert!((frame[0] - 0.25).abs() < 1e-4);
+            assert!((frame[1] - 0.125).abs() < 1e-4);
+        }
+        let wrong_rate = engine
+            .sound_bank_mut()
+            .insert(SoundAsset::from_mono_samples(44_100, vec![1.0; 64]).unwrap())
+            .unwrap();
+        assert!(
+            engine
+                .play_sound(PlaySoundRequest::new(wrong_rate, 1))
+                .is_err()
+        );
+        let valid = engine
+            .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.0; 64]).unwrap())
+            .unwrap();
+        engine.next_voice_id = u64::MAX;
+        assert!(engine.play_sound(PlaySoundRequest::new(valid, 1)).is_err());
+        assert_eq!(engine.active_voice_count(), 1);
+        assert!(engine.has_voice(voice));
+    }
 
     #[test]
     fn rejects_zero_sample_rate() {

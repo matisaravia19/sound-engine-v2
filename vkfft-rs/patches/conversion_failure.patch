@@ -1,0 +1,18 @@
+--- a/vkFFT_MathUtils.h
++++ b/vkFFT_MathUtils.h
+@@ -94,6 +94,7 @@
+ 		if(out->type==0){
+ 			out->type = in->type;
+ 			PfAllocateContainerFlexible(sc, out, 50);
++			if (sc->res != VKFFT_SUCCESS) return;
+ 		}
+ 		PfCopyContainer(sc, out, in);
+ 		return;
+@@ -101,6 +102,7 @@
+ 		if(out->type==0){
+ 			out->type = in->type + 10;
+ 			PfAllocateContainerFlexible(sc, out, 50);
++			if (sc->res != VKFFT_SUCCESS) return;
+ 		}
+ 		double high, low;
+ 		if ((in->type % 10)== 2) {

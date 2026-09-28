@@ -165,6 +165,25 @@ impl RtContext {
             .collect::<Vec<_>>();
         let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
+        crate::gpu::resource::validate_pipeline_layout(
+            &descriptor_bindings,
+            &push_constant_ranges,
+            &self.device_context.limits,
+        )?;
+        if spec.max_ray_recursion_depth == 0
+            || spec.max_ray_recursion_depth
+                > self
+                    .device_context
+                    .rt_properties
+                    .ray_tracing_pipeline
+                    .max_ray_recursion_depth
+        {
+            return Err(SoundError::invalid_argument(
+                "Ray recursion depth exceeds device limits",
+            ));
+        }
+        let mut cleanup =
+            crate::gpu::resource::PipelineBuildGuard::new(self.device_context.clone());
 
         // RT pipelines use one descriptor set layout for now, matching compute.
         let descriptor_set_layout_info =
@@ -178,6 +197,7 @@ impl RtContext {
         let layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&descriptor_set_layout))
             .push_constant_ranges(&push_constant_ranges);
+        cleanup.descriptor_set_layout = descriptor_set_layout;
         let layout = unsafe {
             self.device_context
                 .device
@@ -189,6 +209,7 @@ impl RtContext {
             .groups(&groups)
             .max_pipeline_ray_recursion_depth(spec.max_ray_recursion_depth)
             .layout(layout);
+        cleanup.layout = layout;
         let handle = unsafe {
             self.device_context
                 .ray_tracing_pipeline
@@ -198,8 +219,14 @@ impl RtContext {
                     std::slice::from_ref(&pipeline_info),
                     None,
                 )
-                .map_err(|(_, err)| err)?[0]
+                .map_err(|(partial, err)| {
+                    for handle in partial {
+                        self.device_context.device.destroy_pipeline(handle, None);
+                    }
+                    err
+                })?[0]
         };
+        cleanup.handle = handle;
 
         // The SBT is derived from created pipeline group handles.
         let (sbt, raygen_region, miss_region, hit_region, callable_region) =
@@ -210,25 +237,33 @@ impl RtContext {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT pipelines lock is poisoned"))?;
 
-        let id = RtPipelineId(pipelines.len() as u32);
+        let id = RtPipelineId(
+            self.next_pipeline_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| {
+                    SoundError::resource_allocation_failed("RT pipeline id space exhausted")
+                })?,
+        );
 
         pipelines.insert(
             id,
             RayTracingPipeline {
+                device_context: self.device_context.clone(),
                 handle,
                 layout,
                 descriptor_set_layout,
-                #[cfg(debug_assertions)]
                 push_constant_ranges,
                 pool_sizes_template: aggregate_pool_sizes(&descriptor_bindings),
+                descriptor_bindings,
                 descriptor_pools: Vec::new(),
-                sbt,
+                _sbt: sbt,
                 raygen_region,
                 miss_region,
                 hit_region,
                 callable_region,
             },
         );
+        cleanup.disarm();
         Ok(id)
     }
 
@@ -261,10 +296,26 @@ impl RtContext {
         let handle_size = props.shader_group_handle_size as usize;
         let handle_alignment = props.shader_group_handle_alignment as usize;
         let base_alignment = props.shader_group_base_alignment as usize;
+        if handle_size == 0
+            || !handle_alignment.is_power_of_two()
+            || !base_alignment.is_power_of_two()
+        {
+            return Err(SoundError::invalid_state(
+                "Invalid Vulkan SBT alignment properties",
+            ));
+        }
         let record_stride = align_up(handle_size, handle_alignment);
         let group_count = groups.len() as u32;
         let region_size = align_up(record_stride, base_alignment);
-        let total_size = region_size * groups.len();
+        if region_size > props.max_shader_group_stride as usize {
+            return Err(SoundError::invalid_argument(
+                "SBT record stride exceeds the device limit",
+            ));
+        }
+        let total_size = region_size
+            .checked_mul(groups.len())
+            .and_then(|size| size.checked_add(base_alignment - 1))
+            .ok_or_else(|| SoundError::invalid_argument("SBT allocation size overflow"))?;
 
         let handles = unsafe {
             device
@@ -277,22 +328,27 @@ impl RtContext {
                 )?
         };
 
-        // Each group handle is copied into a base-aligned record slot.
+        // The allocation's address need not satisfy shaderGroupBaseAlignment.
+        // Reserve a prefix and align the first record inside the actual buffer.
+        let sbt = self.memory.create_host_device_address_buffer(
+            total_size as vk::DeviceSize,
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
+        )?;
+        let allocation_address = self.memory.buffer_device_address(&sbt);
+        let base_address = allocation_address
+            .checked_add(base_alignment as u64 - 1)
+            .map(|address| address & !(base_alignment as u64 - 1))
+            .ok_or_else(|| SoundError::invalid_state("SBT device address overflow"))?;
+        let prefix = (base_address - allocation_address) as usize;
         let mut sbt_bytes = vec![0_u8; total_size];
         for group_idx in 0..groups.len() {
             let src_offset = group_idx * handle_size;
-            let dst_offset = group_idx * region_size;
+            let dst_offset = prefix + group_idx * region_size;
             sbt_bytes[dst_offset..dst_offset + handle_size]
                 .copy_from_slice(&handles[src_offset..src_offset + handle_size]);
         }
 
-        // Host-visible SBT is fine for now and avoids a staging copy.
-        let sbt = self.memory.create_host_device_address_buffer(
-            sbt_bytes.len() as vk::DeviceSize,
-            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
-        )?;
         self.memory.write_mapped_bytes(&sbt, &sbt_bytes)?;
-        let base_address = self.memory.buffer_device_address(&sbt);
 
         Ok((
             sbt,
@@ -437,6 +493,28 @@ fn validate_groups(
     stages: &[vk::PipelineShaderStageCreateInfo<'_>],
     groups: &[RtShaderGroupSpec],
 ) -> SoundResult<()> {
+    if groups
+        .iter()
+        .filter(|group| group.kind() == RtGroupKind::Raygen)
+        .count()
+        != 1
+    {
+        return Err(SoundError::invalid_argument(
+            "SBT requires exactly one ray-generation group",
+        ));
+    }
+    let mut runs = Vec::new();
+    for group in groups {
+        let kind = group.kind();
+        if runs.last() != Some(&kind) {
+            if runs.contains(&kind) {
+                return Err(SoundError::invalid_argument(
+                    "SBT groups of each kind must form one contiguous run",
+                ));
+            }
+            runs.push(kind);
+        }
+    }
     for group in groups {
         match *group {
             RtShaderGroupSpec::Raygen {

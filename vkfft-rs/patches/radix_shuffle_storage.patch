@@ -1,0 +1,240 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixShuffle.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel1/vkFFT_RadixShuffle.h
+@@ -25,6 +25,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
++#include "codegen_stage_layout.hpp"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_Zeropad.h"
+@@ -33,6 +34,13 @@
+ 
+ static inline void appendRadixShuffleNonStrided(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, PfContainer* stageRadixNext) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::stage_geometry(sc, stageRadix->data.i, stageSize->data.i)) return;
++	if (!vkfft_codegen::stage_register_layout(sc, stageRadixNext->data.i)) return;
++	if (sc->numStages <= 0 || sc->numStages > (int)(sizeof(sc->stageRadix) / sizeof(sc->stageRadix[0])) ||
++		sc->stageRadix[sc->numStages - 1] <= 0) {
++		sc->res = VKFFT_ERROR_MATH_FAILED;
++		return;
++	}
+ 	PfContainer temp_int = VKFFT_ZERO_INIT;
+ 	temp_int.type = 31;
+ 	PfContainer temp_int1 = VKFFT_ZERO_INIT;
+@@ -92,13 +100,11 @@
+ 	//if ((sc->localSize[0] * logicalStoragePerThread > sc->fftDim) || (stageSize->data.i < sc->fftDim / stageRadix->data.i) || ((sc->reorderFourStep) && (sc->fftDim < sc->fft_dim_full) && (sc->localSize[1] > 1)) || (sc->localSize[1] > 1) || ((sc->performR2C) && (!sc->actualInverse) && (sc->axis_id == 0)) || ((sc->convolutionStep) && ((sc->matrixConvolution > 1) || (sc->numKernels > 1)) && (stageAngle->data.d < 0)) || (sc->registerBoost > 1) || (sc->performDCT)) {
+ 	if ((!((sc->writeFromRegisters == 1) && (stageSize->data.i == sc->fftDim.data.i / stageRadix->data.i) && (!(((sc->convolutionStep) || (sc->useBluesteinFFT && sc->BluesteinConvolutionStep)) && (stageAngle->data.d < 0) && ((sc->matrixConvolution > 1) || (sc->numKernels.data.i > 1)))))) && ((sc->localSize[0].data.i * logicalStoragePerThread.data.i > sc->fftDim.data.i) || (stageSize->data.i < sc->fftDim.data.i / stageRadix->data.i) || ((sc->reorderFourStep) && (sc->fftDim.data.i < sc->fft_dim_full.data.i) && (sc->localSize[1].data.i > 1)) || (sc->localSize[1].data.i > 1) || ((sc->performR2C) && (!sc->actualInverse) && (sc->axis_id == 0) && (!sc->forceCallbackVersionRealTransforms)) || ((sc->convolutionStep) && ((sc->matrixConvolution > 1) || (sc->numKernels.data.i > 1)) && (stageAngle->data.d < 0)) || (sc->registerBoost > 1) || ((sc->performDCT) || (sc->performDST)))) {
+ 		if (!((sc->registerBoost > 1) && (stageSize->data.i * stageRadix->data.i == sc->fftDim.data.i / sc->stageRadix[sc->numStages - 1]) && (sc->stageRadix[sc->numStages - 1] == sc->registerBoost))) {
+-			PfContainer* tempID;
+-			tempID = (PfContainer*)calloc(sc->registers_per_thread * sc->registerBoost, sizeof(PfContainer));
+-			if (tempID) {
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					tempID[i].type = sc->regIDs[0].type;
+-					PfAllocateContainerFlexible(sc, &tempID[i], 50);
+-				}
++			vkfft_codegen::Containers ownedTemporary(sc, sc->registers_per_thread, sc->registerBoost);
++			PfContainer* tempID = ownedTemporary.get();
++			if (!vkfft_codegen::allocate_register_containers(sc, tempID,
++				sc->registers_per_thread * sc->registerBoost)) return;
++			{
+ 
+ 				for (pfUINT k = 0; k < sc->registerBoost; ++k) {
+ 					pfUINT t = 0;
+@@ -151,6 +157,7 @@
+ 							id.data.i = j + k * logicalRegistersPerThread.data.i / stageRadix->data.i + i * logicalStoragePerThread.data.i / stageRadix->data.i;
+ 							id.data.i = (id.data.i / logicalRegistersPerThread.data.i) * sc->registers_per_thread + id.data.i % logicalRegistersPerThread.data.i;
+ 							PfCopyContainer(sc, &tempID[t + k * sc->registers_per_thread], &sc->regIDs[id.data.i]);
++							if (sc->res != VKFFT_SUCCESS) return;
+ 							t++;
+ 							if (logicalGroupSize.data.i * ((pfINT)(j + k * logicalRegistersPerThread.data.i / stageRadix->data.i) * stageRadix->data.i) <= sc->fftDim.data.i) {
+ 								temp_int.data.i = i * stageSize->data.i;
+@@ -200,6 +207,7 @@
+ 					}
+ 					for (pfUINT j = logicalRegistersPerThread.data.i; j < sc->registers_per_thread; j++) {
+ 						PfCopyContainer(sc, &tempID[t + k * sc->registers_per_thread], &sc->regIDs[t + k * sc->registers_per_thread]);
++						if (sc->res != VKFFT_SUCCESS) return;
+ 						t++;
+ 					}
+ 					t = 0;
+@@ -265,28 +273,18 @@
+ 				}
+ 				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+ 					PfCopyContainer(sc, &sc->regIDs[i], &tempID[i]);
+-				}
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					PfDeallocateContainer(sc, &tempID[i]);
+-				}
+-				free(tempID);
+-				tempID = 0;
+-			}
+-			else {
+-				sc->res = VKFFT_ERROR_MALLOC_FAILED;
+-				return;
++					if (sc->res != VKFFT_SUCCESS) return;
++				}
+ 			}
+ 		}
+ 		else {
+ 			//registerBoost
+-			PfContainer* tempID;
+-			tempID = (PfContainer*)calloc(sc->registers_per_thread * sc->registerBoost, sizeof(PfContainer));
+-			if (tempID) {
++			vkfft_codegen::Containers ownedTemporary(sc, sc->registers_per_thread, sc->registerBoost);
++			PfContainer* tempID = ownedTemporary.get();
++			if (!vkfft_codegen::allocate_register_containers(sc, tempID,
++				sc->registers_per_thread * sc->registerBoost)) return;
++			{
+ 				//resID = (char**)malloc(sizeof(char*) * sc->registers_per_thread * sc->registerBoost);
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					tempID[i].type = sc->regIDs[0].type;
+-					PfAllocateContainerFlexible(sc, &tempID[i], 50);
+-				}
+ 				for (pfUINT k = 0; k < (pfUINT)sc->registerBoost; ++k) {
+ 					for (pfUINT j = 0; j < (pfUINT)logicalRegistersPerThread.data.i / stageRadix->data.i; j++) {
+ 						for (pfUINT i = 0; i < (pfUINT)stageRadix->data.i; i++) {
+@@ -295,25 +293,18 @@
+ 							id.data.i = j + k * logicalRegistersPerThread.data.i / stageRadix->data.i + i * logicalStoragePerThread.data.i / stageRadix->data.i;
+ 							id.data.i = (id.data.i / logicalRegistersPerThread.data.i) * sc->registers_per_thread + id.data.i % logicalRegistersPerThread.data.i;
+ 							PfCopyContainer(sc, &tempID[j + i * logicalRegistersPerThread.data.i / stageRadix->data.i + k * sc->registers_per_thread], &sc->regIDs[id.data.i]);
++							if (sc->res != VKFFT_SUCCESS) return;
+ 						}
+ 					}
+ 					for (pfUINT j = logicalRegistersPerThread.data.i; j < sc->registers_per_thread; j++) {
+ 						PfCopyContainer(sc, &tempID[j + k * sc->registers_per_thread], &sc->regIDs[j + k * sc->registers_per_thread]);
++						if (sc->res != VKFFT_SUCCESS) return;
+ 					}
+ 				}
+ 				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+ 					PfCopyContainer(sc, &sc->regIDs[i], &tempID[i]);
+-				}
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					PfDeallocateContainer(sc, &tempID[i]);
+-				}
+-				free(tempID);
+-				tempID = 0;
+-			}
+-			else
+-			{
+-				sc->res = VKFFT_ERROR_MALLOC_FAILED;
+-				return;
++					if (sc->res != VKFFT_SUCCESS) return;
++				}
+ 			}
+ 		}
+ 	}
+@@ -346,6 +337,13 @@
+ }
+ static inline void appendRadixShuffleStrided(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, PfContainer* stageRadixNext) {
+ 	if (sc->res != VKFFT_SUCCESS) return;
++	if (!vkfft_codegen::stage_geometry(sc, stageRadix->data.i, stageSize->data.i)) return;
++	if (!vkfft_codegen::stage_register_layout(sc, stageRadixNext->data.i)) return;
++	if (sc->numStages <= 0 || sc->numStages > (int)(sizeof(sc->stageRadix) / sizeof(sc->stageRadix[0])) ||
++		sc->stageRadix[sc->numStages - 1] <= 0) {
++		sc->res = VKFFT_ERROR_MATH_FAILED;
++		return;
++	}
+ 	PfContainer temp_int = VKFFT_ZERO_INIT;
+ 	temp_int.type = 31;
+ 	PfContainer temp_int1 = VKFFT_ZERO_INIT;
+@@ -409,13 +407,11 @@
+ 	//if ((sc->localSize[0] * logicalStoragePerThread > sc->fftDim) || (stageSize->data.i < sc->fftDim / stageRadix->data.i) || ((sc->reorderFourStep) && (sc->fftDim < sc->fft_dim_full) && (sc->localSize[1] > 1)) || (sc->localSize[1] > 1) || ((sc->performR2C) && (!sc->actualInverse) && (sc->axis_id == 0)) || ((sc->convolutionStep) && ((sc->matrixConvolution > 1) || (sc->numKernels > 1)) && (stageAngle->data.d < 0)) || (sc->registerBoost > 1) || (sc->performDCT)) {
+ 	if ((!((sc->writeFromRegisters == 1) && (stageSize->data.i == sc->fftDim.data.i / stageRadix->data.i) && (!(((sc->convolutionStep) || (sc->useBluesteinFFT && sc->BluesteinConvolutionStep)) && (stageAngle->data.d < 0) && ((sc->matrixConvolution > 1) || (sc->numKernels.data.i > 1)))))) && (((sc->axis_id == 0) && (sc->axis_upload_id == 0)) || (sc->localSize[1].data.i * logicalStoragePerThread.data.i > sc->fftDim.data.i) || (stageSize->data.i < sc->fftDim.data.i / stageRadix->data.i) || ((sc->convolutionStep) && ((sc->matrixConvolution > 1) || (sc->numKernels.data.i > 1)) && (stageAngle->data.d < 0)) || ((sc->performDCT) || (sc->performDST)))) {
+ 		if (!((sc->registerBoost > 1) && (stageSize->data.i * stageRadix->data.i == sc->fftDim.data.i / sc->stageRadix[sc->numStages - 1]) && (sc->stageRadix[sc->numStages - 1] == sc->registerBoost))) {
+-			PfContainer* tempID;
+-			tempID = (PfContainer*)calloc(sc->registers_per_thread * sc->registerBoost, sizeof(PfContainer));
+-			if (tempID) {
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					tempID[i].type = sc->regIDs[0].type;
+-					PfAllocateContainerFlexible(sc, &tempID[i], 50);
+-				}
++			vkfft_codegen::Containers ownedTemporary(sc, sc->registers_per_thread, sc->registerBoost);
++			PfContainer* tempID = ownedTemporary.get();
++			if (!vkfft_codegen::allocate_register_containers(sc, tempID,
++				sc->registers_per_thread * sc->registerBoost)) return;
++			{
+ 
+ 				for (pfUINT k = 0; k < sc->registerBoost; ++k) {
+ 					pfUINT t = 0;
+@@ -467,6 +463,7 @@
+ 							id.data.i = j + k * logicalRegistersPerThread.data.i / stageRadix->data.i + i * logicalStoragePerThread.data.i / stageRadix->data.i;
+ 							id.data.i = (id.data.i / logicalRegistersPerThread.data.i) * sc->registers_per_thread + id.data.i % logicalRegistersPerThread.data.i;
+ 							PfCopyContainer(sc, &tempID[t + k * sc->registers_per_thread], &sc->regIDs[id.data.i]);
++							if (sc->res != VKFFT_SUCCESS) return;
+ 							t++;
+ 							if (logicalGroupSize.data.i * ((pfINT)(j + k * logicalRegistersPerThread.data.i / stageRadix->data.i) * stageRadix->data.i) <= sc->fftDim.data.i) {
+ 								temp_int.data.i = i * stageSize->data.i;
+@@ -495,6 +492,7 @@
+ 					}
+ 					for (pfUINT j = logicalRegistersPerThread.data.i; j < sc->registers_per_thread; j++) {
+ 						PfCopyContainer(sc, &tempID[t + k * sc->registers_per_thread], &sc->regIDs[t + k * sc->registers_per_thread]);
++						if (sc->res != VKFFT_SUCCESS) return;
+ 						t++;
+ 					}
+ 					t = 0;
+@@ -550,28 +548,18 @@
+ 				}
+ 				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+ 					PfCopyContainer(sc, &sc->regIDs[i], &tempID[i]);
+-				}
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					PfDeallocateContainer(sc, &tempID[i]);
+-				}
+-				free(tempID);
+-				tempID = 0;
+-			}
+-			else {
+-				sc->res = VKFFT_ERROR_MALLOC_FAILED;
+-				return;
++					if (sc->res != VKFFT_SUCCESS) return;
++				}
+ 			}
+ 		}
+ 		else {
+ 			//registerBoost
+-			PfContainer* tempID;
+-			tempID = (PfContainer*)calloc(sc->registers_per_thread * sc->registerBoost, sizeof(PfContainer));
+-			if (tempID) {
++			vkfft_codegen::Containers ownedTemporary(sc, sc->registers_per_thread, sc->registerBoost);
++			PfContainer* tempID = ownedTemporary.get();
++			if (!vkfft_codegen::allocate_register_containers(sc, tempID,
++				sc->registers_per_thread * sc->registerBoost)) return;
++			{
+ 				//resID = (char**)malloc(sizeof(char*) * sc->registers_per_thread * sc->registerBoost);
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					tempID[i].type = sc->regIDs[0].type;
+-					PfAllocateContainerFlexible(sc, &tempID[i], 50);
+-				}
+ 				for (pfUINT k = 0; k < sc->registerBoost; ++k) {
+ 					for (pfUINT j = 0; j < (pfUINT)logicalRegistersPerThread.data.i / stageRadix->data.i; j++) {
+ 						for (pfUINT i = 0; i < (pfUINT)stageRadix->data.i; i++) {
+@@ -580,25 +568,18 @@
+ 							id.data.i = j + k * logicalRegistersPerThread.data.i / stageRadix->data.i + i * logicalStoragePerThread.data.i / stageRadix->data.i;
+ 							id.data.i = (id.data.i / logicalRegistersPerThread.data.i) * sc->registers_per_thread + id.data.i % logicalRegistersPerThread.data.i;
+ 							PfCopyContainer(sc, &tempID[j + i * logicalRegistersPerThread.data.i / stageRadix->data.i + k * sc->registers_per_thread], &sc->regIDs[id.data.i]);
++							if (sc->res != VKFFT_SUCCESS) return;
+ 						}
+ 					}
+ 					for (pfUINT j = logicalRegistersPerThread.data.i; j < sc->registers_per_thread; j++) {
+ 						PfCopyContainer(sc, &tempID[j + k * sc->registers_per_thread], &sc->regIDs[j + k * sc->registers_per_thread]);
++						if (sc->res != VKFFT_SUCCESS) return;
+ 					}
+ 				}
+ 				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+ 					PfCopyContainer(sc, &sc->regIDs[i], &tempID[i]);
+-				}
+-				for (pfUINT i = 0; i < sc->registers_per_thread * sc->registerBoost; i++) {
+-					PfDeallocateContainer(sc, &tempID[i]);
+-				}
+-				free(tempID);
+-				tempID = 0;
+-			}
+-			else
+-			{
+-				sc->res = VKFFT_ERROR_MALLOC_FAILED;
+-				return;
++					if (sc->res != VKFFT_SUCCESS) return;
++				}
+ 			}
+ 		}
+ 	}

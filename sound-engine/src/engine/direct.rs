@@ -78,6 +78,12 @@ struct SpatialVoice {
 }
 
 impl EngineCore {
+    /// Observes final device release without extending its lifetime in lifecycle tests.
+    #[cfg(all(test, feature = "playback"))]
+    pub(super) fn device_lifetime(&self) -> std::sync::Weak<crate::gpu::backend::VkDeviceContext> {
+        Arc::downgrade(&self.gpu.device_context())
+    }
+
     /// Creates a direct scalar engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
@@ -140,7 +146,7 @@ impl EngineCore {
         source: PointSource,
     ) -> SoundResult<SoundSourceId> {
         self.acoustics.validate_source_reference(source)?;
-        Ok(self.insert_sound_source(source, false))
+        self.insert_sound_source(source, false)
     }
 
     /// Updates a tracked sound source and marks bound voices for IR refresh.
@@ -191,7 +197,7 @@ impl EngineCore {
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
         self.acoustics.validate_source_reference(request.source)?;
-        let source_id = self.insert_sound_source(request.source, true);
+        let source_id = self.insert_sound_source(request.source, true)?;
         match self.play_sound_from_source(request.sound_id, source_id, request.volume) {
             Ok(voice_id) => Ok(voice_id),
             Err(error) => {
@@ -383,15 +389,19 @@ impl EngineCore {
         &mut self,
         snapshot: &GpuIrSnapshot,
     ) -> SoundResult<ImpulseResponseId> {
-        let impulse_response_id = self.next_ir_id();
+        let impulse_response_id = self.next_ir_id()?;
         self.auralization
             .register_impulse_response_from_gpu_ir(impulse_response_id, snapshot)?;
         Ok(impulse_response_id)
     }
 
     /// Inserts a sound source with the requested ownership policy.
-    fn insert_sound_source(&mut self, source: PointSource, internal: bool) -> SoundSourceId {
-        let id = self.next_source_id();
+    fn insert_sound_source(
+        &mut self,
+        source: PointSource,
+        internal: bool,
+    ) -> SoundResult<SoundSourceId> {
+        let id = self.next_source_id()?;
         self.sound_sources.insert(
             id,
             SoundSourceRecord {
@@ -399,7 +409,7 @@ impl EngineCore {
                 internal,
             },
         );
-        id
+        Ok(id)
     }
 
     /// Returns the current source record for an id.
@@ -545,16 +555,12 @@ impl EngineCore {
     }
 
     /// Returns a fresh sound source id.
-    fn next_source_id(&mut self) -> SoundSourceId {
-        let id = self.next_sound_source_id;
-        self.next_sound_source_id = self.next_sound_source_id.saturating_add(1);
-        id
+    fn next_source_id(&mut self) -> SoundResult<SoundSourceId> {
+        crate::core::id::allocate_id(&mut self.next_sound_source_id, "Sound source")
     }
 
     /// Returns a fresh auralization impulse-response id.
-    fn next_ir_id(&mut self) -> ImpulseResponseId {
-        let id = self.next_impulse_response_id;
-        self.next_impulse_response_id = self.next_impulse_response_id.saturating_add(1);
-        id
+    fn next_ir_id(&mut self) -> SoundResult<ImpulseResponseId> {
+        crate::core::id::allocate_id(&mut self.next_impulse_response_id, "Impulse response")
     }
 }

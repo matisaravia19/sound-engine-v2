@@ -72,6 +72,13 @@ impl ComputeContext {
         let shader_module = self.shaders.shader_module(spec.shader_id)?;
         let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
+        crate::gpu::resource::validate_pipeline_layout(
+            &descriptor_bindings,
+            &push_constant_ranges,
+            &self.device_context.limits,
+        )?;
+        let mut cleanup =
+            crate::gpu::resource::PipelineBuildGuard::new(self.device_context.clone());
 
         // Pipeline layout is built from exactly one descriptor set layout for now.
         let descriptor_set_layout_info =
@@ -85,6 +92,7 @@ impl ComputeContext {
         let layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&descriptor_set_layout))
             .push_constant_ranges(&push_constant_ranges);
+        cleanup.descriptor_set_layout = descriptor_set_layout;
         let layout = unsafe {
             self.device_context
                 .device
@@ -92,6 +100,7 @@ impl ComputeContext {
         };
 
         let entry = CString::new(SHADER_ENTRY_POINT)?;
+        cleanup.layout = layout;
         let stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
@@ -109,8 +118,14 @@ impl ComputeContext {
                     std::slice::from_ref(&compute_info),
                     None,
                 )
-                .map_err(|(_, err)| err)?[0]
+                .map_err(|(partial, err)| {
+                    for handle in partial {
+                        self.device_context.device.destroy_pipeline(handle, None);
+                    }
+                    err
+                })?[0]
         };
+        cleanup.handle = pipeline;
 
         let mut pipelines = self
             .pipelines
@@ -119,19 +134,31 @@ impl ComputeContext {
 
         let pool_sizes_template = aggregate_pool_sizes(&descriptor_bindings);
 
-        let id = PipelineId(pipelines.len() as u32);
+        let id = PipelineId(
+            self.next_pipeline_id
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                )
+                .map_err(|_| {
+                    SoundError::resource_allocation_failed("Compute pipeline id space exhausted")
+                })?,
+        );
         pipelines.insert(
             id,
             ComputePipeline {
+                device_context: self.device_context.clone(),
+                descriptor_bindings,
                 handle: pipeline,
                 layout,
                 descriptor_set_layout,
-                #[cfg(debug_assertions)]
                 push_constant_ranges,
                 pool_sizes_template: pool_sizes_template,
                 descriptor_pools: Vec::new(),
             },
         );
+        cleanup.disarm();
         Ok(id)
     }
 }

@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(debug_assertions)]
 use crate::core::error::ErrorCode;
 
 /// One compute dispatch recorded into a command buffer.
@@ -45,12 +44,27 @@ impl DescriptorWrite {
 
 impl ComputeContext {
     /// Records descriptor updates, pipeline bind, push constants, and dispatch.
-    pub fn record_dispatch(
+    ///
+    /// # Safety
+    /// The command buffer must be recording inside this context's submission.
+    /// Buffers must belong to this device, cover every shader access, and remain
+    /// alive and synchronized through completion. Raw handles cannot prove this.
+    pub unsafe fn record_dispatch(
         &self,
         command_buffer: vk::CommandBuffer,
         spec: &DispatchSpec,
     ) -> SoundResult<()> {
-        crate::debug_validate!(
+        if spec
+            .groups
+            .iter()
+            .zip(self.device_context.limits.max_compute_work_group_count)
+            .any(|(count, limit)| *count > limit)
+        {
+            return Err(SoundError::invalid_argument(
+                "Compute group count exceeds device limits",
+            ));
+        }
+        crate::validate!(
             spec.groups.iter().all(|group| *group > 0),
             ErrorCode::InvalidArgument,
             "Compute dispatch groups must all be non-zero, got {:?}",
@@ -66,15 +80,31 @@ impl ComputeContext {
             SoundError::not_found(format!("Invalid pipeline id {}", spec.pipeline_id.0))
         })?;
 
-        crate::debug_validate!(
-            push_constants_fit_pipeline(spec, pipeline),
-            ErrorCode::InvalidArgument,
-            "Compute push constants offset={} size={} do not fit pipeline ranges",
+        let stages = crate::gpu::resource::push_constant_stages(
+            &pipeline.push_constant_ranges,
             spec.push_constant_offset,
-            spec.push_constants.len()
-        );
+            spec.push_constants.len(),
+        )?;
+        let mut writes = Vec::with_capacity(spec.descriptor_writes.len());
+        for write in &spec.descriptor_writes {
+            let DescriptorWrite::StorageBuffer {
+                binding,
+                buffer,
+                offset,
+                range,
+            } = *write;
+            crate::gpu::resource::validate_storage_descriptor(
+                buffer,
+                offset,
+                range,
+                &self.device_context.limits,
+            )?;
+            writes.push((binding, vk::DescriptorType::STORAGE_BUFFER));
+        }
+        crate::gpu::resource::validate_descriptor_writes(&pipeline.descriptor_bindings, &writes)?;
 
         // Descriptor sets are short-lived and allocated from growable pools.
+        let _pool_access = self.descriptor_pool_guard();
         let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
         let descriptor_set = descriptor_allocation.set;
         self.track_descriptor_set(command_buffer, descriptor_allocation)?;
@@ -105,7 +135,7 @@ impl ComputeContext {
                 self.device_context.device.cmd_push_constants(
                     command_buffer,
                     pipeline.layout,
-                    vk::ShaderStageFlags::COMPUTE,
+                    stages,
                     spec.push_constant_offset,
                     &spec.push_constants,
                 );
@@ -122,24 +152,6 @@ impl ComputeContext {
         Ok(())
     }
 }
-
-#[cfg(debug_assertions)]
-fn push_constants_fit_pipeline(spec: &DispatchSpec, pipeline: &ComputePipeline) -> bool {
-    if spec.push_constants.is_empty() {
-        return true;
-    }
-
-    let start = spec.push_constant_offset;
-    let Some(end) = start.checked_add(spec.push_constants.len() as u32) else {
-        return false;
-    };
-
-    pipeline.push_constant_ranges.iter().any(|range| {
-        let range_end = range.offset.saturating_add(range.size);
-        start >= range.offset && end <= range_end
-    })
-}
-
 fn build_buffer_infos(spec: &DispatchSpec) -> Vec<vk::DescriptorBufferInfo> {
     let mut buffer_infos = Vec::new();
     for write in &spec.descriptor_writes {

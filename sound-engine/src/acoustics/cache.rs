@@ -3,38 +3,11 @@ use crate::scene::SceneVersion;
 use glam::Vec3;
 use std::collections::{HashMap, VecDeque};
 
-/// Runtime policy for acoustic impulse-response reuse.
-#[derive(Debug, Clone, Copy)]
-pub struct IrCacheConfig {
-    /// Position bucket size in world meters.
-    ///
-    /// Reuse searches all populated buckets, so crossing a bucket boundary
-    /// does not bypass `reuse_distance_meters`.
-    pub position_cell_meters: f32,
-    /// Maximum source/listener movement that may reuse an IR.
-    pub reuse_distance_meters: f32,
-    /// Dot-product tolerance applied to both listener orientation axes during reuse.
-    pub listener_orientation_dot_threshold: f32,
-    /// Maximum cached IR snapshots retained per engine instance.
-    pub max_entries: usize,
-    /// Maximum GPU memory retained by cached IR buffers.
-    pub max_gpu_cache_bytes: usize,
-}
-
-impl Default for IrCacheConfig {
-    fn default() -> Self {
-        Self {
-            position_cell_meters: 0.25,
-            reuse_distance_meters: 0.2,
-            listener_orientation_dot_threshold: 0.98,
-            max_entries: 32,
-            max_gpu_cache_bytes: 512 * 1024 * 1024,
-        }
-    }
-}
+/// Shared public policy for acoustic impulse-response reuse.
+pub use crate::core::config::IrCacheConfig;
 
 /// Source/listener state used to query the acoustic IR cache.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IrCacheQuery {
     /// Scene version represented by any reusable IR.
     pub scene_version: SceneVersion,
@@ -140,21 +113,37 @@ impl IrCache {
         Some(snapshot)
     }
 
-    /// Inserts a GPU IR for the given source/listener state.
-    pub fn insert_ir(&mut self, query: IrCacheQuery, snapshot: GpuIrSnapshot) {
-        if !self.is_enabled() {
+    /// Inserts or replaces the exact source/listener state; inconsistent snapshot
+    /// scene/query metadata is rejected without changing the cache.
+    pub fn insert_ir(&mut self, query: IrCacheQuery, mut snapshot: GpuIrSnapshot) {
+        if !self.is_enabled()
+            || snapshot.scene_version != query.scene_version
+            || snapshot.query_id != query.query_id
+        {
             return;
+        }
+        if let Some(buffer) = &snapshot.buffer {
+            // Public snapshot metadata must not undercount the retained allocation.
+            snapshot.byte_size = usize::try_from(buffer.size).unwrap_or(usize::MAX);
         }
 
         let location = self.location_key(query);
+        let entries = self.entries.entry(location).or_default();
+        // Equal-distance lookup used to prefer the older duplicate. Replace it
+        // explicitly, and release its retained bytes before charging the new IR.
+        entries.retain(|entry| {
+            if entry.query == query {
+                self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
+                false
+            } else {
+                true
+            }
+        });
         self.gpu_bytes = self.gpu_bytes.saturating_add(snapshot.byte_size);
-        self.entries
-            .entry(location)
-            .or_default()
-            .push(IrCacheEntry {
-                query,
-                snapshot,
-            });
+        entries.push(IrCacheEntry {
+            query,
+            snapshot,
+        });
         self.touch(self.key_for_query(query));
         self.evict_to_limit();
     }
@@ -169,6 +158,11 @@ impl IrCache {
     /// Returns the number of retained IR snapshots.
     pub fn len(&self) -> usize {
         self.entries.values().map(Vec::len).sum()
+    }
+
+    /// Returns whether no IR snapshots are retained.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     /// Returns GPU bytes currently retained by the cache.
@@ -247,19 +241,25 @@ impl IrCache {
             };
             let threshold = self.cfg.listener_orientation_dot_threshold;
             if let Some(entries) = self.entries.get_mut(&oldest.location) {
-                if let Some(index) = entries.iter().position(|entry| {
-                    IrCacheKey {
+                // Several exact queries can share a quantized key. The LRU
+                // contains that key only once, so evict its whole bucket; leaving
+                // siblings behind would strand buffers outside the eviction list.
+                entries.retain(|entry| {
+                    let key = IrCacheKey {
                         location: oldest.location,
                         listener_forward_cell: quantize_direction(
                             entry.query.listener_forward,
                             threshold,
                         ),
                         listener_up_cell: quantize_direction(entry.query.listener_up, threshold),
-                    } == oldest
-                }) {
-                    let entry = entries.remove(index);
-                    self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
-                }
+                    };
+                    if key == oldest {
+                        self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
+                        false
+                    } else {
+                        true
+                    }
+                });
                 if entries.is_empty() {
                     self.entries.remove(&oldest.location);
                 }
@@ -308,6 +308,51 @@ fn quantize_position(position: Vec3, cell_size: f32) -> [i32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_the_same_query_returns_the_new_snapshot_and_recounts_bytes() {
+        let mut cache = IrCache::new(IrCacheConfig::default());
+        let query = query(Vec3::X);
+        cache.insert_ir(query, ir_snapshot(query));
+        let mut newer = ir_snapshot(query);
+        newer.energy = Some(4.0);
+        newer.byte_size = 48;
+        cache.insert_ir(query, newer);
+        assert_eq!(cache.get_ir(query).unwrap().energy, Some(4.0));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.gpu_bytes(), 48);
+    }
+
+    #[test]
+    fn snapshot_metadata_must_match_the_cache_query() {
+        let mut cache = IrCache::new(IrCacheConfig::default());
+        let query = query(Vec3::X);
+        let mut wrong_scene = ir_snapshot(query);
+        wrong_scene.scene_version += 1;
+        cache.insert_ir(query, wrong_scene);
+        let mut wrong_query = ir_snapshot(query);
+        wrong_query.query_id += 1;
+        cache.insert_ir(query, wrong_query);
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.gpu_bytes(), 0);
+    }
+
+    #[test]
+    fn duplicate_quantized_keys_cannot_escape_cache_limits() {
+        let mut cache = IrCache::new(IrCacheConfig {
+            max_entries: 2,
+            max_gpu_cache_bytes: 64,
+            ..IrCacheConfig::default()
+        });
+        let mut query = query(Vec3::X);
+        for step in 0..100 {
+            // Distinct exact queries still collide in the same quantized bucket.
+            query.source_position.x = step as f32 * 0.001;
+            cache.insert_ir(query, ir_snapshot(query));
+            assert!(cache.len() <= 2);
+            assert!(cache.gpu_bytes() <= 64);
+        }
+    }
 
     #[test]
     fn cache_respects_listener_direction() {

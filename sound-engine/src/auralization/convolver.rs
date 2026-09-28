@@ -3,7 +3,6 @@ use crate::auralization::IR_TRANSITION_BLOCKS;
 use crate::auralization::voice::{Voice, VoiceConvolutionState};
 use crate::core::config::EngineConfig;
 use crate::core::config::OutputChannels;
-#[cfg(any(debug_assertions, test))]
 use crate::core::error::ErrorCode;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -36,6 +35,8 @@ pub struct PartitionedConvolver {
     signal_buffer: BufferHandle,
     /// Reusable forward plan for transforming newly supplied impulse responses.
     ir_plan: FFTPlan,
+    /// Retained after both plans because VkFFT borrows it for initialization uploads.
+    _initialization_fence: crate::gpu::resource::OwnedFence,
     /// Scratch buffer bound to `ir_plan`; transformed spectra are copied out.
     ir_staging_buffer: BufferHandle,
     /// Compiled compute pipeline for complex-domain frequency multiplication.
@@ -60,20 +61,38 @@ pub struct ImpulseResponse {
     buffer: BufferHandle,
 }
 
+impl Drop for PartitionedConvolver {
+    fn drop(&mut self) {
+        // Convolver submissions are synchronous; releasing a convolver must not
+        // retain its private multiply pipeline in a shared backend indefinitely.
+        self.gpu
+            .compute()
+            .release_pipeline(self.multiply_pipeline_id);
+    }
+}
+
 impl PartitionedConvolver {
     /// Creates the shared FFT plan and multiply compute pipeline.
     pub fn new(gpu: Arc<VkBackend>, config: EngineConfig) -> SoundResult<Self> {
-        let fft_size = (config.auralization.block_size + config.sound.ir_num_samples as usize - 1)
-            .next_power_of_two();
+        let fft_size = validated_fft_size(config)?;
         let tail_size = fft_size - config.auralization.block_size as usize;
+        let initialization_fence = crate::gpu::resource::OwnedFence::new(gpu.device_context())?;
 
-        let (signal_plan, signal_buffer) =
-            Self::build_fft_plan(gpu.as_ref(), fft_size as u64, true)?;
+        let (signal_plan, signal_buffer) = Self::build_fft_plan(
+            gpu.as_ref(),
+            fft_size as u64,
+            true,
+            initialization_fence.handle,
+        )?;
         // VkFFT plan construction is expensive (~165 ms on the benchmark GPU).
         // Bind one reusable scratch buffer at engine setup instead of creating a
         // new plan synchronously every time a moving voice receives a new IR.
-        let (ir_plan, ir_staging_buffer) =
-            Self::build_fft_plan(gpu.as_ref(), fft_size as u64, false)?;
+        let (ir_plan, ir_staging_buffer) = Self::build_fft_plan(
+            gpu.as_ref(),
+            fft_size as u64,
+            false,
+            initialization_fence.handle,
+        )?;
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
 
         Ok(Self {
@@ -81,6 +100,7 @@ impl PartitionedConvolver {
             signal_plan,
             signal_buffer,
             ir_plan,
+            _initialization_fence: initialization_fence,
             ir_staging_buffer,
             multiply_pipeline_id,
             fft_size,
@@ -94,13 +114,13 @@ impl PartitionedConvolver {
         &self,
         samples: &[IrSample],
     ) -> SoundResult<Arc<ImpulseResponse>> {
-        crate::debug_validate!(
+        crate::validate!(
             !samples.is_empty(),
             ErrorCode::InvalidArgument,
             "Impulse response must not be empty"
         );
 
-        crate::debug_validate!(
+        crate::validate!(
             samples.len() <= self.fft_size,
             ErrorCode::InvalidArgument,
             "Impulse response length {} exceeds FFT size {}",
@@ -129,7 +149,7 @@ impl PartitionedConvolver {
         &self,
         snapshot: &GpuIrSnapshot,
     ) -> SoundResult<Arc<ImpulseResponse>> {
-        validate_gpu_ir_snapshot(snapshot, self.fft_size)?;
+        validate_gpu_ir_snapshot(snapshot, self.fft_size, self.config.sound.sample_rate)?;
         let source_buffer = snapshot
             .buffer
             .as_ref()
@@ -145,17 +165,32 @@ impl PartitionedConvolver {
             .ok_or_else(|| SoundError::invalid_argument("GPU IR copy byte size overflow"))?
             as u64;
 
-        self.gpu.memory().clear_buffer(&self.ir_staging_buffer)?;
-        self.gpu.memory().copy_buffer(
-            source_buffer,
-            &self.ir_staging_buffer,
-            copy_bytes,
-            Some(
-                BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
-                    self.ir_staging_buffer.buffer,
-                ),
-            ),
-        )?;
+        self.gpu
+            .compute()
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                // Initialize the padding and copy the IR prefix together. The fill
+                // overlaps the copy, so order those transfer writes explicitly.
+                self.gpu
+                    .memory()
+                    .record_clear_buffer(command_buffer, &self.ir_staging_buffer)?;
+                self.gpu.compute().record_buffer_barrier(
+                    command_buffer,
+                    &BufferBarrierSpec::transfer_write_to_transfer_write(
+                        self.ir_staging_buffer.buffer,
+                    ),
+                );
+                self.gpu.memory().record_copy_buffer(
+                    command_buffer,
+                    source_buffer,
+                    &self.ir_staging_buffer,
+                    copy_bytes,
+                    Some(
+                        BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
+                            self.ir_staging_buffer.buffer,
+                        ),
+                    ),
+                )
+            })?;
         self.transform_staged_ir_into(&buffer)?;
 
         Ok(Arc::new(ImpulseResponse {
@@ -177,28 +212,30 @@ impl PartitionedConvolver {
     fn transform_staged_ir_into(&self, destination: &BufferHandle) -> SoundResult<()> {
         self.gpu
             .compute()
-            .submit_compute_and_wait(|command_buffer| {
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                // The queue lock serializes recording; this owner retains plans and buffers through the wait.
                 self.ir_plan.append(command_buffer).map_err(|e| {
                     SoundError::external(format!("IR forward launch failed: {e:?}"))
                 })?;
-                // The following transfer is a separate ordered submission. This
-                // barrier makes the FFT shader writes available to that copy.
+                // Make FFT writes available to the copy in this same submission.
                 self.gpu.compute().record_buffer_barrier(
                     command_buffer,
                     &BufferBarrierSpec::compute_shader_write_to_transfer_read(
                         self.ir_staging_buffer.buffer,
                     ),
                 );
-                Ok(())
-            })?;
-        self.gpu.memory().copy_buffer(
-            &self.ir_staging_buffer,
-            destination,
-            self.ir_staging_buffer.size,
-            Some(
-                BufferBarrierSpec::transfer_write_to_compute_shader_read_write(destination.buffer),
-            ),
-        )
+                self.gpu.memory().record_copy_buffer(
+                    command_buffer,
+                    &self.ir_staging_buffer,
+                    destination,
+                    self.ir_staging_buffer.size,
+                    Some(
+                        BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
+                            destination.buffer,
+                        ),
+                    ),
+                )
+            })
     }
 
     /// Processes one mono input block for a voice into the configured output layout.
@@ -208,7 +245,6 @@ impl PartitionedConvolver {
         input_block: &[f32],
         output_block: &mut [f32],
     ) -> SoundResult<()> {
-        #[cfg(debug_assertions)]
         self.validate_block_lengths(input_block, output_block)?;
         self.start_pending_transition(voice);
 
@@ -256,7 +292,7 @@ impl PartitionedConvolver {
         output_block: &mut [f32],
     ) -> SoundResult<bool> {
         let output_channels = self.config.sound.output_channels.count();
-        crate::debug_validate!(
+        crate::validate!(
             output_block.len() == self.config.auralization.block_size * output_channels,
             ErrorCode::InvalidArgument,
             "output_block length {} must equal block size {} times channel count {}",
@@ -315,16 +351,27 @@ impl PartitionedConvolver {
     /// Processes one block through a single IR and overlap state.
     fn process_state_block(
         &self,
-        _voice_id: u64,
+        voice_id: u64,
         convolution: &mut VoiceConvolutionState,
         input_block: &[f32],
         output_block: &mut [f32],
     ) -> SoundResult<()> {
-        crate::debug_validate!(
+        self.gpu
+            .memory()
+            .validate_owner(&convolution.impulse_response.buffer)?;
+        if convolution.complex_cpu_buffer.len() != self.fft_size
+            || convolution.tail.len() != self.tail_size
+            || convolution.impulse_response.buffer.size != self.signal_buffer.size
+        {
+            return Err(SoundError::invalid_argument(
+                "Voice and impulse response dimensions must match this convolver",
+            ));
+        }
+        crate::validate!(
             convolution.tail_position == 0,
             ErrorCode::InvalidArgument,
             "voice {} has already started flushing its tail and cannot process more input blocks",
-            _voice_id
+            voice_id
         );
 
         self.convolve(convolution, input_block)?;
@@ -364,9 +411,8 @@ impl PartitionedConvolver {
     }
 
     /// Validates that input and output block sizes match expected channel layout and FFT capacity.
-    #[cfg(debug_assertions)]
     fn validate_block_lengths(&self, input_block: &[f32], output_block: &[f32]) -> SoundResult<()> {
-        crate::debug_validate!(
+        crate::validate!(
             input_block.len() == self.config.auralization.block_size,
             ErrorCode::InvalidArgument,
             "input_block length {} must equal block size {}",
@@ -375,7 +421,7 @@ impl PartitionedConvolver {
         );
 
         let output_channels = self.config.sound.output_channels.count();
-        crate::debug_validate!(
+        crate::validate!(
             output_block.len() == input_block.len() * output_channels,
             ErrorCode::InvalidArgument,
             "output_block length {} must equal {} times input_block length {}",
@@ -383,7 +429,7 @@ impl PartitionedConvolver {
             output_channels,
             input_block.len(),
         );
-        crate::debug_validate!(
+        crate::validate!(
             output_block.len() <= self.fft_size * output_channels,
             ErrorCode::InvalidArgument,
             "output_block length {} exceeds fft output sample capacity {}",
@@ -414,7 +460,8 @@ impl PartitionedConvolver {
         // Single submission preserves GPU command ordering: forward FFT -> multiply -> inverse FFT.
         self.gpu
             .compute()
-            .submit_compute_and_wait(|command_buffer| {
+            .submit_compute_and_wait(|command_buffer| unsafe {
+                // Plans and their buffers remain owned until this synchronous submission completes.
                 self.signal_plan.append(command_buffer).map_err(|e| {
                     SoundError::external(format!("Signal forward launch failed: {e:?}"))
                 })?;
@@ -454,7 +501,12 @@ impl PartitionedConvolver {
 
     /// Uploads a complex signal block to the GPU, overwriting the previous contents.
     fn upload_signal(&self, signal: &[[f32; 2]]) -> SoundResult<()> {
-        self.gpu.memory().clear_buffer(&self.signal_buffer)?;
+        // The CPU staging block already includes the zero-padded FFT tail and
+        // overwrites the complete allocation, so a preceding GPU fill is redundant.
+        debug_assert_eq!(
+            std::mem::size_of_val(signal) as u64,
+            self.signal_buffer.size
+        );
         self.gpu.memory().upload_typed(&self.signal_buffer, signal)
     }
 
@@ -486,9 +538,12 @@ impl PartitionedConvolver {
             groups: [count.div_ceil(256), 1, 1],
         };
 
-        self.gpu
-            .compute()
-            .record_dispatch(command_buffer, &dispatch_spec)
+        // Private caller records on this backend and retains both spectra through the wait.
+        unsafe {
+            self.gpu
+                .compute()
+                .record_dispatch(command_buffer, &dispatch_spec)
+        }
     }
 
     /// Applies overlap-add to combine FFT output with carried tail for seamless convolution.
@@ -540,16 +595,17 @@ impl PartitionedConvolver {
         gpu: &VkBackend,
         fft_size: u64,
         normalize: bool,
+        fence: vk::Fence,
     ) -> SoundResult<(FFTPlan, BufferHandle)> {
-        unsafe {
+        gpu.compute().with_queue(|queue, command_pool| {
             // VkFFT consumes raw Vulkan handles but does not take ownership.
             // Handles remain valid for the lifetime of the plan and the GPU backend.
             let handles = DeviceHandles {
                 physical_device: gpu.device().physical_device,
                 device: gpu.device().device.handle(),
-                queue: gpu.compute().queue_handle()?,
-                command_pool: gpu.compute().command_pool_handle()?,
-                fence: vk::Fence::null(), // Not used with the plan append pattern
+                queue,
+                command_pool,
+                fence,
             };
 
             // Allocate storage for complex-domain FFT: fft_size complex numbers = fft_size * 2 f32 values.
@@ -565,12 +621,13 @@ impl PartitionedConvolver {
             } else {
                 builder
             };
-            let plan = builder.build().map_err(|e| {
+            // with_queue serializes VkFFT's initialization submissions and pool access.
+            let plan = unsafe { builder.build() }.map_err(|e| {
                 SoundError::external(format!("Global signal plan build failed: {e:?}"))
             })?;
 
             Ok((plan, buffer))
-        }
+        })
     }
 
     /// Compiles the frequency-domain multiply compute pipeline.
@@ -594,6 +651,26 @@ impl PartitionedConvolver {
 
         gpu.compute().create_pipeline(pipeline_spec)
     }
+}
+
+fn validated_fft_size(config: EngineConfig) -> SoundResult<usize> {
+    if config.auralization.block_size == 0
+        || config.sound.ir_num_samples == 0
+        || config.sound.sample_rate == 0
+    {
+        return Err(SoundError::invalid_argument(
+            "FFT block size, IR length and sample rate must be non-zero",
+        ));
+    }
+    config
+        .auralization
+        .block_size
+        .checked_add(config.sound.ir_num_samples as usize - 1)
+        .and_then(usize::checked_next_power_of_two)
+        // The multiply shader uses a 32-bit element count; allocations must also
+        // fit Rust's addressable slice size before any GPU work is initialized.
+        .filter(|size| *size <= u32::MAX as usize && *size <= isize::MAX as usize / 8)
+        .ok_or_else(|| SoundError::invalid_argument("FFT size exceeds addressable capacity"))
 }
 
 /// Blends an outgoing block into an incoming block with a sample-continuous ramp.
@@ -621,18 +698,29 @@ fn blend_ir_transition(
     }
 }
 
-fn validate_gpu_ir_snapshot(snapshot: &GpuIrSnapshot, _fft_size: usize) -> SoundResult<()> {
-    crate::debug_validate!(
+fn validate_gpu_ir_snapshot(
+    snapshot: &GpuIrSnapshot,
+    fft_size: usize,
+    sample_rate: u32,
+) -> SoundResult<()> {
+    crate::validate!(
+        snapshot.sample_rate == sample_rate,
+        ErrorCode::InvalidArgument,
+        "GPU impulse response sample rate {} must match convolver sample rate {}",
+        snapshot.sample_rate,
+        sample_rate
+    );
+    crate::validate!(
         snapshot.sample_count > 0,
         ErrorCode::InvalidArgument,
         "GPU impulse response must not be empty"
     );
-    crate::debug_validate!(
-        snapshot.sample_count as usize <= _fft_size,
+    crate::validate!(
+        snapshot.sample_count as usize <= fft_size,
         ErrorCode::InvalidArgument,
         "GPU impulse response length {} exceeds FFT size {}",
         snapshot.sample_count,
-        _fft_size
+        fft_size
     );
     if snapshot.buffer.is_none() {
         return Err(SoundError::invalid_argument(
@@ -643,54 +731,5 @@ fn validate_gpu_ir_snapshot(snapshot: &GpuIrSnapshot, _fft_size: usize) -> Sound
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gpu_ir_validation_rejects_missing_buffer() {
-        let snapshot = gpu_ir_snapshot(1);
-
-        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
-
-    #[test]
-    fn gpu_ir_validation_rejects_empty_ir() {
-        let snapshot = gpu_ir_snapshot(0);
-
-        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
-
-    #[test]
-    fn gpu_ir_validation_rejects_ir_larger_than_fft() {
-        let snapshot = gpu_ir_snapshot(16);
-
-        let error = validate_gpu_ir_snapshot(&snapshot, 8).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
-
-    #[test]
-    fn ir_transition_ramps_every_frame_and_reaches_the_incoming_signal() {
-        let mut incoming = [0.0, 0.0, 0.0, 0.0];
-        let outgoing = [1.0, -1.0, 1.0, -1.0];
-        blend_ir_transition(&mut incoming, &outgoing, 2, 0, 2);
-
-        assert_eq!(incoming, [0.5, -0.5, 0.0, 0.0]);
-    }
-
-    fn gpu_ir_snapshot(sample_count: u32) -> GpuIrSnapshot {
-        GpuIrSnapshot {
-            buffer: None,
-            byte_size: sample_count as usize * std::mem::size_of::<IrSample>(),
-            sample_rate: 48_000,
-            sample_count,
-            energy: None,
-            scene_version: 1,
-            query_id: 0,
-        }
-    }
-}
+#[path = "convolver_tests.rs"]
+mod tests;

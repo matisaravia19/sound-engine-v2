@@ -1,0 +1,2 @@
+# Native patch context must preserve the pinned headers' literal indentation and blanks.
+vkfft-rs/patches/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

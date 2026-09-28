@@ -124,18 +124,22 @@ fn run() -> Result<(), Box<dyn Error>> {
         fence,
     };
 
-    let kernel_plan = FFTPlanBuilder::new(&device_handles)
-        .with_dimensions(&[N as u64])
-        .with_buffer(kernel_buffer, buffer_bytes)
-        .build()
-        .map_err(|e| format!("kernel PlanBuilder::build failed: {e:?}"))?;
+    let kernel_plan = unsafe {
+        FFTPlanBuilder::new(&device_handles)
+            .with_dimensions(&[N as u64])
+            .with_buffer(kernel_buffer, buffer_bytes)
+            .build()
+    }
+    .map_err(|e| format!("kernel PlanBuilder::build failed: {e:?}"))?;
 
-    let signal_plan = FFTPlanBuilder::new(&device_handles)
-        .with_dimensions(&[N as u64])
-        .with_buffer(signal_buffer, buffer_bytes)
-        .with_normalization()
-        .build()
-        .map_err(|e| format!("signal PlanBuilder::build failed: {e:?}"))?;
+    let signal_plan = unsafe {
+        FFTPlanBuilder::new(&device_handles)
+            .with_dimensions(&[N as u64])
+            .with_buffer(signal_buffer, buffer_bytes)
+            .with_normalization()
+            .build()
+    }
+    .map_err(|e| format!("signal PlanBuilder::build failed: {e:?}"))?;
 
     let cmd_alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(command_pool)
@@ -146,11 +150,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let begin_info = vk::CommandBufferBeginInfo::default();
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
 
-    signal_plan
-        .append(command_buffer)
+    unsafe { signal_plan.append(command_buffer) }
         .map_err(|e| format!("signal forward launch failed: {e:?}"))?;
-    kernel_plan
-        .append(command_buffer)
+    unsafe { kernel_plan.append(command_buffer) }
         .map_err(|e| format!("kernel forward launch failed: {e:?}"))?;
 
     unsafe { device.end_command_buffer(command_buffer)? };
@@ -190,8 +192,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())? };
     unsafe { device.begin_command_buffer(command_buffer, &begin_info)? };
-    signal_plan
-        .append_inverse(command_buffer)
+    unsafe { signal_plan.append_inverse(command_buffer) }
         .map_err(|e| format!("signal inverse launch failed: {e:?}"))?;
     unsafe { device.end_command_buffer(command_buffer)? };
 

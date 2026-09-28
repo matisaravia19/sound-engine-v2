@@ -6,20 +6,23 @@ impl ComputeContext {
         pipeline: &mut ComputePipeline,
     ) -> SoundResult<DescriptorSetAllocation> {
         for pool in pipeline.descriptor_pools.iter().rev() {
-            if let Ok(set) = self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout)
-            {
-                return Ok(DescriptorSetAllocation {
-                    pool: *pool,
-                    set,
-                });
+            match self.try_allocate_descriptor_set(*pool, pipeline.descriptor_set_layout) {
+                Ok(set) => {
+                    return Ok(DescriptorSetAllocation {
+                        pool: *pool,
+                        set,
+                    });
+                }
+                Err(vk::Result::ERROR_OUT_OF_POOL_MEMORY | vk::Result::ERROR_FRAGMENTED_POOL) => {}
+                Err(error) => return Err(error.into()),
             }
         }
 
         let descriptor_pool =
             self.create_descriptor_pool(pipeline.pool_sizes_template.as_slice())?;
+        pipeline.descriptor_pools.push(descriptor_pool);
         let descriptor_set =
             self.try_allocate_descriptor_set(descriptor_pool, pipeline.descriptor_set_layout)?;
-        pipeline.descriptor_pools.push(descriptor_pool);
         Ok(DescriptorSetAllocation {
             pool: descriptor_pool,
             set: descriptor_set,
@@ -56,7 +59,7 @@ impl ComputeContext {
         &self,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> SoundResult<vk::DescriptorSet> {
+    ) -> Result<vk::DescriptorSet, vk::Result> {
         let set_layouts = [descriptor_set_layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)

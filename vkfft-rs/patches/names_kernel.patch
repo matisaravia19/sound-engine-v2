@@ -1,0 +1,55 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h
+@@ -156,40 +156,40 @@
+ 	PfAllocateContainerFlexible(sc, &temp_name, 50);
+ #if(VKFFT_BACKEND==0)
+ 	temp_double.data.d = pfFPinit("0.63661977236758134307553505349006");
+-	sprintf(temp_name.name, "loc_2_PI");
++	PfFormatName(sc, &temp_name, "loc_2_PI");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("1.5707963267948966192313216916398");
+-	sprintf(temp_name.name, "loc_PI_2"); 
++	PfFormatName(sc, &temp_name, "loc_PI_2"); 
+ 	PfDefineConstant(sc, &temp_name, &temp_double); 
+ 	temp_double.data.d = pfFPinit("0.99999999999999999999962122687403772");
+-	sprintf(temp_name.name, "a1");
++	PfFormatName(sc, &temp_name, "a1");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("-0.166666666666666666637194166219637268");
+-	sprintf(temp_name.name, "a3");
++	PfFormatName(sc, &temp_name, "a3");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("0.00833333333333333295212653322266277182");
+-	sprintf(temp_name.name, "a5");
++	PfFormatName(sc, &temp_name, "a5");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("-0.000198412698412696489459896530659927773");
+-	sprintf(temp_name.name, "a7");
++	PfFormatName(sc, &temp_name, "a7");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("2.75573192239364018847578909205399262e-6");
+-	sprintf(temp_name.name, "a9");
++	PfFormatName(sc, &temp_name, "a9");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("-2.50521083781017605729370231280411712e-8");
+-	sprintf(temp_name.name, "a11");
++	PfFormatName(sc, &temp_name, "a11");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("1.60590431721336942356660057796782021e-10");
+-	sprintf(temp_name.name, "a13");
++	PfFormatName(sc, &temp_name, "a13");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("-7.64712637907716970380859898835680587e-13");
+-	sprintf(temp_name.name, "a15");
++	PfFormatName(sc, &temp_name, "a15");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("2.81018528153898622636194976499656274e-15");
+-	sprintf(temp_name.name, "a17");
++	PfFormatName(sc, &temp_name, "a17");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 	temp_double.data.d = pfFPinit("-7.97989713648499642889739108679114937e-18");
+-	sprintf(temp_name.name, "ab");
++	PfFormatName(sc, &temp_name, "ab");
+ 	PfDefineConstant(sc, &temp_name, &temp_double);
+ 
+ 	sc->tempLen = PfFormatTemp(sc, "\

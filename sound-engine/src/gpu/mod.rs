@@ -10,7 +10,12 @@ pub mod backend;
 pub mod compute;
 /// GPU allocations, mapped transfers, and buffer lifetime management.
 pub mod memory;
+/// Lifetime guards and validation shared by GPU resource constructors.
+pub(crate) mod resource;
 /// Acceleration structures, shader binding tables, and ray dispatch.
 pub mod rt;
 /// GLSL compilation and owned Vulkan shader modules.
 pub mod shader;
+
+#[cfg(test)]
+mod audit_tests;

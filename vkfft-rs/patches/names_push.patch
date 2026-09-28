@@ -1,0 +1,45 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryInitialization/vkFFT_PushConstants.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryInitialization/vkFFT_PushConstants.h
+@@ -59,36 +59,29 @@
+ 	PfAppendLine(sc);
+ 	
+ #endif
+-	char tempCopyStr[60];
+ 	if (sc->performWorkGroupShift[0]) {
+ 		appendPushConstant(sc, &sc->workGroupShiftX);
+-		sprintf(tempCopyStr, "consts.%s", sc->workGroupShiftX.name);
+-		sprintf(sc->workGroupShiftX.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->workGroupShiftX, "consts.");
+ 	}
+ 	if (sc->performWorkGroupShift[1]) {
+ 		appendPushConstant(sc, &sc->workGroupShiftY);
+-		sprintf(tempCopyStr, "consts.%s", sc->workGroupShiftY.name);
+-		sprintf(sc->workGroupShiftY.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->workGroupShiftY, "consts.");
+ 	}
+ 	if (sc->performWorkGroupShift[2]) {
+ 		appendPushConstant(sc, &sc->workGroupShiftZ);
+-		sprintf(tempCopyStr, "consts.%s", sc->workGroupShiftZ.name);
+-		sprintf(sc->workGroupShiftZ.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->workGroupShiftZ, "consts.");
+ 	}
+ 	if (sc->performPostCompilationInputOffset) {
+ 		appendPushConstant(sc, &sc->inputOffset);
+-		sprintf(tempCopyStr, "consts.%s", sc->inputOffset.name);
+-		sprintf(sc->inputOffset.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->inputOffset, "consts.");
+ 	}
+ 	if (sc->performPostCompilationOutputOffset) {
+ 		appendPushConstant(sc, &sc->outputOffset);
+-		sprintf(tempCopyStr, "consts.%s", sc->outputOffset.name);
+-		sprintf(sc->outputOffset.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->outputOffset, "consts.");
+ 	}
+ 	if (sc->performPostCompilationKernelOffset) {
+ 		appendPushConstant(sc, &sc->kernelOffset);
+-		sprintf(tempCopyStr, "consts.%s", sc->kernelOffset.name);
+-		sprintf(sc->kernelOffset.name, "%s", tempCopyStr);
++		PfPrefixContainerName(sc, &sc->kernelOffset, "consts.");
+ 	}
+ #if(VKFFT_BACKEND==0)
+ 	sc->tempLen = PfFormatTemp(sc, "} consts;\n\n");

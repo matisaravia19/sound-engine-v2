@@ -1,0 +1,14 @@
+--- a/vkFFT_DeletePlan.h
++++ b/vkFFT_DeletePlan.h
+@@ -55,6 +55,11 @@
+ 			axis->bufferLUTDeviceMemory = 0;
+ 		}
+ 	}
++	// Borrowed handles must not survive teardown and become future reuse candidates.
++	axis->bufferLUT = 0;
++	axis->bufferLUTDeviceMemory = 0;
++	axis->bufferLUTSize = 0;
++	axis->referenceLUT = 0;
+ 	if (axis->descriptorPool != 0) {
+ 		vkDestroyDescriptorPool(app->configuration.device[0], axis->descriptorPool, 0);
+ 		axis->descriptorPool = 0;

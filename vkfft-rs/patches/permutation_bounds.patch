@@ -1,0 +1,49 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
+@@ -24,6 +24,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "codegen_names.hpp"
++#include "codegen_permutation.hpp"
+ 
+ static inline void PfPrintReg(VkFFTSpecializationConstantsLayout* sc, PfContainer* inoutID, PfContainer* in);
+ //register manipulation functions: mov, add, sub, etc.
+@@ -3875,33 +3876,11 @@
+ 	return;
+ }
+ 
+-static inline void PfPermute(VkFFTSpecializationConstantsLayout* sc, pfUINT* permute, pfUINT num_elem, pfUINT type, PfContainer* regIDs, PfContainer* temp) {
+-	if (sc->res != VKFFT_SUCCESS) return;
+-	PfContainer tempID[33] = VKFFT_ZERO_INIT;
+-	for (int i = 0; i < num_elem; i++) {
+-		tempID[i].type = 100 + sc->vecTypeCode;
+-		PfAllocateContainerFlexible(sc, &tempID[i], 50);
+-	}
+-	if (type == 0) {
+-		if (sc->locID[0].type > 100) {
+-			for (pfUINT i = 0; i < num_elem; i++)
+-				PfCopyContainer(sc, &tempID[i], &sc->locID[i]);
+-			for (pfUINT i = 0; i < num_elem; i++)
+-				PfCopyContainer(sc, &sc->locID[i], &tempID[permute[i]]);
+-		}
+-	}
+-	if (type == 1) {
+-		if (regIDs[0].type > 100) {
+-			for (pfUINT i = 0; i < num_elem; i++)
+-				PfCopyContainer(sc, &tempID[i], &regIDs[i]);
+-			for (pfUINT i = 0; i < num_elem; i++)
+-				PfCopyContainer(sc, &regIDs[i], &tempID[permute[i]]);
+-		}
+-	}
+-	for (int i = 0; i < num_elem; i++) {
+-		PfDeallocateContainer(sc, &tempID[i]);
+-	}
+-	return;
++static inline void PfPermute(VkFFTSpecializationConstantsLayout* sc, pfUINT* permute, pfUINT num_elem, pfUINT type, PfContainer* regIDs, PfContainer* /*temp*/) {
++    if (sc->res != VKFFT_SUCCESS) return;
++    if (type > 1) { sc->res = VKFFT_ERROR_MATH_FAILED; return; }
++    PfPermuteContainers(sc, permute, num_elem, type == 0 ? sc->locID : regIDs,
++        type == 0 ? sizeof(sc->locID) / sizeof(sc->locID[0]) : num_elem);
+ }
+ static inline void PfSubgroupAdd(VkFFTSpecializationConstantsLayout* sc, PfContainer* in, PfContainer* out, pfUINT subWarpSplit) {
+ 	if (sc->res != VKFFT_SUCCESS) return;

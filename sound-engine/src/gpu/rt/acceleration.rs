@@ -42,7 +42,29 @@ impl RtContext {
     ///
     /// The build is submitted to the compute queue and completed before the new
     /// `BlasId` is returned.
-    pub fn build_blas(&self, spec: BlasBuildSpec<'_>) -> SoundResult<BlasId> {
+    ///
+    /// # Safety
+    /// Buffers must have AS-build-input usage and contain finite triangle data
+    /// with in-bounds indices matching the declared counts. Their contents must
+    /// remain synchronized and unchanged until this synchronous build completes.
+    /// Build flags must be supported and valid for triangle geometry.
+    pub unsafe fn build_blas(&self, spec: BlasBuildSpec<'_>) -> SoundResult<BlasId> {
+        self.memory.validate_owner(&spec.mesh.vertex_buffer)?;
+        if let Some(buffer) = &spec.mesh.index_buffer {
+            self.memory.validate_owner(buffer)?;
+        }
+        if spec.mesh.vertex_count == 0
+            || spec.mesh.vertex_count as u64 * size_of::<Vec3>() as u64
+                > spec.mesh.vertex_buffer.size
+            || spec.mesh.index_buffer.as_ref().is_some_and(|buffer| {
+                spec.mesh.index_count as u64 * 4 > buffer.size || spec.mesh.index_count % 3 != 0
+            })
+            || (spec.mesh.index_buffer.is_none() && spec.mesh.vertex_count % 3 != 0)
+        {
+            return Err(SoundError::invalid_argument(
+                "BLAS geometry counts exceed input buffer bounds or contain incomplete triangles",
+            ));
+        }
         // Geometry build inputs reference buffers by device address, not descriptors.
         let vertex_address = self.memory.buffer_device_address(&spec.mesh.vertex_buffer);
         let mut triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
@@ -95,8 +117,14 @@ impl RtContext {
             .blas
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
-        let id = BlasId(blas.len() as u32);
-        blas.insert(id, handle);
+        let id = BlasId(
+            self.next_blas_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| {
+                    SoundError::resource_allocation_failed("RT BLAS id space exhausted")
+                })?,
+        );
+        blas.insert(id, Arc::new(handle));
         Ok(id)
     }
 
@@ -105,7 +133,18 @@ impl RtContext {
     /// The build is submitted to the compute queue and completed before the new
     /// `BlasId` is returned. The returned BLAS requires a procedural hit group
     /// with an intersection shader when instanced in a traced TLAS.
-    pub fn build_aabb_blas(&self, spec: AabbBlasBuildSpec<'_>) -> SoundResult<BlasId> {
+    ///
+    /// # Safety
+    /// The buffer must have AS-build-input usage and contain finite, ordered
+    /// AABBs matching the declared count. Synchronize its contents through this
+    /// build, and use supported build flags valid for AABB geometry.
+    pub unsafe fn build_aabb_blas(&self, spec: AabbBlasBuildSpec<'_>) -> SoundResult<BlasId> {
+        self.memory.validate_owner(&spec.aabbs.aabb_buffer)?;
+        if spec.aabbs.primitive_count as u64 * rt_aabb_stride() > spec.aabbs.aabb_buffer.size {
+            return Err(SoundError::invalid_argument(
+                "AABB count exceeds input buffer bounds",
+            ));
+        }
         if spec.aabbs.primitive_count == 0 {
             return Err(SoundError::invalid_argument(
                 "RT AABB BLAS must contain at least one primitive",
@@ -142,8 +181,14 @@ impl RtContext {
             .blas
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
-        let id = BlasId(blas.len() as u32);
-        blas.insert(id, handle);
+        let id = BlasId(
+            self.next_blas_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| {
+                    SoundError::resource_allocation_failed("RT BLAS id space exhausted")
+                })?,
+        );
+        blas.insert(id, Arc::new(handle));
         Ok(id)
     }
 
@@ -151,15 +196,29 @@ impl RtContext {
     ///
     /// The instance buffer is uploaded as host-visible device-address data and
     /// the build completes before the returned `TlasId` can be used for tracing.
+    /// Referenced BLAS storage is retained through construction and the TLAS lifetime.
     pub fn build_tlas(&self, spec: TlasBuildSpec<'_>) -> SoundResult<TlasId> {
+        if spec.instances.len() as u64
+            > self
+                .device_context
+                .rt_properties
+                .acceleration_structure
+                .max_instance_count
+            || spec.instances.len() > u32::MAX as usize
+        {
+            return Err(SoundError::invalid_argument(
+                "TLAS instance count exceeds device limits",
+            ));
+        }
         if spec.instances.is_empty() {
             return Err(SoundError::invalid_argument(
                 "RT TLAS must contain at least one instance",
             ));
         }
 
-        // Resolve BLAS IDs while holding the lock, then drop it before GPU work.
-        let instances = self.resolve_instances(spec.instances)?;
+        // Acquire strong references under the registry lock so a concurrent scene
+        // replacement cannot invalidate an address during construction or tracing.
+        let (instances, referenced_blas) = self.resolve_instances(spec.instances)?;
 
         // Vulkan consumes TLAS instances through a device address.
         let instance_buffer = self.memory.create_host_device_address_buffer(
@@ -186,7 +245,7 @@ impl RtContext {
         let range =
             vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
 
-        let handle = self.build_acceleration_structure(
+        let mut handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
             spec.flags,
             std::slice::from_ref(&geometry),
@@ -198,26 +257,27 @@ impl RtContext {
             .tlas
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT TLAS lock is poisoned"))?;
-        // Query TLAS handles may be destroyed after a synchronous trace. Find
-        // a vacant small ID instead of deriving one from map length, which can
-        // collide when removals leave gaps.
-        let mut raw_id = 0_u32;
-        while tlas.contains_key(&TlasId(raw_id)) {
-            raw_id = raw_id.checked_add(1).ok_or_else(|| {
-                SoundError::resource_allocation_failed("RT TLAS id space exhausted")
-            })?;
-        }
+        // Do not let a stale ID alias a later scene/query after removal.
+        let raw_id = self
+            .next_tlas_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| SoundError::resource_allocation_failed("RT TLAS id space exhausted"))?;
         let id = TlasId(raw_id);
-        tlas.insert(id, handle);
+        handle._referenced_blas = referenced_blas;
+        tlas.insert(id, Arc::new(handle));
         Ok(id)
     }
 
     /// Destroys a TLAS that is no longer referenced by submitted GPU work.
     ///
-    /// The caller must first complete every command buffer that uses `id`.
     /// Removing the handle releases both the Vulkan acceleration structure and
-    /// its backing allocation. A later synchronous query may reuse the small ID.
-    pub fn destroy_tlas(&self, id: TlasId) -> SoundResult<()> {
+    /// its backing allocation. Removed identifiers are never reused.
+    ///
+    /// # Safety
+    /// The caller must own `id`, finish every submission referencing it, and
+    /// prevent concurrent recording or submission that could use the TLAS.
+    /// IDs borrowed from a scene or another scoped owner must not be destroyed.
+    pub unsafe fn destroy_tlas(&self, id: TlasId) -> SoundResult<()> {
         let handle = self
             .tlas
             .lock()
@@ -236,6 +296,22 @@ impl RtContext {
         primitive_counts: &[u32],
         ranges: &[vk::AccelerationStructureBuildRangeInfoKHR],
     ) -> SoundResult<AccelerationStructureHandle> {
+        validate_build_flags(flags)?;
+        if ty == vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL
+            && primitive_counts
+                .iter()
+                .map(|count| *count as u64)
+                .sum::<u64>()
+                > self
+                    .device_context
+                    .rt_properties
+                    .acceleration_structure
+                    .max_primitive_count
+        {
+            return Err(SoundError::invalid_argument(
+                "BLAS primitive count exceeds device limits",
+            ));
+        }
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(ty)
             .flags(flags)
@@ -342,7 +418,8 @@ impl RtContext {
         Ok(AccelerationStructureHandle {
             handle,
             device_address,
-            storage,
+            _storage: storage,
+            _referenced_blas: Vec::new(),
             device_context: self.device_context.clone(),
         })
     }
@@ -350,19 +427,32 @@ impl RtContext {
     fn resolve_instances(
         &self,
         specs: &[RtInstanceSpec],
-    ) -> SoundResult<Vec<vk::AccelerationStructureInstanceKHR>> {
+    ) -> SoundResult<(
+        Vec<vk::AccelerationStructureInstanceKHR>,
+        Vec<Arc<AccelerationStructureHandle>>,
+    )> {
         let blas = self
             .blas
             .lock()
             .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
 
-        specs
+        let mut referenced_blas = HashMap::new();
+        let instances = specs
             .iter()
             .map(|instance| {
+                validate_instance_transform(instance.transform)?;
+                if instance.custom_index > 0x00ff_ffff || instance.sbt_record_offset > 0x00ff_ffff {
+                    return Err(SoundError::invalid_argument(
+                        "TLAS custom index and SBT offset must fit 24 bits",
+                    ));
+                }
                 let blas_handle = blas.get(&instance.blas_id).ok_or_else(|| {
                     SoundError::not_found(format!("Invalid BLAS id {}", instance.blas_id.0))
                 })?;
 
+                referenced_blas
+                    .entry(instance.blas_id)
+                    .or_insert_with(|| blas_handle.clone());
                 Ok(vk::AccelerationStructureInstanceKHR {
                     transform: vk::TransformMatrixKHR {
                         matrix: matrix_to_tlas_transform(instance.transform),
@@ -380,8 +470,32 @@ impl RtContext {
                     },
                 })
             })
-            .collect::<SoundResult<Vec<_>>>()
+            .collect::<SoundResult<Vec<_>>>()?;
+        Ok((instances, referenced_blas.into_values().collect()))
     }
+}
+
+// The backend enables base KHR acceleration structures, without motion or micromaps.
+fn validate_build_flags(flags: vk::BuildAccelerationStructureFlagsKHR) -> SoundResult<()> {
+    let supported = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
+        | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+        | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+        | vk::BuildAccelerationStructureFlagsKHR::LOW_MEMORY;
+    if !(flags & !supported).is_empty() {
+        return Err(SoundError::unsupported_feature(
+            "Acceleration build flags require disabled extensions or contain unknown bits",
+        ));
+    }
+    if flags.contains(
+        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD,
+    ) {
+        return Err(SoundError::invalid_argument(
+            "Acceleration builds cannot prefer fast trace and fast build simultaneously",
+        ));
+    }
+    Ok(())
 }
 
 fn align_device_address(
@@ -432,6 +546,25 @@ fn matrix_to_tlas_transform(matrix: Mat4) -> [f32; 12] {
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+
+    #[test]
+    fn build_flags_reject_unknown_features_and_conflicting_preferences() {
+        use vk::BuildAccelerationStructureFlagsKHR as Flags;
+        for flags in [
+            Flags::empty(),
+            Flags::PREFER_FAST_TRACE | Flags::ALLOW_UPDATE,
+            Flags::PREFER_FAST_BUILD | Flags::LOW_MEMORY | Flags::ALLOW_COMPACTION,
+        ] {
+            assert!(validate_build_flags(flags).is_ok());
+        }
+        for flags in [
+            Flags::MOTION_NV,
+            Flags::from_raw(u32::MAX),
+            Flags::PREFER_FAST_TRACE | Flags::PREFER_FAST_BUILD,
+        ] {
+            assert!(validate_build_flags(flags).is_err());
+        }
+    }
 
     #[test]
     fn scratch_device_address_alignment_handles_unaligned_allocations() {

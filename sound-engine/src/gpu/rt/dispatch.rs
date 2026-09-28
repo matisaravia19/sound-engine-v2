@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(debug_assertions)]
 use crate::core::error::ErrorCode;
 use crate::{
     core::error::{SoundError, SoundResult},
@@ -66,12 +65,34 @@ impl RtDescriptorWrite {
 
 impl RtContext {
     /// Records descriptor updates, pipeline bind, push constants, and ray trace.
-    pub fn record_trace(
+    ///
+    /// # Safety
+    /// Record inside this context's compute submission. Buffers, TLAS/BLAS and
+    /// device addresses must belong to this device and remain alive through
+    /// completion. Their sizes, contents and SBT offsets must match the shaders;
+    /// callers must synchronize all accesses to the referenced resources.
+    pub unsafe fn record_trace(
         &self,
         command_buffer: vk::CommandBuffer,
         spec: &RtTraceSpec,
     ) -> SoundResult<()> {
-        crate::debug_validate!(
+        let invocations = spec
+            .dimensions
+            .iter()
+            .try_fold(1_u64, |count, size| count.checked_mul(*size as u64));
+        if invocations.is_none_or(|count| {
+            count
+                > self
+                    .device_context
+                    .rt_properties
+                    .ray_tracing_pipeline
+                    .max_ray_dispatch_invocation_count as u64
+        }) {
+            return Err(SoundError::invalid_argument(
+                "RT invocation count exceeds device limits",
+            ));
+        }
+        crate::validate!(
             spec.dimensions.iter().all(|dimension| *dimension > 0),
             ErrorCode::InvalidArgument,
             "RT trace dimensions must all be non-zero, got {:?}",
@@ -87,15 +108,38 @@ impl RtContext {
             SoundError::not_found(format!("Invalid RT pipeline id {}", spec.pipeline_id.0))
         })?;
 
-        crate::debug_validate!(
-            push_constants_fit_pipeline(spec, pipeline),
-            ErrorCode::InvalidArgument,
-            "RT push constants offset={} size={} do not fit pipeline ranges",
+        let stages = crate::gpu::resource::push_constant_stages(
+            &pipeline.push_constant_ranges,
             spec.push_constant_offset,
-            spec.push_constants.len()
-        );
+            spec.push_constants.len(),
+        )?;
+        let mut writes = Vec::with_capacity(spec.descriptor_writes.len());
+        for write in &spec.descriptor_writes {
+            match *write {
+                RtDescriptorWrite::AccelerationStructure {
+                    binding,
+                    ..
+                } => writes.push((binding, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)),
+                RtDescriptorWrite::StorageBuffer {
+                    binding,
+                    buffer,
+                    offset,
+                    range,
+                } => {
+                    crate::gpu::resource::validate_storage_descriptor(
+                        buffer,
+                        offset,
+                        range,
+                        &self.device_context.limits,
+                    )?;
+                    writes.push((binding, vk::DescriptorType::STORAGE_BUFFER));
+                }
+            }
+        }
+        crate::gpu::resource::validate_descriptor_writes(&pipeline.descriptor_bindings, &writes)?;
 
         // Descriptor sets are allocated per trace from growable pools.
+        let _pool_access = self.compute.descriptor_pool_guard();
         let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
         let descriptor_set = descriptor_allocation.set;
         self.compute
@@ -121,7 +165,7 @@ impl RtContext {
                 self.device_context.device.cmd_push_constants(
                     command_buffer,
                     pipeline.layout,
-                    default_trace_push_constant_stages(),
+                    stages,
                     spec.push_constant_offset,
                     &spec.push_constants,
                 );
@@ -209,30 +253,4 @@ impl RtContext {
 
         Ok(())
     }
-}
-
-#[cfg(debug_assertions)]
-fn push_constants_fit_pipeline(spec: &RtTraceSpec, pipeline: &RayTracingPipeline) -> bool {
-    if spec.push_constants.is_empty() {
-        return true;
-    }
-
-    let start = spec.push_constant_offset;
-    let Some(end) = start.checked_add(spec.push_constants.len() as u32) else {
-        return false;
-    };
-
-    pipeline.push_constant_ranges.iter().any(|range| {
-        let range_end = range.offset.saturating_add(range.size);
-        start >= range.offset && end <= range_end
-    })
-}
-
-fn default_trace_push_constant_stages() -> vk::ShaderStageFlags {
-    vk::ShaderStageFlags::RAYGEN_KHR
-        | vk::ShaderStageFlags::MISS_KHR
-        | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-        | vk::ShaderStageFlags::ANY_HIT_KHR
-        | vk::ShaderStageFlags::INTERSECTION_KHR
-        | vk::ShaderStageFlags::CALLABLE_KHR
 }

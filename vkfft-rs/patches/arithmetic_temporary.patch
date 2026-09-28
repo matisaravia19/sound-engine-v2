@@ -1,0 +1,111 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h
+@@ -24,6 +24,7 @@
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
+ #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
+ #include "codegen_names.hpp"
++#include "codegen_temporary.hpp"
+ #include "codegen_permutation.hpp"
+ 
+ static inline void PfPrintReg(VkFFTSpecializationConstantsLayout* sc, PfContainer* inoutID, PfContainer* in);
+@@ -725,11 +726,12 @@
+ 		return;
+ 	}
+ 	else if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfContainer temp = VKFFT_ZERO_INIT;
++		vkfft_codegen::Temporary owned_temp(sc);
++		PfContainer& temp = owned_temp.get();
+ 		PfConvToDoubleDouble(sc, &temp, in);
++		if (sc->res != VKFFT_SUCCESS) return;
+ 		PfMov(sc, &out->data.dd[0], &temp.data.dd[0]);
+ 		PfMov(sc, &out->data.dd[1], &temp.data.dd[1]);
+-		PfDeallocateContainer(sc, &temp);
+ 		return;
+ 	}
+ 	if (out->type > 100) {
+@@ -813,11 +815,12 @@
+ 		return;
+ 	}
+ 	else if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfContainer temp = VKFFT_ZERO_INIT;
++		vkfft_codegen::Temporary owned_temp(sc);
++		PfContainer& temp = owned_temp.get();
+ 		PfConvToDoubleDouble(sc, &temp, in);
++		if (sc->res != VKFFT_SUCCESS) return;
+ 		PfMovNeg(sc, &out->data.dd[0], &temp.data.dd[0]);
+ 		PfMovNeg(sc, &out->data.dd[1], &temp.data.dd[1]);
+-		PfDeallocateContainer(sc, &temp);
+ 		return;
+ 	}
+ 	if (out->type > 100) {
+@@ -980,16 +983,18 @@
+ 		return;
+ 	}
+ 	else if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfContainer temp1 = VKFFT_ZERO_INIT;
++		vkfft_codegen::Temporary owned_temp1(sc);
++		PfContainer& temp1 = owned_temp1.get();
+ 		PfConvToDoubleDouble(sc, &temp1, in_1);
+-		PfContainer temp2 = VKFFT_ZERO_INIT;
++		if (sc->res != VKFFT_SUCCESS) return;
++		vkfft_codegen::Temporary owned_temp2(sc);
++		PfContainer& temp2 = owned_temp2.get();
+ 		PfConvToDoubleDouble(sc, &temp2, in_2);
++		if (sc->res != VKFFT_SUCCESS) return;
+ 		PfQuadSum(sc, &sc->tempQuad.data.c[0], &temp1.data.dd[0], &temp2.data.dd[0], &sc->tempQuad3.data.c[0].data.dd[0]);
+ 		PfAdd(sc, &out->data.dd[0], &temp1.data.dd[1], &temp2.data.dd[1]);
+ 		PfAdd(sc, &sc->tempQuad.data.c[0].data.dd[1], &sc->tempQuad.data.c[0].data.dd[1], &out->data.dd[0]);
+ 		PfQuadQuickSum(sc, out, &sc->tempQuad.data.c[0].data.dd[0], &sc->tempQuad.data.c[0].data.dd[1]);
+-		PfDeallocateContainer(sc, &temp1);
+-		PfDeallocateContainer(sc, &temp2);
+ 		return;
+ 	}
+ 	if (out->type > 100) {
+@@ -1258,16 +1263,18 @@
+ 		return;
+ 	}
+ 	else if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfContainer temp1 = VKFFT_ZERO_INIT;
++		vkfft_codegen::Temporary owned_temp1(sc);
++		PfContainer& temp1 = owned_temp1.get();
+ 		PfConvToDoubleDouble(sc, &temp1, in_1);
+-		PfContainer temp2 = VKFFT_ZERO_INIT;
++		if (sc->res != VKFFT_SUCCESS) return;
++		vkfft_codegen::Temporary owned_temp2(sc);
++		PfContainer& temp2 = owned_temp2.get();
+ 		PfConvToDoubleDouble(sc, &temp2, in_2);
++		if (sc->res != VKFFT_SUCCESS) return;
+ 		PfQuadDiff(sc, &sc->tempQuad.data.c[0], &temp1.data.dd[0], &temp2.data.dd[0], &sc->tempQuad3.data.c[0].data.dd[0]);
+ 		PfSub(sc, &out->data.dd[0], &temp1.data.dd[1], &temp2.data.dd[1]);
+ 		PfAdd(sc, &sc->tempQuad.data.c[0].data.dd[1], &sc->tempQuad.data.c[0].data.dd[1], &out->data.dd[0]);
+ 		PfQuadQuickSum(sc, out, &sc->tempQuad.data.c[0].data.dd[0], &sc->tempQuad.data.c[0].data.dd[1]);
+-		PfDeallocateContainer(sc, &temp1);
+-		PfDeallocateContainer(sc, &temp2);
+ 		return;
+ 	}
+ 	if (out->type > 100) {
+@@ -2189,18 +2196,20 @@
+ 		return;
+ 	}
+ 	else if ((((out->type % 100) / 10) == 3) && ((out->type % 10) == 2)) {
+-		PfContainer temp1 = VKFFT_ZERO_INIT;
++		vkfft_codegen::Temporary owned_temp1(sc);
++		PfContainer& temp1 = owned_temp1.get();
+ 		PfConvToDoubleDouble(sc, &temp1, in_1);
+-		PfContainer temp2 = VKFFT_ZERO_INIT;
++		if (sc->res != VKFFT_SUCCESS) return;
++		vkfft_codegen::Temporary owned_temp2(sc);
++		PfContainer& temp2 = owned_temp2.get();
+ 		PfConvToDoubleDouble(sc, &temp2, in_2);
++		if (sc->res != VKFFT_SUCCESS) return;
+ 		
+ 		PfQuadProd(sc, &sc->tempQuad.data.c[0], &temp1.data.dd[0], &temp2.data.dd[0], &sc->tempQuad3);
+ 		PfFMA(sc, &sc->tempQuad.data.c[0].data.dd[1], &temp1.data.dd[0], &temp2.data.dd[1], &sc->tempQuad.data.c[0].data.dd[1]);
+ 		PfFMA(sc, &sc->tempQuad.data.c[0].data.dd[1], &temp1.data.dd[1], &temp2.data.dd[0], &sc->tempQuad.data.c[0].data.dd[1]);
+ 		PfQuadQuickSum(sc, out, &sc->tempQuad.data.c[0].data.dd[0], &sc->tempQuad.data.c[0].data.dd[1]);
+ 
+-		PfDeallocateContainer(sc, &temp1);
+-		PfDeallocateContainer(sc, &temp2);
+ 		return;
+ 	}
+ 	if (out->type > 100) {

@@ -1,0 +1,68 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_InitAPIParameters.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_InitAPIParameters.h
+@@ -60,6 +60,7 @@ static inline VkFFTResult initMemoryParametersAPI(VkFFTApplication* app, VkFFTSp
+ 	sc->int64Def.type = 331;
+ 	PfAllocateContainerFlexible(sc, &sc->int64Def, 50);
+ 	
++	if (sc->res != VKFFT_SUCCESS) return sc->res;
+ #if(VKFFT_BACKEND==0)
+ 	sprintf(sc->halfLiteral.name, "h");
+ 	sprintf(sc->floatLiteral.name, "f");
+@@ -260,6 +261,7 @@ static inline VkFFTResult initMemoryParametersAPI(VkFFTApplication* app, VkFFTSp
+ 
+ static inline VkFFTResult initParametersAPI(VkFFTApplication* app, VkFFTSpecializationConstantsLayout* sc) {
+ 	VkFFTResult res = VKFFT_SUCCESS;
++	if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 	sc->tempStr = (char*)calloc(sc->maxTempLength, sizeof(char));
+ 	if (!sc->tempStr) return VKFFT_ERROR_MALLOC_FAILED;
+ 	char name[50];
+@@ -362,33 +364,40 @@ static inline VkFFTResult initParametersAPI(VkFFTApplication* app, VkFFTSpeciali
+ 	if (sc->performWorkGroupShift[0]) {
+ 		sc->workGroupShiftX.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->workGroupShiftX, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->workGroupShiftX.name, "workGroupShiftX");
+ 	}
+ 	if (sc->performWorkGroupShift[1]) {
+ 		sc->workGroupShiftY.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->workGroupShiftY, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->workGroupShiftY.name, "workGroupShiftY");
+ 	}
+ 	if (sc->performWorkGroupShift[2]) {
+ 		sc->workGroupShiftZ.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->workGroupShiftZ, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->workGroupShiftZ.name, "workGroupShiftZ");
+ 	}
+ 	if (sc->performPostCompilationInputOffset) {
+ 		sc->inputOffset.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->inputOffset, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->inputOffset.name, "inputOffset");
+ 	}
+ 	if (sc->performPostCompilationOutputOffset) {
+ 		sc->outputOffset.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->outputOffset, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->outputOffset.name, "outputOffset");
+ 	}
+ 	if (sc->performPostCompilationKernelOffset) {
+ 		sc->kernelOffset.type = 100 + sc->uintTypeCode;
+ 		PfAllocateContainerFlexible(sc, &sc->kernelOffset, 50);
++		if (sc->res != VKFFT_SUCCESS) return sc->res;
+ 		sprintf(sc->kernelOffset.name, "kernelOffset");
+ 	}
++	if (sc->res != VKFFT_SUCCESS) return sc->res;
+ #if(VKFFT_BACKEND==0)
+ 	sprintf(sc->inputsStruct.name, "inputs");
+ 	sprintf(sc->outputsStruct.name, "outputs");
+@@ -579,7 +588,7 @@ static inline VkFFTResult freeParametersAPI(VkFFTApplication* app, VkFFTSpeciali
+ 	PfDeallocateContainer(sc, &sc->BluesteinStruct);
+ 	PfDeallocateContainer(sc, &sc->BluesteinConvolutionKernelStruct);
+ 	PfDeallocateContainer(sc, &sc->kernelStruct);
+-	for (int i = 0; i < sc->numRaderPrimes; i++) {
++	for (int i = 0; sc->raderContainer && i < sc->numRaderPrimes; i++) {
+ 		if (sc->raderContainer[i].prime > 0) {
+ 			if (sc->inline_rader_g_pow == 1) {
+ 				PfDeallocateContainer(sc, &sc->raderContainer[i].g_powConstantStruct);

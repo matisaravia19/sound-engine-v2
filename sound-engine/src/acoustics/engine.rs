@@ -1,8 +1,7 @@
 use crate::acoustics::{
-    AcousticPipeline, AcousticQuery, GpuIrSnapshot, IrCache, IrCacheConfig, IrCacheQuery,
-    IrSnapshot,
+    AcousticPipeline, AcousticQuery, GpuIrSnapshot, IrCache, IrCacheQuery, IrSnapshot,
 };
-use crate::core::config::{EngineConfig, IrCacheConfig as CoreIrCacheConfig};
+use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::engine::{ListenerPose, PointSource};
 use crate::gpu::backend::VkBackend;
@@ -12,7 +11,7 @@ use glam::Vec3;
 /// Scene-backed acoustic IR engine with synchronous cache-backed queries.
 ///
 /// The engine owns scene state, the GPU acoustic pipeline, and the IR cache.
-/// Cache hits return cloned CPU snapshots, while misses may synchronize scene
+/// Cache hits share GPU snapshots, while misses may synchronize scene
 /// acceleration data and block on GPU ray tracing before returning.
 pub struct AcousticsEngine {
     /// Mutable scene state and versioning used when building acoustic queries.
@@ -34,7 +33,7 @@ impl AcousticsEngine {
         Ok(Self {
             scene: SceneManager::new(),
             pipeline: AcousticPipeline::new(gpu, config)?,
-            cache: IrCache::new(cache_config(config.cache)),
+            cache: IrCache::new(config.cache),
         })
     }
 
@@ -73,6 +72,7 @@ impl AcousticsEngine {
         source: PointSource,
         listener: ListenerPose,
     ) -> SoundResult<GpuIrSnapshot> {
+        self.pipeline.validate_backend(gpu)?;
         self.validate_source_reference(source)?;
         let listener = canonicalize_listener(listener)?;
 
@@ -161,21 +161,57 @@ pub(crate) fn canonicalize_listener(listener: ListenerPose) -> SoundResult<Liste
     })
 }
 
-/// Converts the public core cache configuration into acoustic cache settings.
-fn cache_config(config: CoreIrCacheConfig) -> IrCacheConfig {
-    IrCacheConfig {
-        position_cell_meters: config.position_cell_meters,
-        reuse_distance_meters: config.reuse_distance_meters,
-        listener_orientation_dot_threshold: config.listener_orientation_dot_threshold,
-        max_entries: config.max_entries,
-        max_gpu_cache_bytes: config.max_gpu_cache_bytes,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};
+
+    #[test]
+    #[ignore = "requires Vulkan; run hardware tests serially"]
+    fn audit_cache_hits_reject_a_foreign_backend() {
+        use crate::core::config::*;
+        let gpu = VkBackend::new().unwrap();
+        let foreign = VkBackend::new().unwrap();
+        let mut engine = AcousticsEngine::new(
+            &gpu,
+            EngineConfig {
+                sound: SoundConfig {
+                    sample_rate: 48_000,
+                    output_channels: OutputChannels::Stereo,
+                    ir_num_samples: 1024,
+                },
+                acoustics: AcousticsConfig {
+                    listener_ray_count: 1,
+                    max_bounces: 0,
+                    maximum_path_length: 100.0,
+                    minimum_throughput: 0.0,
+                    sampling_seed: 0,
+                },
+                cache: Default::default(),
+                binaural: Default::default(),
+                auralization: AuralizationConfig {
+                    block_size: 64,
+                },
+            },
+        )
+        .unwrap();
+        let source = PointSource::new(Vec3::X);
+        let listener = ListenerPose::default();
+        engine
+            .build_impulse_response_gpu(&gpu, source, listener)
+            .unwrap();
+        assert_eq!(engine.cache.len(), 1);
+        assert!(
+            engine
+                .build_impulse_response_gpu(&foreign, source, listener)
+                .is_err()
+        );
+        assert!(
+            engine
+                .build_impulse_response_gpu(&gpu, source, listener)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn rejects_non_finite_acoustic_query_values() {
@@ -217,27 +253,6 @@ mod tests {
         assert!((canonical.forward.length() - 1.0).abs() < 1.0e-6);
         assert!((canonical.up.length() - 1.0).abs() < 1.0e-6);
         assert!(canonical.forward.dot(canonical.up).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn maps_core_cache_config_to_acoustic_cache_config() {
-        let config = CoreIrCacheConfig {
-            position_cell_meters: 0.5,
-            reuse_distance_meters: 0.25,
-            listener_orientation_dot_threshold: 0.9,
-            max_entries: 4,
-            max_gpu_cache_bytes: 1234,
-        };
-        let acoustic = cache_config(config);
-
-        assert_eq!(acoustic.position_cell_meters, config.position_cell_meters);
-        assert_eq!(acoustic.reuse_distance_meters, config.reuse_distance_meters);
-        assert_eq!(
-            acoustic.listener_orientation_dot_threshold,
-            config.listener_orientation_dot_threshold
-        );
-        assert_eq!(acoustic.max_entries, config.max_entries);
-        assert_eq!(acoustic.max_gpu_cache_bytes, config.max_gpu_cache_bytes);
     }
 
     #[test]

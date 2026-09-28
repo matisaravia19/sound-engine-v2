@@ -1,0 +1,26 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_DeletePlan.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_DeletePlan.h
+@@ -22,8 +22,23 @@
+ #ifndef VKFFT_DELETEPLAN_H
+ #define VKFFT_DELETEPLAN_H
+ #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
++#if(VKFFT_BACKEND==0)
++#include "vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_InitAPIParameters.h"
++#endif
+ 
+ static inline void deleteAxis(VkFFTApplication* app, VkFFTAxis* axis, int isInverseBluesteinAxes) {
++#if(VKFFT_BACKEND==0)
++	// Inverse Bluestein axes borrow the Rader array; its owner may already be gone.
++	if (isInverseBluesteinAxes) {
++		axis->specializationConstants.numRaderPrimes = 0;
++		axis->specializationConstants.raderContainer = 0;
++	}
++	freeMemoryParametersAPI(app, &axis->specializationConstants);
++	freeParametersAPI(app, &axis->specializationConstants);
++	// Generated text is retained only until successful compilation or axis teardown.
++	free(axis->specializationConstants.code0);
++	axis->specializationConstants.code0 = 0;
++#endif
+ 	if (axis->specializationConstants.numRaderPrimes && (!isInverseBluesteinAxes)) {
+ 		free(axis->specializationConstants.raderContainer);
+ 		axis->specializationConstants.raderContainer = 0;

@@ -53,6 +53,9 @@ impl SceneManager {
         &'a mut self,
         gpu: &VkBackend,
     ) -> SoundResult<&'a GpuSceneResources> {
+        if let Some(resources) = &self.gpu_resources {
+            gpu.memory().validate_owner(resources.material_buffer())?;
+        }
         let needs_sync = self.gpu_resources.as_ref().map_or(true, |resources| {
             resources.version() != self.store.version()
         });

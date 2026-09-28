@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         player.push_block(&output_block)?;
     }
     player.finish()?;
-    player.wait_until_finished();
+    player.wait_until_finished()?;
 
     Ok(())
 }

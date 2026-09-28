@@ -1,0 +1,13 @@
+--- a/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel2/vkFFT_FFT.h
++++ b/vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel2/vkFFT_FFT.h
+@@ -100,6 +100,10 @@ static inline VkFFTResult shaderGen_FFT(VkFFTSpecializationConstantsLayout* sc,
+ 	setWriteFromRegisters(sc, type);
+ 
+ 	appendRegisterInitialization(sc, type);
++	if (sc->res != VKFFT_SUCCESS) {
++		freeRegisterInitialization(sc, type);
++		return sc->res;
++	}
+ 	
+ 	PfContainer stageSize = VKFFT_ZERO_INIT;
+ 	stageSize.type = 31;

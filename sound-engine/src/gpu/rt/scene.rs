@@ -81,6 +81,7 @@ impl RtContext {
     ///
     /// The returned buffers are suitable as BLAS build inputs.
     pub fn upload_mesh(&self, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
+        validate_triangle_mesh(spec.vertices, spec.indices)?;
         if spec.vertices.is_empty() {
             return Err(SoundError::invalid_argument(
                 "RT mesh must contain at least one vertex",
@@ -125,6 +126,11 @@ impl RtContext {
     ///
     /// The returned buffer is suitable as AABB BLAS build input.
     pub fn upload_aabbs(&self, specs: &[RtAabbSpec]) -> SoundResult<RtAabbBuffers> {
+        if specs.len() > u32::MAX as usize {
+            return Err(SoundError::invalid_argument(
+                "AABB count exceeds Vulkan's 32-bit range",
+            ));
+        }
         if specs.is_empty() {
             return Err(SoundError::invalid_argument(
                 "RT AABB build input must not be empty",
@@ -169,6 +175,72 @@ impl RtContext {
     }
 }
 
+/// Byte stride of the packed Vulkan AABB build input.
 pub(crate) fn rt_aabb_stride() -> vk::DeviceSize {
     size_of::<RtAabbPrimitive>() as vk::DeviceSize
+}
+
+/// Validates triangle input before GPU traversal can dereference device addresses.
+pub(crate) fn validate_triangle_mesh(
+    vertices: &[Vec3],
+    indices: Option<&[u32]>,
+) -> SoundResult<()> {
+    if vertices.is_empty()
+        || vertices.len() > u32::MAX as usize / 3
+        || vertices.iter().any(|vertex| !vertex.is_finite())
+    {
+        return Err(SoundError::invalid_argument(
+            "Mesh vertices must be finite and fit 32-bit shader indexing",
+        ));
+    }
+    let count = indices.map_or(vertices.len(), |values| values.len());
+    if count == 0 || count % 3 != 0 || count > u32::MAX as usize {
+        return Err(SoundError::invalid_argument(
+            "Mesh must contain complete triangle triples within the 32-bit index range",
+        ));
+    }
+    if indices.is_some_and(|values| values.iter().any(|index| *index as usize >= vertices.len())) {
+        return Err(SoundError::invalid_argument(
+            "Mesh index references a vertex outside the vertex buffer",
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects transforms that cannot be represented by a finite, invertible Vulkan 3x4 matrix.
+pub(crate) fn validate_instance_transform(transform: Mat4) -> SoundResult<()> {
+    let determinant = glam::Mat3::from_mat4(transform).determinant();
+    if !transform.is_finite()
+        || !determinant.is_finite()
+        || determinant == 0.0
+        || transform.row(3) != glam::Vec4::W
+    {
+        return Err(SoundError::invalid_argument(
+            "Instance transform must be finite, affine and invertible",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triangle_validation_rejects_out_of_bounds_indices_and_partial_triangles() {
+        let vertices = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, 2])).is_ok());
+        assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, 3])).is_err());
+        assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, u32::MAX])).is_err());
+        assert!(validate_triangle_mesh(&vertices[..2], None).is_err());
+        assert!(validate_triangle_mesh(&[Vec3::NAN, Vec3::X, Vec3::Y], None).is_err());
+    }
+
+    #[test]
+    fn transforms_reject_non_finite_singular_and_projective_matrices() {
+        assert!(validate_instance_transform(Mat4::IDENTITY).is_ok());
+        assert!(validate_instance_transform(Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0))).is_err());
+        assert!(validate_instance_transform(Mat4::NAN).is_err());
+        assert!(validate_instance_transform(Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)).is_err());
+    }
 }

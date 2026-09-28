@@ -1,11 +1,12 @@
-use crate::core::error::{ErrorCode, SoundError, SoundResult};
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
+
+mod compiler;
 
 // Cargo tracks every included GLSL file, including shared transport includes.
 // The generated manifest is also used to reject stale host/source combinations.
@@ -21,6 +22,8 @@ pub const SHADER_ENTRY_POINT: &str = "main";
 pub struct ShaderLibrary {
     device_context: Arc<VkDeviceContext>,
     shaders: Mutex<HashMap<ShaderId, ShaderRecord>>,
+    #[cfg(test)]
+    compile_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Stable handle to a shader module stored in `ShaderLibrary`.
@@ -49,6 +52,10 @@ pub enum ShaderStage {
 struct ShaderRecord {
     module: vk::ShaderModule,
     stage: ShaderStage,
+    spirv: Vec<u32>,
+    // Manifest entries are immutable after verification; custom files and their
+    // includes still need compilation to determine whether their bytes changed.
+    bundled_sources: Vec<usize>,
 }
 
 impl ShaderStage {
@@ -71,21 +78,26 @@ impl ShaderLibrary {
         Self {
             device_context,
             shaders: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            compile_count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Compiles a GLSL file into SPIR-V and creates a Vulkan shader module.
     ///
     /// The returned ID remains valid until the shader library is dropped.
+    /// Verified bundled sources reuse an existing module without recompilation.
     /// Bundled engine shaders must match the sources used to build this host
     /// executable; rebuild after editing GLSL, including shared include files.
+    /// Compilation uses embedded bundled bytes so subsequent file edits cannot
+    /// change the verified program. Custom shader files remain caller-controlled.
     pub fn load_glsl_file<P: AsRef<Path>>(
         &self,
         stage: ShaderStage,
         path: P,
     ) -> SoundResult<ShaderId> {
         let source_path = path.as_ref().to_path_buf();
-        validate_bundled_shader_sources(&source_path)?;
+        let bundled_source = validate_bundled_shader_sources(&source_path)?;
         if !source_path.exists() {
             return Err(SoundError::io(format!(
                 "Shader source file does not exist: {}",
@@ -93,20 +105,43 @@ impl ShaderLibrary {
             )));
         }
 
-        let spirv_words =
-            compile_glsl_file_to_spirv_words(&source_path, stage, SHADER_ENTRY_POINT)?;
-        let module = create_shader_module(&self.device_context.device, &spirv_words)?;
-        let record = ShaderRecord {
-            module,
-            stage,
-        };
-
         let mut shaders = self
             .shaders
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
+        if let Some(source) = bundled_source {
+            if let Some((id, _)) = shaders.iter().find(|(_, shader)| {
+                shader.stage == stage && shader.bundled_sources.contains(&source)
+            }) {
+                return Ok(*id);
+            }
+        }
+        #[cfg(test)]
+        self.compile_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let spirv_words = compiler::compile(&source_path, stage, bundled_source)?;
+        // Recreating an engine on a shared backend must not accumulate identical
+        // modules. Compiled bytes also reflect changes in included GLSL files.
+        if let Some((id, shader)) = shaders
+            .iter_mut()
+            .find(|(_, shader)| shader.stage == stage && shader.spirv == spirv_words)
+        {
+            if let Some(source) = bundled_source {
+                shader.bundled_sources.push(source);
+            }
+            return Ok(*id);
+        }
+        let id = ShaderId(u32::try_from(shaders.len()).map_err(|_| {
+            SoundError::resource_allocation_failed("Shader identifier space exhausted")
+        })?);
+        let module = create_shader_module(&self.device_context.device, &spirv_words)?;
+        let record = ShaderRecord {
+            module,
+            stage,
+            spirv: spirv_words,
+            bundled_sources: bundled_source.into_iter().collect(),
+        };
 
-        let id = ShaderId(shaders.len() as u32);
         shaders.insert(id, record);
         Ok(id)
     }
@@ -142,10 +177,10 @@ impl ShaderLibrary {
 
 /// Rejects source edits before compiling any bundled shader against a stale
 /// host ABI. Custom caller-owned shader files retain the ordinary loading path.
-fn validate_bundled_shader_sources(source_path: &Path) -> SoundResult<()> {
+fn validate_bundled_shader_sources(source_path: &Path) -> SoundResult<Option<usize>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let requested = source_path.canonicalize().ok();
-    let bundled = BUNDLED_SHADER_SOURCES.iter().any(|(relative, _)| {
+    let bundled = BUNDLED_SHADER_SOURCES.iter().position(|(relative, _)| {
         let expected = root.join(relative);
         source_path == expected
             || requested.as_ref().is_some_and(|path| {
@@ -154,14 +189,14 @@ fn validate_bundled_shader_sources(source_path: &Path) -> SoundResult<()> {
                     .is_ok_and(|canonical| path == &canonical)
             })
     });
-    if bundled {
+    if bundled.is_some() {
         // Validate includes as well as entry points. This is setup I/O, outside
         // the audio render loop; no filesystem reads are added to ray tracing.
         for (relative, expected) in BUNDLED_SHADER_SOURCES {
             verify_shader_source(&root.join(relative), expected)?;
         }
     }
-    Ok(())
+    Ok(bundled)
 }
 
 /// Checks exact bytes so a host executable cannot silently adopt changed GLSL.
@@ -181,52 +216,12 @@ fn verify_shader_source(path: &Path, expected: &str) -> SoundResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod source_tests {
-    use super::*;
-
-    #[test]
-    fn edited_or_missing_shader_is_rejected_before_compilation() {
-        let path = std::env::temp_dir().join(format!(
-            "sound_engine_shader_guard_{}.glsl",
-            std::process::id()
-        ));
-        let expected = "layout(offset = 100) uint changed_layout;\n";
-        fs::write(&path, expected).unwrap();
-        assert!(verify_shader_source(&path, expected).is_ok());
-        fs::write(&path, "layout(offset = 104) uint changed_layout;\n").unwrap();
-        let error = verify_shader_source(&path, expected).unwrap_err();
-        assert!(error.to_string().contains("Rebuild with cargo"));
-        fs::remove_file(&path).unwrap();
-        assert!(verify_shader_source(&path, expected).is_err());
-    }
-
-    #[test]
-    fn bundled_manifest_covers_shared_transport_and_current_sources() {
-        assert!(
-            BUNDLED_SHADER_SOURCES
-                .iter()
-                .any(|(path, _)| path.ends_with("/listener_transport.glsl"))
-        );
-        assert!(
-            BUNDLED_SHADER_SOURCES
-                .iter()
-                .any(|(path, _)| path.ends_with("/diffraction.rint.glsl"))
-        );
-        validate_bundled_shader_sources(
-            &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/acoustics/shaders/listener_backward.rgen.glsl"),
-        )
-        .unwrap();
-    }
-}
-
 impl Drop for ShaderLibrary {
     fn drop(&mut self) {
         let mut shaders = self
             .shaders
             .lock()
-            .expect("Shader library lock is poisoned during drop");
+            .unwrap_or_else(|error| error.into_inner());
 
         unsafe {
             for (_, shader) in shaders.drain() {
@@ -251,70 +246,52 @@ fn create_shader_module(
     Ok(module)
 }
 
-fn compile_glsl_file_to_spirv_words(
-    source_path: &Path,
-    stage: ShaderStage,
-    entry: &str,
-) -> SoundResult<Vec<u32>> {
-    let temp_dir = std::env::temp_dir();
-    let unique_tag = format!(
-        "{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    );
-    let spv_path = temp_dir.join(format!("sound_engine_shader_{unique_tag}.spv"));
+#[cfg(test)]
+mod source_tests {
+    use super::*;
 
-    // Compile to a unique temp file because glslangValidator writes SPIR-V to disk.
-    let output = Command::new("glslangValidator")
-        .arg("-V")
-        .arg("--target-env")
-        .arg("vulkan1.3")
-        .arg("-S")
-        .arg(stage.glslang_suffix())
-        .arg("-e")
-        .arg(entry)
-        .arg("-o")
-        .arg(&spv_path)
-        .arg(source_path)
-        .output()
-        .map_err(|e| {
-            SoundError::with_source(
-                ErrorCode::ShaderCompileFailed,
-                format!(
-                "Failed to run glslangValidator for {}: {e}. Ensure Vulkan SDK tools are installed and glslangValidator is in PATH",
-                source_path.display()
-                ),
-                e,
-            )
-        })?;
-
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = fs::remove_file(&spv_path);
-        return Err(SoundError::shader_compile_failed(format!(
-            "GLSL compilation failed for {} ({stage:?}):\n{stdout}\n{stderr}",
-            source_path.display()
-        )));
+    #[test]
+    #[ignore = "requires Vulkan; run hardware tests serially"]
+    fn audit_verified_bundled_shader_skips_recompilation() {
+        let gpu = crate::gpu::backend::VkBackend::new().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/auralization/shaders/multiply.comp.glsl");
+        let first = gpu
+            .shaders()
+            .load_glsl_file(ShaderStage::Compute, &path)
+            .unwrap();
+        for _ in 0..4 {
+            assert_eq!(
+                gpu.shaders()
+                    .load_glsl_file(ShaderStage::Compute, &path)
+                    .unwrap(),
+                first
+            );
+        }
+        assert_eq!(
+            gpu.shaders()
+                .compile_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
-    let result = (|| -> SoundResult<Vec<u32>> {
-        let spirv_bytes = fs::read(&spv_path)?;
-        if spirv_bytes.len() % size_of::<u32>() != 0 {
-            return Err(SoundError::shader_compile_failed(format!(
-                "Invalid SPIR-V size for {}",
-                source_path.display()
-            )));
-        }
-
-        Ok(spirv_bytes
-            .chunks_exact(size_of::<u32>())
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect())
-    })();
-
-    let _ = fs::remove_file(&spv_path);
-    result
+    #[test]
+    fn bundled_manifest_covers_shared_transport_and_current_sources() {
+        assert!(
+            BUNDLED_SHADER_SOURCES
+                .iter()
+                .any(|(path, _)| path.ends_with("/listener_transport.glsl"))
+        );
+        assert!(
+            BUNDLED_SHADER_SOURCES
+                .iter()
+                .any(|(path, _)| path.ends_with("/diffraction.rint.glsl"))
+        );
+        validate_bundled_shader_sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/acoustics/shaders/listener_backward.rgen.glsl"),
+        )
+        .unwrap();
+    }
 }
