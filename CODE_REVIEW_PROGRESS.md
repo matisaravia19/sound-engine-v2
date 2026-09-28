@@ -824,12 +824,42 @@ limit. Logs and the owned native probe are under
 `final-limits-result.log` and `plan-hashes.log` preserve the comparisons.
 These host-side findings do not establish the cause of the original driver crashes.
 
+## Scheduler fallback ownership
+
+While tracing allocations upstream of stage construction, a real CPU-only
+`[17, 89^4]` scheduling probe reproduced a leak and lost plan metadata. The
+initializer's unsupported-length fallback used `memset` on the entire plan.
+After successfully scheduling axis zero with two uploads, retrying axis one
+reported success but left axis zero with zero uploads. Its Rader allocation
+became unreachable and remained live after plan teardown.
+
+Both forward and inverse initialization now use the same retry helper. It
+releases all partial upload slots for the axis being retried and resets only
+that axis's scheduling state. Completed axes, their inverse-Bluestein aliases,
+and the first axis's R2C state survive a later-axis retry. Temporary Rader limits
+use a scoped owner so normal errors and C++ exceptions restore them. Other
+scheduler errors return immediately without a fallback attempt.
+
+The fixed natural probe retains upload counts `[2, 3]` and has zero tracked
+allocations after teardown; the previous version retained `[0, 3]` and leaked
+one allocation. The four natural cases cover both plan directions and float/
+double settings. Sixteen synthetic exit cases cover successful first attempts,
+terminal errors, successful/failed fallback, allocation failure in either
+attempt, and an exception after partial retry allocation. They check unpublished
+slots, other-axis metadata/aliases, configuration restoration, and final cleanup.
+Invalid app/plan/axis/rank arguments are rejected before invoking the scheduler.
+
+Evidence is under `output/review-scheduler-retry-20260928/`, including the
+before/after logs and owned native probe. The large natural shape was scheduled
+on the CPU only; it allocated no transform buffers and submitted no Vulkan work.
+This verified host leak does not establish the cause of the reported driver crashes.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Debug and release library suites each pass **143 CPU tests**: 112 engine tests and
-  thirty-one VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
+- Debug and release library suites each pass **145 CPU tests**: 112 engine tests and
+  thirty-three VkFFT tests. Twenty-one hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Nineteen serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: seventeen `audit_` regressions, staging growth and engine
@@ -980,6 +1010,18 @@ regressions. The expanded FFT cases also pass in `gpu-fft-final.log`. No Vulkan
 validation error markers were reported. The seventeen-test audit group completed
 in 95.24 seconds. Workspace/all-feature checks, the no-playback check, Clippy and
 `git diff --check` pass; existing style warnings and line-ending advisories remain.
+
+Current scheduler-retry evidence is under `output/review-scheduler-retry-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 145 passing CPU tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record nineteen passing
+serial hardware regressions with no Vulkan validation error markers. The
+seventeen-test audit group completed in 93.33 seconds. Workspace/all-feature
+checks, the no-playback check, Clippy and `git diff --check` pass; existing style
+warnings and line-ending advisories remain. `baseline-result.log` and
+`final-result.log` preserve the lost-axis/leak reproduction and its fix.
+After naming the synthetic exit scenarios for readability, both retry tests
+were rerun in debug and release; `retry-final-debug.log` and
+`retry-final-release.log` record those passing checks.
 
 ## Unresolved native device-creation stall
 

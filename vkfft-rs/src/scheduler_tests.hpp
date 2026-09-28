@@ -262,8 +262,9 @@ struct SchedulerFixture {
         c.tempBufferSize = &temporary_bytes;
     }
     ~SchedulerFixture() {
-        for (auto& axis : plan->axes[0])
-            deleteAxis(&app, &axis, 0);
+        for (auto& uploads : plan->axes)
+            for (auto& axis : uploads)
+                deleteAxis(&app, &axis, 0);
     }
 };
 

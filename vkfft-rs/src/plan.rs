@@ -427,6 +427,22 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_retry_preserves_completed_axes_and_releases_partial_state() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_retry_exits() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_retry_exits() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_retry_handles_real_bluestein_fallback_without_leaking() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_retry_real() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_retry_real() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;
