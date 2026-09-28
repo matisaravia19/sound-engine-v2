@@ -1,0 +1,106 @@
+--- a/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
++++ b/vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h
+@@ -27,6 +27,7 @@
+ #include "scheduler_sizes.hpp"
+ #include "scheduler_extents.hpp"
+ #include "scheduler_padding.hpp"
++#include "scheduler_limits.hpp"
+ static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, pfUINT fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
+     if (!fft_length) return VKFFT_ERROR_MATH_FAILED;
+ 	for (int i = 0; i < 33; i++) {
+@@ -2178,6 +2179,8 @@
+ 			else
+ 				complexSize = (2 * sizeof(float));
+ 	}
++    res = vkfft_scheduler::prepare_limits(app->configuration, complexSize);
++    if (res != VKFFT_SUCCESS) return res;
+ 	int usedSharedMemory = (((app->configuration.size[axis_id] & (app->configuration.size[axis_id] - 1)) == 0) && (!app->configuration.performDCT) && (!app->configuration.performDST)) ? (int)app->configuration.sharedMemorySizePow2 : (int)app->configuration.sharedMemorySize;
+ 	int maxSequenceLengthSharedMemory = usedSharedMemory / complexSize;
+ 	int maxSingleSizeNonStrided = maxSequenceLengthSharedMemory;
+@@ -2277,8 +2280,7 @@
+ 			}
+ 		}
+ 		tempSequence *= tempSequence_temp;
+-		int maxRaderPrimeFromThreadNumCoalesced = (int)(app->configuration.maxThreadsNum / (app->configuration.coalescedMemory / complexSize)) * 2 - 1;
+-		if (maxRaderPrimeFromThreadNumCoalesced < app->configuration.fixMaxRaderPrimeMult) app->configuration.fixMaxRaderPrimeMult = maxRaderPrimeFromThreadNumCoalesced;
++        app->configuration.fixMaxRaderPrimeMult = vkfft_scheduler::rader_multiplication_limit(app->configuration, complexSize, usedSharedMemory);
+ 
+ 		for (int i = (int)app->configuration.fixMinRaderPrimeMult; i < app->configuration.fixMaxRaderPrimeMult; i++) {
+ 			if (tempSequence % i == 0) {
+@@ -2380,9 +2382,10 @@
+ 	int isPowOf2 = (pow(2, (int)log2(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id])) == FFTPlan->actualFFTSizePerAxis[axis_id][axis_id]) ? 1 : 0;
+ 	//return VKFFT_ERROR_UNSUPPORTED_RADIX;
+ 	int registerBoost = 1;
+-	for (int i = 1; i <= app->configuration.registerBoost; i++) {
++    const auto maxRegisterBoost = vkfft_scheduler::register_boost_limit(app->configuration.registerBoost, maxSequenceLengthSharedMemory);
++    for (pfUINT i = 1; i <= maxRegisterBoost && i <= FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / i; ++i) {
+ 		if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] % (i * i) == 0)
+-			registerBoost = i;
++			registerBoost = static_cast<int>(i);
+ 	}
+ 	if ((axis_id == nonStridedAxisId) && (!app->configuration.performConvolution)) maxSingleSizeNonStrided *= registerBoost;
+ 	int maxSequenceLengthSharedMemoryStrided = (app->configuration.coalescedMemory > complexSize) ? usedSharedMemory / ((int)app->configuration.coalescedMemory) : usedSharedMemory / complexSize;
+@@ -2392,14 +2395,18 @@
+ 	pfUINT temp;
+ 	temp = (axis_id == nonStridedAxisId) ? (pfUINT)pfceil(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (double)maxSingleSizeNonStrided) : (pfUINT)pfceil(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (double)maxSingleSizeStrided);
+ 	if (temp > 1) {//more passes than one
+-		for (int i = 1; i <= app->configuration.registerBoost4Step; i++) {
++        const auto maxFourStepBoost = vkfft_scheduler::register_boost_limit(app->configuration.registerBoost4Step, maxSequenceLengthSharedMemory);
++        for (pfUINT i = 1; i <= maxFourStepBoost && i <= FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / i; ++i) {
+ 			if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] % (i * i) == 0) {
+-				registerBoost = i;
++				registerBoost = static_cast<int>(i);
+ 			}
+ 		}
+ 		if ((!app->configuration.performConvolution)) maxSingleSizeNonStrided = maxSequenceLengthSharedMemory * registerBoost;
+ 		if ((!app->configuration.performConvolution)) maxSingleSizeStrided = maxSequenceLengthSharedMemoryStrided * registerBoost;
++        if (maxSingleSizeStrided <= 1) return VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+ 		temp = ((axis_id == nonStridedAxisId) && ((!app->configuration.reorderFourStep) || (app->useBluesteinFFT[axis_id]))) ? FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSingleSizeNonStrided : FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSingleSizeStrided;
++        // A larger four-step boost can already fit the transform; log2(0) is not a pass count.
++        if (!temp) temp = 1;
+ 		if (app->configuration.reorderFourStep && (!app->useBluesteinFFT[axis_id]))
+ 			numPasses = (int)pfceil(log2(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id]) / log2(maxSingleSizeStrided));
+ 		else
+@@ -2407,11 +2414,11 @@
+ 	}
+ 	registerBoost = ((axis_id == nonStridedAxisId) && ((app->useBluesteinFFT[axis_id]) || (!app->configuration.reorderFourStep) || (numPasses == 1))) ? (int)pfceil(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (double)(pow(maxSequenceLengthSharedMemoryStrided, numPasses - 1) * maxSequenceLengthSharedMemory)) : (int)pfceil(FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (double)pow(maxSequenceLengthSharedMemoryStrided, numPasses));
+ 	int canBoost = 0;
+-	for (int i = registerBoost; i <= app->configuration.registerBoost; i++) {
++    for (pfUINT i = registerBoost; i <= maxRegisterBoost && i <= FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / i; ++i) {
+ 		if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] % (i * i) == 0) {
+-			registerBoost = i;
+-			i = (int)app->configuration.registerBoost + 1;
++			registerBoost = static_cast<int>(i);
+ 			canBoost = 1;
++            break;
+ 		}
+ 	}
+ 	if (((canBoost == 0) || (((FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] & (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] - 1)) != 0) && (!app->configuration.registerBoostNonPow2))) && (registerBoost > 1)) {
+@@ -2557,12 +2564,12 @@
+ 				if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxPow8SharedMemory <= maxPow8Strided * maxPow8Strided)
+ 					locAxisSplit[0] = maxPow8SharedMemory;
+ 				else {
+-					if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSequenceLengthSharedMemory <= maxSingleSizeStrided * maxSingleSizeStrided)
++					if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSequenceLengthSharedMemory <= static_cast<pfUINT>(maxSingleSizeStrided) * maxSingleSizeStrided)
+ 						locAxisSplit[0] = maxSequenceLengthSharedMemory;
+ 					else {
+-						if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSequenceLengthSharedMemory * registerBoost) <= maxSingleSizeStrided * maxSingleSizeStrided) {
++						if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSequenceLengthSharedMemory * registerBoost) <= static_cast<pfUINT>(maxSingleSizeStrided) * maxSingleSizeStrided) {
+ 							for (int i = 0; i <= (int)log2(registerBoost); i++) {
+-								if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSequenceLengthSharedMemory * (int)pow(2, i)) <= maxSingleSizeStrided * maxSingleSizeStrided) {
++								if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSequenceLengthSharedMemory * (int)pow(2, i)) <= static_cast<pfUINT>(maxSingleSizeStrided) * maxSingleSizeStrided) {
+ 									locAxisSplit[0] = (maxSequenceLengthSharedMemory * (int)pow(2, i));
+ 									i = (int)log2(registerBoost) + 1;
+ 								}
+@@ -2598,9 +2605,9 @@
+ 							locAxisSplit[0] = maxPow8_128 * 4;
+ 						}
+ 						else {
+-							if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSingleSizeStrided <= maxSingleSizeStrided * maxSingleSizeStrided) {
++							if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / maxSingleSizeStrided <= static_cast<pfUINT>(maxSingleSizeStrided) * maxSingleSizeStrided) {
+ 								for (int i = 0; i <= (int)log2(maxSingleSizeStrided / maxSingleSizeStrided128); i++) {
+-									if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSingleSizeStrided128 * (int)pow(2, i)) <= maxSingleSizeStrided * maxSingleSizeStrided) {
++									if (FFTPlan->actualFFTSizePerAxis[axis_id][axis_id] / (maxSingleSizeStrided128 * (int)pow(2, i)) <= static_cast<pfUINT>(maxSingleSizeStrided) * maxSingleSizeStrided) {
+ 										locAxisSplit[0] = (maxSingleSizeStrided128 * (int)pow(2, i));
+ 										i = (int)log2(maxSingleSizeStrided / maxSingleSizeStrided128) + 1;
+ 									}

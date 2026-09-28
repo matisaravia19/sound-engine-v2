@@ -523,6 +523,30 @@ mod tests {
     }
 
     #[test]
+    fn native_scheduler_rejects_invalid_resources_before_mutation() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_invalid_resources() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_invalid_resources() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_normalizes_coalescing_and_falls_back_within_resource_limits() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_coalescing_limits() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_coalescing_limits() }, 0);
+    }
+
+    #[test]
+    fn native_scheduler_bounds_boost_hints_and_keeps_pass_counts_positive() {
+        unsafe extern "C" {
+            fn vkfft_test_scheduler_boost_hints() -> i32;
+        }
+        assert_eq!(unsafe { vkfft_test_scheduler_boost_hints() }, 0);
+    }
+
+    #[test]
     fn native_codegen_names_respect_capacity_and_propagate_errors() {
         unsafe extern "C" {
             fn vkfft_test_codegen_names() -> i32;

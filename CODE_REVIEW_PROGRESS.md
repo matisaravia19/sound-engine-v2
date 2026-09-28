@@ -1,6 +1,6 @@
 # Continued review — 2026-09-28
 
-The active objective remains: continue reviewing the code, repair defects,
+The review objective remains: continue reviewing the code, repair defects,
 improve performance where supported by evidence, and keep the implementation
 readable and organized. This records verified progress, not completion of the
 whole review or a guarantee that all defects have been found.
@@ -1059,18 +1059,60 @@ Evidence is under `output/review-bluestein-search-20260928/`, including the matc
 matrix logs, table controls, focused tests and timing samples. The originally
 reported system/driver-crash cause remains unconfirmed.
 
+## Scheduler resource limits and register boosts
+
+Isolated CPU probes reproduced integer divide-by-zero exceptions when the native
+scheduler received a zero/sub-element coalescing hint, a hint narrowed from `2^32`,
+or a register-boost bound of 65,536. Zero available threads, and one thread with a
+1,024-byte coalescing group, exceeded the five-second diagnostic deadline: the
+signed Rader cutoff became negative and then widened into an enormous unsigned
+loop bound. Only the owned CPU diagnostic children were terminated.
+
+The scheduler now validates the capacities it stores in signed integers before
+mutating its plan or allocating storage. A positive coalescing hint below one
+complex element is normalized to that element's size. Zero/unrepresentable
+capacities and inconsistent power-of-two shared-memory limits return an error.
+The direct-Rader cutoff uses unsigned arithmetic, disables that route when no
+thread can serve a coalesced group, and reserves enough shared memory for at least
+one group after Rader scratch. Resource-limited cases can fall back to Bluestein.
+
+Register boosts remain upper-bound hints. Candidate factors now stop at the
+transform's square-root bound and the scheduler's representable virtual capacity;
+their squares use unsigned arithmetic. This avoids overflowing `i*i`, narrowing
+the requested hint and the old overflow-prone loop-exit sentinel. Five strided
+capacity-square comparisons also widen before multiplying. If a four-step boost
+already holds the transform, its pass-count calculation no longer takes
+`log2(0)`; a capacity of one is rejected before being used as a logarithm base.
+
+All twelve final CPU probes terminate normally, either producing a plan or an
+explicit configuration error, with no tracked native allocations left alive or
+invalid cleanup. The formerly rejected 4,099-element/four-step-boost-four case
+now plans successfully. Three native regressions cover sixteen malformed resource
+configurations, 672 coalescing-normalization comparisons across float/double/quad
+and axis modes, resource-limited Rader fallbacks, 96 large-hint comparisons, and
+the positive-pass-count case. The small-hint comparisons check against a complete
+complex-element hint; the large-hint comparisons use an independent finite bound.
+
+A separate 672-case before/after matrix retains identical results, selected
+lengths, temporary bytes, upload counts and stage/register hashes with ordinary
+resource settings and direct/FFT-based Rader enabled. Evidence is under
+`output/review-scheduler-limits-20260928/`, including `baseline-*`, `control-*`,
+`final-*` and `matrix-*.log`. These native configuration defects are not evidence
+that they caused the originally reported driver/system crashes. Malformed
+resource probes do not create a Vulkan device or submit GPU work.
+
 ## Verification
 
 - All workspace targets/features compile with `cargo check --workspace --all-targets --all-features --offline`.
 - The engine library also compiles with `--no-default-features`, without playback.
-- Current CPU regression coverage is **157 tests**: the latest debug/release runs
-  pass 114 engine tests and forty-three VkFFT tests in the automatic-padding evidence
+- Current CPU regression coverage is **160 tests**: the latest debug/release runs
+  pass 114 engine tests and forty-six VkFFT tests in the scheduler-resource evidence
   below. Twenty-three hardware tests and one compiler-CLI test are excluded
   from ordinary test runs; the compiler test passes when run explicitly.
 - **Twenty-one serial release GPU tests pass** with Khronos validation and synchronization
   validation requested: nineteen `audit_` regressions, staging growth and engine
   scalar-update/voice-refresh integration. No Vulkan validation error markers were
-  reported in the automatic-padding run. The two long diffraction physics tests
+  reported in the scheduler-resource run. The two long diffraction physics tests
   were not rerun in this pass.
 - Callback and cancellation tests use synthetic buffers/queues; they do not establish
   live-device behavior under arbitrary audio-driver failures.
@@ -1289,6 +1331,20 @@ pass; existing style warnings and line-ending advisories remain. The focused
 scheduler cases pass in `scheduler-final-release.log`; the earlier
 `scheduler-release.log` records the initial too-strict wide-plan test expectation.
 
+Current scheduler-resource evidence is under `output/review-scheduler-limits-20260928/`.
+`cpu-debug.log` and `cpu-release.log` each record 160 passing CPU tests. The native
+suite completed in 248.84 seconds in debug and 103.28 seconds in release.
+`scheduler-release.log` records seventeen passing focused native scheduler tests.
+`gpu-audit.log`, `gpu-staging.log` and `gpu-integration.log` record twenty-one passing
+serial hardware regressions with synchronization validation requested and no
+Vulkan validation error markers. The nineteen-test audit group took 197.74 seconds.
+Workspace/all-feature checks, the no-playback check, Clippy, named-header formatting
+checks and `git diff --check` pass; existing style warnings and line-ending
+advisories remain. `matrix-control.log` and `matrix-final.log` contain 672 identical
+plan records, and all twelve `final-*` probe logs report zero live native allocations
+and no invalid cleanup. The `expanded-*` logs retain the intermediate four-step
+unsupported-length result before correcting its zero quotient.
+
 ## Unresolved native device-creation stall
 
 On this RTX 3060 / NVIDIA 591.86 installation, creating another backend **on a
@@ -1351,5 +1407,5 @@ in every listed path:
 
 Unrelated benchmark work and existing user edits have been preserved. Completed
 audit fixes are committed locally at the user's request; the initial checkpoint is
-`2d03fef`. The review remains active. No dependency upgrades, driver settings or OS
+`2d03fef`. The review remains incomplete. No dependency upgrades, driver settings or OS
 watchdog changes were made.
