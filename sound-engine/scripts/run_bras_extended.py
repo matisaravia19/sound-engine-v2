@@ -68,8 +68,7 @@ def run_setup(runner, base, stage, setup):
     ]
     if stage != "full":
         command += ["--case", setup["pairs"][0]["case"]]
-    if runner.run(name, command):
-        raise RuntimeError(f"Benchmark failed: {name}")
+    runner.run(name, command)
 
 
 def main():

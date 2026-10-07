@@ -31,8 +31,8 @@ class BenchmarkRunTests(unittest.TestCase):
         key = "BENCHMARK_RUN_TEST_VALUE"
         command = [sys.executable, "-c", f"import os; print(os.environ.get('{key}', 'unset'))"]
         with patch.dict(os.environ, {key: "parent"}):
-            self.assertEqual(first.run("probe", command, environment={key: "child"}), 0)
-            self.assertEqual(second.run("probe", command), 0)
+            first.run("probe", command, environment={key: "child"})
+            second.run("probe", command)
             self.assertEqual(os.environ[key], "parent")
         self.assertEqual((first.output / "probe.stdout").read_text().strip(), "child")
         self.assertEqual((second.output / "probe.stdout").read_text().strip(), "parent")
@@ -53,11 +53,21 @@ class BenchmarkRunTests(unittest.TestCase):
             runner.run("probe", [sys.executable, "-c", "raise SystemExit(0)"])
         self.assertEqual(list(self.output.iterdir()), [])
 
-    def test_correctness_failures_remain_recorded_results(self):
+    def test_correctness_failures_are_recorded_before_stopping(self):
         runner = BenchmarkRun(self.output)
-        self.assertEqual(runner.run("failure", [sys.executable, "-c", "raise SystemExit(7)"]), 7)
+        with self.assertRaisesRegex(RuntimeError, "Command failed: failure \\(exit 7\\)"):
+            runner.run("failure", [sys.executable, "-c", "raise SystemExit(7)"])
         record = json.loads((self.output / "failure.run.json").read_text(encoding="utf-8"))
         self.assertEqual(record["exit_code"], 7)
+
+    def test_interrupted_run_logs_are_never_overwritten(self):
+        runner = BenchmarkRun(self.output)
+        log = self.output / "probe.stdout"
+        log.write_text("partial output", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "Preserving existing run"):
+            runner.run("probe", [sys.executable, "-c", "print('replacement')"])
+        self.assertEqual(log.read_text(encoding="utf-8"), "partial output")
+        self.memory.assert_not_called()
 
     def test_device_failures_are_recorded_before_stopping(self):
         runner = BenchmarkRun(self.output)

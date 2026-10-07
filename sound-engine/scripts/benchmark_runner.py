@@ -115,10 +115,13 @@ class BenchmarkRun:
         self.output.mkdir(parents=True, exist_ok=True)
 
     def run(self, name, command, timeout=180, *, environment=None):
-        """Record a command; stop on timeout/device loss but return ordinary failures."""
+        """Record a command and stop the stage after any failure, preserving its logs."""
         record_path = self.output / f"{name}.run.json"
-        if record_path.exists():
-            raise RuntimeError(f"Preserving existing run: {record_path}")
+        stdout_path = self.output / f"{name}.stdout"
+        stderr_path = self.output / f"{name}.stderr"
+        for path in (record_path, stdout_path, stderr_path):
+            if path.exists():
+                raise RuntimeError(f"Preserving existing run: {path}")
         before = memory_status()
         if before["available_physical"] < 4 * 1024**3 or before["available_commit"] < 8 * 1024**3:
             raise RuntimeError(f"Insufficient headroom; no process started: {before}")
@@ -136,8 +139,6 @@ class BenchmarkRun:
             "memory_before": before,
             "timeout_seconds": timeout,
         }
-        stdout_path = self.output / f"{name}.stdout"
-        stderr_path = self.output / f"{name}.stderr"
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = subprocess.Popen(
                 command,
@@ -174,7 +175,10 @@ class BenchmarkRun:
         print(f"END {name}: {record['exit_code']} ({record['elapsed_seconds']:.1f}s)", flush=True)
         if resource_failure or record["exit_code"] == "timeout":
             raise RuntimeError(f"Stopping after resource/device failure: {name}")
-        return record["exit_code"]
+        if record["exit_code"] != 0:
+            raise RuntimeError(
+                f"Command failed: {name} (exit {record['exit_code']}); see {record_path}"
+            )
 
     def record_provenance(self, model, **extra):
         """Save the inputs of a fresh run before building or executing benchmarks."""
@@ -219,4 +223,7 @@ def hardware_test(target, name=None):
     command = ["cargo", "test", *BUILD_OPTIONS, "--test", target]
     if name:
         command.append(name)
-    return command + ["--", "--ignored", "--test-threads=1", "--nocapture"]
+    command += ["--", "--ignored", "--test-threads=1", "--nocapture"]
+    if name:
+        command.append("--exact")
+    return command

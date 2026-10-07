@@ -1,6 +1,7 @@
 """Run recorded benchmark stages for the current broadband thesis model."""
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -12,35 +13,43 @@ from benchmark_runner import (
     BenchmarkRun,
     file_hash,
     hardware_test,
+    verify_hashes,
     write_json,
+)
+
+BENCHMARK_EXAMPLES = (
+    "bras_diffraction",
+    "acoustic_method_benchmark",
+    "bell_labs_box",
+    "convolution_method_benchmark",
+    "auralization_realtime_benchmark",
+    "spatial_update_realtime_benchmark",
+    "btm_realtime_benchmark",
 )
 
 
 def build(runner):
-    """Build retained examples, hardware tests, and the sandbox."""
-    output = runner.output
+    """Build retained targets and fingerprint the benchmark and playback binaries."""
     runner.record_provenance("Broadband cosine transport; preserved surface suffix; UTD disabled")
-    for example in [
-        "bras_diffraction",
-        "acoustic_method_benchmark",
-        "bell_labs_box",
-        "convolution_method_benchmark",
-        "auralization_realtime_benchmark",
-        "spatial_update_realtime_benchmark",
-        "btm_realtime_benchmark",
-    ]:
-        if runner.run(
-            f"build-{example}", ["cargo", "build", *BUILD_OPTIONS] + ["--example", example], 300
-        ):
-            raise RuntimeError(f"Build failed: {example}")
+    example_options = [argument for name in BENCHMARK_EXAMPLES for argument in ("--example", name)]
+    runner.run("build-examples", ["cargo", "build", *BUILD_OPTIONS, *example_options], 300)
     test_build = ["cargo", "test", *BUILD_OPTIONS] + ["--tests", "--no-run"]
-    if runner.run("build-tests", test_build, 300):
-        raise RuntimeError("Test build failed")
-    sandbox_build = ["cargo", "build", "--offline", "--release", "-p", "sandbox"]
-    if runner.run("build-sandbox", sandbox_build, 300):
-        raise RuntimeError("Sandbox build failed")
-    binaries = {p.name: file_hash(p) for p in EXAMPLES.glob("*.exe") if "-" not in p.stem}
-    write_json(output / "binaries.json", binaries)
+    runner.run("build-tests", test_build, 300)
+    sandbox_build = ["cargo", "build", "--offline", "--release", "-j", "1", "-p", "sandbox"]
+    runner.run("build-sandbox", sandbox_build, 300)
+    binaries = [EXAMPLES / f"{name}.exe" for name in BENCHMARK_EXAMPLES]
+    binaries.append(ROOT / "target/release/sandbox.exe")
+    write_json(
+        runner.output / "binaries.json",
+        {path.relative_to(ROOT).as_posix(): file_hash(path) for path in binaries},
+    )
+
+
+def verify_build(runner):
+    """Reject changed sources or replaced benchmark/playback binaries before a stage."""
+    runner.verify_provenance()
+    binaries = json.loads((runner.output / "binaries.json").read_text(encoding="utf-8"))
+    verify_hashes(ROOT, binaries)
 
 
 def accuracy(runner):
@@ -136,7 +145,7 @@ def playback(runner):
             "SOUND_ENGINE_TIMING_CSV": f"{prefix}-runtime.csv",
             "SOUND_ENGINE_CAPTURE_WAV": f"{prefix}-rendered.wav",
         }
-        status = runner.run(
+        runner.run(
             label,
             [
                 ROOT / "target/release/sandbox.exe",
@@ -152,8 +161,6 @@ def playback(runner):
         Path(str(prefix) + ".log").write_bytes(
             (output / f"{label}.stdout").read_bytes() + (output / f"{label}.stderr").read_bytes()
         )
-        if status:
-            raise RuntimeError(f"Playground failed: {label}")
 
 
 def checks(runner):
@@ -252,7 +259,7 @@ def main():
     args = parser.parse_args()
     runner = BenchmarkRun(args.output)
     if args.stage != "build":
-        runner.verify_provenance()
+        verify_build(runner)
     STAGES[args.stage](runner)
 
 
