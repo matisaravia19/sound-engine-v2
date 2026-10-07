@@ -41,11 +41,18 @@ impl SoundAsset {
     /// Loads a WAV file, mixes it to mono, and resamples it to `target_sample_rate`.
     pub fn from_wav_file(path: impl AsRef<Path>, target_sample_rate: u32) -> SoundResult<Self> {
         validate_sample_rate(target_sample_rate)?;
-        let decoded = DecodedWav::read(path)?;
+        let reader = WavReader::open(path.as_ref()).map_err(|source| {
+            SoundError::with_source(
+                ErrorCode::Io,
+                format!("Failed to open WAV file {}", path.as_ref().display()),
+                source,
+            )
+        })?;
+        let spec = reader.spec();
         Self::from_interleaved_samples(
-            decoded.sample_rate,
-            decoded.channels,
-            decoded.samples,
+            spec.sample_rate,
+            spec.channels,
+            read_wav_samples(reader)?,
             target_sample_rate,
         )
     }
@@ -169,64 +176,25 @@ impl SoundBank {
     }
 }
 
-struct DecodedWav {
-    sample_rate: u32,
-    channels: u16,
-    samples: Vec<f32>,
-}
-
-impl DecodedWav {
-    fn read(path: impl AsRef<Path>) -> SoundResult<Self> {
-        let mut reader = WavReader::open(path.as_ref()).map_err(|source| {
-            SoundError::with_source(
-                ErrorCode::Io,
-                format!("Failed to open WAV file {}", path.as_ref().display()),
-                source,
-            )
-        })?;
-        let spec = reader.spec();
-        let samples = match (spec.sample_format, spec.bits_per_sample) {
-            (SampleFormat::Float, 32) => reader
-                .samples::<f32>()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
-            (SampleFormat::Int, 16) => reader
-                .samples::<i16>()
-                .map(|sample| sample.map(|x| x as f32 / i16::MAX as f32))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
-            (SampleFormat::Int, 24) => reader
+fn read_wav_samples(mut reader: WavReader<impl std::io::Read>) -> SoundResult<Vec<f32>> {
+    let spec = reader.spec();
+    match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => reader.samples::<f32>().collect::<Result<Vec<_>, _>>(),
+        (SampleFormat::Int, bits @ (16 | 24 | 32)) => {
+            let peak = ((1_u64 << (bits - 1)) - 1) as f32;
+            reader
                 .samples::<i32>()
-                .map(|sample| sample.map(|x| x as f32 / 8_388_607.0))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
-            (SampleFormat::Int, 32) => reader
-                .samples::<i32>()
-                .map(|sample| sample.map(|x| x as f32 / i32::MAX as f32))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| {
-                    SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source)
-                })?,
-            _ => {
-                return Err(SoundError::unsupported_feature(format!(
-                    "Unsupported WAV format: {:?} {} bits",
-                    spec.sample_format, spec.bits_per_sample
-                )));
-            }
-        };
-
-        Ok(Self {
-            sample_rate: spec.sample_rate,
-            channels: spec.channels,
-            samples,
-        })
+                .map(|sample| sample.map(|value| value as f32 / peak))
+                .collect()
+        }
+        _ => {
+            return Err(SoundError::unsupported_feature(format!(
+                "Unsupported WAV format: {:?} {} bits",
+                spec.sample_format, spec.bits_per_sample
+            )));
+        }
     }
+    .map_err(|source| SoundError::with_source(ErrorCode::Io, "Failed to read WAV samples", source))
 }
 
 fn validate_sample_rate(sample_rate: u32) -> SoundResult<()> {

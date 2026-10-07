@@ -1,4 +1,75 @@
 use super::*;
+use std::io::Cursor;
+
+#[test]
+fn wav_decoding_preserves_supported_integer_and_float_levels() {
+    for (bits, peak, quarter, expected_quarter) in [
+        (16, 32_767, 8_192, 0.250_007_63),
+        (24, 8_388_607, 2_097_152, 0.250_000_03),
+        (32, 2_147_483_647, 536_870_912, 0.25),
+    ] {
+        let bytes = encoded_wav(
+            bits,
+            SampleFormat::Int,
+            &[0, quarter, -quarter, peak, -peak],
+        );
+        let reader = WavReader::new(Cursor::new(bytes)).unwrap();
+        let samples = read_wav_samples(reader).unwrap();
+        let expected = [0.0, expected_quarter, -expected_quarter, 1.0, -1.0];
+        assert_eq!(samples.len(), expected.len());
+        for (actual, expected) in samples.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-7,
+                "{bits}-bit PCM: {samples:?}"
+            );
+        }
+    }
+
+    let expected = [0.0, 0.25, -0.75, 1.0, -1.0];
+    let bytes = encoded_wav(32, SampleFormat::Float, &expected);
+    let reader = WavReader::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(read_wav_samples(reader).unwrap(), expected);
+}
+
+#[test]
+fn unsupported_and_truncated_wav_data_retain_distinct_errors() {
+    let unsupported = encoded_wav(8, SampleFormat::Int, &[0, 127_i32]);
+    let reader = WavReader::new(Cursor::new(unsupported)).unwrap();
+    assert_eq!(
+        read_wav_samples(reader).unwrap_err().code(),
+        ErrorCode::UnsupportedFeature
+    );
+
+    let mut truncated = encoded_wav(16, SampleFormat::Int, &[0, 32_767_i32]);
+    truncated.pop();
+    let reader = WavReader::new(Cursor::new(truncated)).unwrap();
+    let error = read_wav_samples(reader).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Io);
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+fn encoded_wav<T: hound::Sample + Copy>(
+    bits_per_sample: u16,
+    sample_format: SampleFormat,
+    samples: &[T],
+) -> Vec<u8> {
+    let mut output = Cursor::new(Vec::new());
+    let mut writer = hound::WavWriter::new(
+        &mut output,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample,
+            sample_format,
+        },
+    )
+    .unwrap();
+    for &sample in samples {
+        writer.write_sample(sample).unwrap();
+    }
+    writer.finalize().unwrap();
+    output.into_inner()
+}
 
 #[test]
 fn rejects_non_finite_audio_before_conversion() {
