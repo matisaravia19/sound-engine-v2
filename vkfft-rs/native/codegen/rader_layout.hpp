@@ -10,14 +10,14 @@ namespace vkfft_codegen {
 
 // The axis owns the selected container and registers. Their allocation dimensions
 // must remain unchanged until generation and register teardown have finished.
-static inline bool rader_stage_layout(VkFFTSpecializationConstantsLayout* sc, pfINT radix, pfINT stage_size,
-                                      bool direct) {
+static inline bool rader_stage_layout(VkFFTSpecializationConstantsLayout* sc, pfINT radix,
+                                      pfINT stage_size, bool direct) {
     if (sc->res != VKFFT_SUCCESS)
         return false;
     const auto* rader = sc->currentRaderContainer;
     if (!rader || !sc->useRader || rader->type != static_cast<int>(direct) || radix < 3 ||
-        radix != rader->prime || rader->generator <= 0 || rader->generator >= radix || !sc->regIDs ||
-        sc->registers_per_thread <= 0 || sc->registerBoost <= 0 ||
+        radix != rader->prime || rader->generator <= 0 || rader->generator >= radix ||
+        !sc->regIDs || sc->registers_per_thread <= 0 || sc->registerBoost <= 0 ||
         sc->registers_per_thread > INT_MAX / sc->registerBoost || sc->fftDim.data.i <= 0 ||
         sc->fftDim.data.i % radix || stage_size <= 0 || stage_size > sc->fftDim.data.i / radix ||
         sc->localSize[0].data.i <= 0 || sc->localSize[1].data.i <= 0) {
@@ -29,13 +29,15 @@ static inline bool rader_stage_layout(VkFFTSpecializationConstantsLayout* sc, pf
 
 // Every inner FFT uses an inline radix kernel and maps logical registers into
 // the physical allocation. Check all stages before emitting any partial shader.
-static inline bool rader_fft_layout(VkFFTSpecializationConstantsLayout* sc, pfINT radix, pfINT stage_size) {
+static inline bool rader_fft_layout(VkFFTSpecializationConstantsLayout* sc, pfINT radix,
+                                    pfINT stage_size) {
     if (!rader_stage_layout(sc, radix, stage_size, false))
         return false;
     const auto& rader = *sc->currentRaderContainer;
     constexpr int capacity = sizeof(rader.stageRadix) / sizeof(rader.stageRadix[0]);
-    if (!sc->useRaderFFT || sc->numSharedBanks < 2 || rader.numStages <= 0 || rader.numStages > capacity ||
-        rader.containerFFTDim != radix - 1 || rader.containerFFTNum != sc->fftDim.data.i / radix) {
+    if (!sc->useRaderFFT || sc->numSharedBanks < 2 || rader.numStages <= 0 ||
+        rader.numStages > capacity || rader.containerFFTDim != radix - 1 ||
+        rader.containerFFTNum != sc->fftDim.data.i / radix) {
         sc->res = VKFFT_ERROR_MATH_FAILED;
         return false;
     }
@@ -70,7 +72,8 @@ static inline bool rader_direct_layout(VkFFTSpecializationConstantsLayout* sc, p
         return false;
     constexpr pfINT capacity = sizeof(sc->x0) / sizeof(sc->x0[0]);
     const pfINT x0_count = sc->raderRegisters / 2;
-    const pfINT subgroup_count = sc->localSize[sc->stridedSharedLayout ? 1 : 0].data.i / ((radix + 1) / 2);
+    const pfINT subgroup_count =
+        sc->localSize[sc->stridedSharedLayout ? 1 : 0].data.i / ((radix + 1) / 2);
     if (!sc->useRaderMult || x0_count <= 0 || x0_count > capacity || subgroup_count <= 0) {
         sc->res = VKFFT_ERROR_MATH_FAILED;
         return false;

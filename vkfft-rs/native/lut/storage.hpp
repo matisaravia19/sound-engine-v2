@@ -12,27 +12,32 @@ namespace {
 // Uploads are synchronous; storage survives through transfer completion and is
 // reclaimed on every return or exception, even after deleteVkFFT clears the axis.
 class HostBuffer {
-public:
+  public:
     explicit HostBuffer(pfUINT bytes) {
         // Empty fallback tables and any unused padding must not expose host data.
-        if (bytes && bytes <= SIZE_MAX) data_ = calloc(1, static_cast<size_t>(bytes));
+        if (bytes && bytes <= SIZE_MAX)
+            data_ = calloc(1, static_cast<size_t>(bytes));
     }
     HostBuffer(const HostBuffer&) = delete;
     HostBuffer& operator=(const HostBuffer&) = delete;
-    ~HostBuffer() { free(data_); }
+    ~HostBuffer() {
+        free(data_);
+    }
 
     // Borrowed data remains valid until this local owner leaves scope.
-    void* get() const { return data_; }
+    void* get() const {
+        return data_;
+    }
 
-private:
+  private:
     void* data_ = nullptr;
 };
 
 // Check the element-to-byte conversion before assigning native allocation sizes.
-static inline bool byte_size(pfUINT count, size_t element_bytes, size_t minimum,
-                             pfUINT* result) {
+static inline bool byte_size(pfUINT count, size_t element_bytes, size_t minimum, pfUINT* result) {
     *result = 0;
-    if (!element_bytes || count > SIZE_MAX / element_bytes) return false;
+    if (!element_bytes || count > SIZE_MAX / element_bytes)
+        return false;
     *result = count ? count * element_bytes : minimum;
     return *result != 0;
 }

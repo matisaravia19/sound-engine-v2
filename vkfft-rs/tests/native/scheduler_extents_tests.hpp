@@ -23,7 +23,8 @@ int transform_extent_boundaries_case() {
             return __LINE__;
         for (auto input : {pfUINT(0), largest + 1, maximum}) {
             result = 123;
-            if (vkfft_scheduler::real_transform_length(c, input, result) != VKFFT_ERROR_MATH_FAILED ||
+            if (vkfft_scheduler::real_transform_length(c, input, result) !=
+                    VKFFT_ERROR_MATH_FAILED ||
                 result != 123)
                 return __LINE__;
         }
@@ -49,7 +50,8 @@ int transform_extent_boundaries_case() {
             return __LINE__;
     for (auto length : {pfUINT(0), maximum / 2 + 2, maximum}) {
         minimum = 123;
-        if (vkfft_scheduler::bluestein_minimum(length, minimum) != VKFFT_ERROR_MATH_FAILED || minimum != 123)
+        if (vkfft_scheduler::bluestein_minimum(length, minimum) != VKFFT_ERROR_MATH_FAILED ||
+            minimum != 123)
             return __LINE__;
     }
     return 0;
@@ -95,10 +97,13 @@ int padding_table_selection_case() {
         for (pfUINT length : {1, 16, 17, 42, 43, 64, 65}) {
             pfUINT minimum = 123, padded = 456;
             bool selected = false;
-            const pfUINT expected = length < 17 || length > 64 ? 2 * length - 1 : length < 43 ? 84 : 128;
+            const pfUINT expected = length < 17 || length > 64 ? 2 * length - 1
+                                    : length < 43              ? 84
+                                                               : 128;
             if (vkfft_scheduler::initial_bluestein_padding(c, length, minimum, padded, selected) !=
                     VKFFT_SUCCESS ||
-                minimum != 2 * length - 1 || padded != expected || selected != (length >= 17 && length <= 64))
+                minimum != 2 * length - 1 || padded != expected ||
+                selected != (length >= 17 && length <= 64))
                 return __LINE__;
         }
     }
@@ -106,7 +111,8 @@ int padding_table_selection_case() {
         pads[0] = padding;
         pfUINT minimum = 123, padded = 456;
         bool selected = true;
-        if (vkfft_scheduler::initial_bluestein_padding(c, 17, minimum, padded, selected) == VKFFT_SUCCESS ||
+        if (vkfft_scheduler::initial_bluestein_padding(c, 17, minimum, padded, selected) ==
+                VKFFT_SUCCESS ||
             minimum != 123 || padded != 456 || !selected)
             return __LINE__;
     }
@@ -115,7 +121,8 @@ int padding_table_selection_case() {
     c.primeSizes = nullptr;
     pfUINT minimum = 123, padded = 456;
     bool selected = true;
-    if (vkfft_scheduler::initial_bluestein_padding(c, 17, minimum, padded, selected) != VKFFT_SUCCESS ||
+    if (vkfft_scheduler::initial_bluestein_padding(c, 17, minimum, padded, selected) !=
+            VKFFT_SUCCESS ||
         minimum != 33 || padded != 33 || selected)
         return __LINE__;
     return 0;
@@ -154,69 +161,69 @@ int scheduler_padding_case(PaddingScenario scenario, bool precision) {
         auto expected = VKFFT_ERROR_MATH_FAILED;
         pfUINT expected_length = 0;
         switch (scenario) {
-        case PaddingScenario::ForcedShort:
-            c.forceBluesteinSequenceSize = 32;
-            break;
-        case PaddingScenario::ForcedUnsupported:
-            c.forceBluesteinSequenceSize = 37;
-            expected = VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
-            break;
-        case PaddingScenario::ForcedValid:
-            c.forceBluesteinSequenceSize = 33;
-            expected_length = 33;
-            expected = VKFFT_SUCCESS;
-            break;
-        case PaddingScenario::TableZero:
-            pads[0] = 0;
-            break;
-        case PaddingScenario::TableShort:
-            pads[0] = 32;
-            break;
-        case PaddingScenario::TableUnsupported:
-            pads[0] = 37;
-            expected = VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
-            break;
-        case PaddingScenario::TableValid:
-            pads[0] = expected_length = 33;
-            expected = VKFFT_SUCCESS;
-            break;
-        case PaddingScenario::MissingPrimes:
-            c.primeSizes = nullptr;
-            expected = VKFFT_ERROR_EMPTY_useCustomBluesteinPaddingPattern_arrays;
-            break;
-        case PaddingScenario::MissingPads:
-            c.paddedSizes = nullptr;
-            expected = VKFFT_ERROR_EMPTY_useCustomBluesteinPaddingPattern_arrays;
-            break;
-        case PaddingScenario::ExcessCount:
-            c.useCustomBluesteinPaddingPattern = UINT64_MAX;
-            break;
-        case PaddingScenario::Unsorted:
-            primes[1] = 16;
-            break;
-        case PaddingScenario::Duplicate:
-            primes[1] = 17;
-            break;
-        case PaddingScenario::ZeroPrime:
-            primes[0] = 0;
-            break;
-        case PaddingScenario::FinalEntryFallback:
-            c.size[0] = 257;
-            c.useCustomBluesteinPaddingPattern = 1;
-            expected = VKFFT_SUCCESS;
-            break;
-        case PaddingScenario::RealRetryForced:
-        case PaddingScenario::RealRetryTable:
-            c.size[0] = 4006;
-            c.performR2C = 1;
-            pads[0] = 4096;
-            if (scenario == PaddingScenario::RealRetryForced) {
-                c.useCustomBluesteinPaddingPattern = 0;
-                c.forceBluesteinSequenceSize = 4096;
-            }
-            expected_length = 4096;
-            expected = VKFFT_SUCCESS;
-            break;
+            case PaddingScenario::ForcedShort:
+                c.forceBluesteinSequenceSize = 32;
+                break;
+            case PaddingScenario::ForcedUnsupported:
+                c.forceBluesteinSequenceSize = 37;
+                expected = VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+                break;
+            case PaddingScenario::ForcedValid:
+                c.forceBluesteinSequenceSize = 33;
+                expected_length = 33;
+                expected = VKFFT_SUCCESS;
+                break;
+            case PaddingScenario::TableZero:
+                pads[0] = 0;
+                break;
+            case PaddingScenario::TableShort:
+                pads[0] = 32;
+                break;
+            case PaddingScenario::TableUnsupported:
+                pads[0] = 37;
+                expected = VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+                break;
+            case PaddingScenario::TableValid:
+                pads[0] = expected_length = 33;
+                expected = VKFFT_SUCCESS;
+                break;
+            case PaddingScenario::MissingPrimes:
+                c.primeSizes = nullptr;
+                expected = VKFFT_ERROR_EMPTY_useCustomBluesteinPaddingPattern_arrays;
+                break;
+            case PaddingScenario::MissingPads:
+                c.paddedSizes = nullptr;
+                expected = VKFFT_ERROR_EMPTY_useCustomBluesteinPaddingPattern_arrays;
+                break;
+            case PaddingScenario::ExcessCount:
+                c.useCustomBluesteinPaddingPattern = UINT64_MAX;
+                break;
+            case PaddingScenario::Unsorted:
+                primes[1] = 16;
+                break;
+            case PaddingScenario::Duplicate:
+                primes[1] = 17;
+                break;
+            case PaddingScenario::ZeroPrime:
+                primes[0] = 0;
+                break;
+            case PaddingScenario::FinalEntryFallback:
+                c.size[0] = 257;
+                c.useCustomBluesteinPaddingPattern = 1;
+                expected = VKFFT_SUCCESS;
+                break;
+            case PaddingScenario::RealRetryForced:
+            case PaddingScenario::RealRetryTable:
+                c.size[0] = 4006;
+                c.performR2C = 1;
+                pads[0] = 4096;
+                if (scenario == PaddingScenario::RealRetryForced) {
+                    c.useCustomBluesteinPaddingPattern = 0;
+                    c.forceBluesteinSequenceSize = 4096;
+                }
+                expected_length = 4096;
+                expected = VKFFT_SUCCESS;
+                break;
         }
         const auto result = VkFFTScheduler(&fixture.app, fixture.plan.get(), 0);
         if (result != expected)
@@ -249,9 +256,10 @@ extern "C" int vkfft_test_scheduler_padding_extents() {
     using codegen_fake::PaddingScenario;
     for (bool precision : {false, true})
         for (auto scenario :
-             {PaddingScenario::ForcedShort, PaddingScenario::ForcedUnsupported, PaddingScenario::ForcedValid,
-              PaddingScenario::TableZero, PaddingScenario::TableShort, PaddingScenario::TableUnsupported,
-              PaddingScenario::TableValid, PaddingScenario::MissingPrimes, PaddingScenario::MissingPads,
+             {PaddingScenario::ForcedShort, PaddingScenario::ForcedUnsupported,
+              PaddingScenario::ForcedValid, PaddingScenario::TableZero, PaddingScenario::TableShort,
+              PaddingScenario::TableUnsupported, PaddingScenario::TableValid,
+              PaddingScenario::MissingPrimes, PaddingScenario::MissingPads,
               PaddingScenario::ExcessCount, PaddingScenario::Unsorted, PaddingScenario::Duplicate,
               PaddingScenario::ZeroPrime, PaddingScenario::FinalEntryFallback,
               PaddingScenario::RealRetryForced, PaddingScenario::RealRetryTable})

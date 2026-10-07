@@ -28,8 +28,9 @@ template <size_t N> int scheduler_capacity_case() {
     rader.multiplier = 2;
     if (VkFFTGetRaderFFTStages(&rader, 1, &count, stages.radices, stages.generators) !=
             VKFFT_ERROR_MATH_FAILED ||
-        count != N || rader.multiplier != 1 || stages.radices[N - 1] != 17 || stages.generators[N - 1] != 3 ||
-        stages.radix_guard != 123456 || stages.generator_guard != 123456)
+        count != N || rader.multiplier != 1 || stages.radices[N - 1] != 17 ||
+        stages.generators[N - 1] != 3 || stages.radix_guard != 123456 ||
+        stages.generator_guard != 123456)
         return __LINE__;
     for (int i = 0; i < static_cast<int>(N) - 1; ++i)
         if (stages.radices[i] || stages.generators[i])
@@ -108,59 +109,59 @@ int scheduler_register_case(int mode) {
     int count = 2;
     int container_count = 1;
     switch (mode) {
-    case 1:
-        count = -1;
-        break;
-    case 2:
-        count = 34;
-        break;
-    case 3:
-        f.radices[0] = 33;
-        break;
-    case 4:
-        f.registers[2] = -1;
-        break;
-    case 5:
-        f.generators[1] = -1;
-        break;
-    case 6:
-        f.parent.generator = 3;
-        break;
-    case 7:
-        f.parent.type = 2;
-        break;
-    case 8:
-        f.parent.numStages = 21;
-        break;
-    case 9:
-        f.parent.numStages = 0;
-        break;
-    case 10:
-        f.parent.numSubPrimes = 0;
-        break;
-    case 11:
-        f.parent.container = nullptr;
-        break;
-    case 12:
-        f.child.stageRadix[0] = -1;
-        break;
-    case 13:
-        container_count = -1;
-        break;
-    case 14:
-        container_count = 34;
-        break;
-    case 15:
-        f.child.stageRadix[0] = 11;
-        f.child.stage_rader_generator[0] = 2;
-        f.child.container = &f.child;
-        f.child.numSubPrimes = 1;
-        break;
+        case 1:
+            count = -1;
+            break;
+        case 2:
+            count = 34;
+            break;
+        case 3:
+            f.radices[0] = 33;
+            break;
+        case 4:
+            f.registers[2] = -1;
+            break;
+        case 5:
+            f.generators[1] = -1;
+            break;
+        case 6:
+            f.parent.generator = 3;
+            break;
+        case 7:
+            f.parent.type = 2;
+            break;
+        case 8:
+            f.parent.numStages = 21;
+            break;
+        case 9:
+            f.parent.numStages = 0;
+            break;
+        case 10:
+            f.parent.numSubPrimes = 0;
+            break;
+        case 11:
+            f.parent.container = nullptr;
+            break;
+        case 12:
+            f.child.stageRadix[0] = -1;
+            break;
+        case 13:
+            container_count = -1;
+            break;
+        case 14:
+            container_count = 34;
+            break;
+        case 15:
+            f.child.stageRadix[0] = 11;
+            f.child.stage_rader_generator[0] = 2;
+            f.child.container = &f.child;
+            f.child.numSubPrimes = 1;
+            break;
     }
     int minimum = 1000;
     int maximum = 0;
-    auto result = VkFFTMinMaxRegisterCheck(count, f.radices, &minimum, &maximum, f.registers, &f.parent,
-                                           container_count, f.generators);
+    auto result = VkFFTMinMaxRegisterCheck(count, f.radices, &minimum, &maximum, f.registers,
+                                           &f.parent, container_count, f.generators);
     if (mode == 0)
         return result == VKFFT_SUCCESS && minimum == 2 && maximum == 6 ? 0 : __LINE__;
     return result == VKFFT_ERROR_MATH_FAILED && minimum == 1000 && maximum == 0 ? 0 : __LINE__;
@@ -169,41 +170,41 @@ int scheduler_register_case(int mode) {
 int scheduler_threads_case(int mode) {
     NestedSchedulerFixture f;
     switch (mode) {
-    case 1:
-        f.parent.containerFFTDim = 0;
-        break;
-    case 2:
-        f.parent.containerFFTNum = -1;
-        break;
-    case 3:
-        f.parent.numStages = 21;
-        break;
-    case 4:
-        f.parent.stageRadix[1] = 33;
-        break;
-    case 5:
-        f.parent.registers_per_thread_per_radix[2] = 0;
-        break;
-    case 6:
-        f.parent.registers_per_thread_per_radix[2] = -1;
-        break;
-    case 7:
-        f.parent.containerFFTNum = INT_MAX;
-        break;
-    case 8:
-        f.parent.numSubPrimes = 1;
-        f.parent.container = nullptr;
-        break;
-    case 9:
-        f.parent.stage_rader_generator[0] = -1;
-        break;
-    case 10:
-        f.parent.type = 2;
-        break;
-    case 11:
-        f.child.container = &f.parent;
-        f.child.numSubPrimes = 1;
-        break;
+        case 1:
+            f.parent.containerFFTDim = 0;
+            break;
+        case 2:
+            f.parent.containerFFTNum = -1;
+            break;
+        case 3:
+            f.parent.numStages = 21;
+            break;
+        case 4:
+            f.parent.stageRadix[1] = 33;
+            break;
+        case 5:
+            f.parent.registers_per_thread_per_radix[2] = 0;
+            break;
+        case 6:
+            f.parent.registers_per_thread_per_radix[2] = -1;
+            break;
+        case 7:
+            f.parent.containerFFTNum = INT_MAX;
+            break;
+        case 8:
+            f.parent.numSubPrimes = 1;
+            f.parent.container = nullptr;
+            break;
+        case 9:
+            f.parent.stage_rader_generator[0] = -1;
+            break;
+        case 10:
+            f.parent.type = 2;
+            break;
+        case 11:
+            f.child.container = &f.parent;
+            f.child.numSubPrimes = 1;
+            break;
     }
     int threads = 0;
     const auto result = VkFFTGetRaderFFTThreadsNum(&f.parent, 1, &threads);
@@ -221,15 +222,17 @@ int scheduler_reorder_case() {
     sc.registers_per_thread_per_radix[3] = 3;
     // This unrelated field lies beyond the radix table; it must never influence selection.
     sc.useCoalescedLUTUploadToSM = 3;
-    if (vkfft_scheduler::prioritize_register_stage(sc, 3) != VKFFT_SUCCESS || sc.stageRadix[0] != 3 ||
-        sc.rader_generator[0] || sc.stageRadix[1] != 41 || sc.rader_generator[1] != 6)
+    if (vkfft_scheduler::prioritize_register_stage(sc, 3) != VKFFT_SUCCESS ||
+        sc.stageRadix[0] != 3 || sc.rader_generator[0] || sc.stageRadix[1] != 41 ||
+        sc.rader_generator[1] != 6)
         return __LINE__;
     sc.numStages = 34;
     if (vkfft_scheduler::prioritize_register_stage(sc, 3) != VKFFT_ERROR_MATH_FAILED)
         return __LINE__;
     sc.numStages = 1;
     sc.stageRadix[0] = 33;
-    return vkfft_scheduler::prioritize_register_stage(sc, 3) == VKFFT_ERROR_MATH_FAILED ? 0 : __LINE__;
+    return vkfft_scheduler::prioritize_register_stage(sc, 3) == VKFFT_ERROR_MATH_FAILED ? 0
+                                                                                        : __LINE__;
 }
 
 // Own every scheduler allocation through the same axis teardown used by native plans.
@@ -268,8 +271,8 @@ struct SchedulerFixture {
     }
 };
 
-int scheduler_plan_case(int length, bool precision, bool strided, int boost, int fail_at, bool throws,
-                        int& attempts) {
+int scheduler_plan_case(int length, bool precision, bool strided, int boost, int fail_at,
+                        bool throws, int& attempts) {
     state = {};
     state.fail_at = throws ? 0 : fail_at;
     state.throw_at = throws ? fail_at : 0;
@@ -288,7 +291,8 @@ int scheduler_plan_case(int length, bool precision, bool strided, int boost, int
                     return __LINE__;
                 pfINT product = 1;
                 for (int stage = 0; stage < sc.numStages; ++stage) {
-                    if (sc.stageRadix[stage] < 2 || product > sc.fftDim.data.i / sc.stageRadix[stage])
+                    if (sc.stageRadix[stage] < 2 ||
+                        product > sc.fftDim.data.i / sc.stageRadix[stage])
                         return __LINE__;
                     product *= sc.stageRadix[stage];
                 }
@@ -331,13 +335,14 @@ extern "C" int vkfft_test_scheduler_plans() {
                 for (int length :
                      {1, 2, 16, 17, 23, 41, 257, 1009, 48, 51, 85, 123, 771, 1285, 4096, 65537}) {
                     int attempts = 0;
-                    if (int line = scheduler_plan_case(length, precision, strided, boost, 0, false, attempts))
+                    if (int line = scheduler_plan_case(length, precision, strided, boost, 0, false,
+                                                       attempts))
                         return line;
                     for (int fail_at = 1; fail_at <= attempts; ++fail_at)
                         for (bool throws : {false, true}) {
                             int ignored = 0;
-                            if (int line = scheduler_plan_case(length, precision, strided, boost, fail_at,
-                                                               throws, ignored))
+                            if (int line = scheduler_plan_case(length, precision, strided, boost,
+                                                               fail_at, throws, ignored))
                                 return line;
                         }
                 }

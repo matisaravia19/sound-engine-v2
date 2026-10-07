@@ -19,8 +19,8 @@ static inline bool multiply_extent(pfUINT& extent, pfUINT factor) {
 // Optional R2C padding adds one complex element to the first dimension. The output
 // is published only after every factor has been checked.
 static inline VkFFTResult element_count(const VkFFTApplication& app,
-                                        const pfUINT (&shape)[VKFFT_MAX_FFT_DIMENSIONS], bool pad_first,
-                                        pfUINT& elements) {
+                                        const pfUINT (&shape)[VKFFT_MAX_FFT_DIMENSIONS],
+                                        bool pad_first, pfUINT& elements) {
     const auto& c = app.configuration;
     if (!c.FFTdim || c.FFTdim > VKFFT_MAX_FFT_DIMENSIONS)
         return VKFFT_ERROR_MATH_FAILED;
@@ -45,8 +45,8 @@ static inline VkFFTResult element_count(const VkFFTApplication& app,
 
 // The plan's scheduled shape already includes any Bluestein expansion. Count it
 // once, apply even-R2C padding when required, then check conversion to bytes.
-static inline VkFFTResult temporary_bytes(const VkFFTApplication& app, const VkFFTPlan& plan, int axis,
-                                          int complex_size, pfUINT& bytes) {
+static inline VkFFTResult temporary_bytes(const VkFFTApplication& app, const VkFFTPlan& plan,
+                                          int axis, int complex_size, pfUINT& bytes) {
     if (axis < 0 || axis >= VKFFT_MAX_FFT_DIMENSIONS ||
         static_cast<pfUINT>(axis) >= app.configuration.FFTdim || complex_size <= 0)
         return VKFFT_ERROR_MATH_FAILED;

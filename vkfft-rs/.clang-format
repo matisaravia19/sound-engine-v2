@@ -1,0 +1,20 @@
+# First-party native code and its tests; do not format the pinned VkFFT submodule.
+BasedOnStyle: LLVM
+Standard: c++17
+IndentWidth: 4
+ColumnLimit: 100
+LineEnding: LF
+BreakBeforeBraces: Attach
+IndentExternBlock: Indent
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+IndentCaseLabels: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+# Helper include order and injected allocator macros are significant in the harness.
+SortIncludes: Never
+ReflowComments: false
+BreakStringLiterals: false

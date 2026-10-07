@@ -46,8 +46,10 @@ struct Buffer {
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
     ~Buffer() {
-        if (buffer) vkDestroyBuffer(device, buffer, nullptr);
-        if (memory) vkFreeMemory(device, memory, nullptr);
+        if (buffer)
+            vkDestroyBuffer(device, buffer, nullptr);
+        if (memory)
+            vkFreeMemory(device, memory, nullptr);
     }
 };
 
@@ -61,7 +63,8 @@ struct Command {
     Command(const Command&) = delete;
     Command& operator=(const Command&) = delete;
     ~Command() {
-        if (handle) vkFreeCommandBuffers(device, pool, 1, &handle);
+        if (handle)
+            vkFreeCommandBuffers(device, pool, 1, &handle);
     }
 };
 
@@ -70,30 +73,31 @@ struct Command {
 inline VkFFTResult wait_for_transfer(VkFFTApplication* app) {
     VkFFTResult first_error = VKFFT_SUCCESS;
     for (;;) {
-        const VkResult result = vkWaitForFences(
-            app->configuration.device[0], 1, app->configuration.fence, VK_TRUE, UINT64_MAX);
-        if (result == VK_ERROR_DEVICE_LOST) return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
-        if (result == VK_SUCCESS) break;
+        const VkResult result = vkWaitForFences(app->configuration.device[0], 1,
+                                                app->configuration.fence, VK_TRUE, UINT64_MAX);
+        if (result == VK_ERROR_DEVICE_LOST)
+            return VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
+        if (result == VK_SUCCESS)
+            break;
         first_error = VKFFT_ERROR_FAILED_TO_WAIT_FOR_FENCES;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    const VkResult reset = vkResetFences(
-        app->configuration.device[0], 1, app->configuration.fence);
-    if (first_error != VKFFT_SUCCESS) return first_error;
+    const VkResult reset = vkResetFences(app->configuration.device[0], 1, app->configuration.fence);
+    if (first_error != VKFFT_SUCCESS)
+        return first_error;
     return reset == VK_SUCCESS ? VKFFT_SUCCESS : VKFFT_ERROR_FAILED_TO_RESET_FENCES;
 }
 
 } // namespace vkfft_memory
 
-static inline VkFFTResult findMemoryType(
-    VkFFTApplication* app, pfUINT bits, pfUINT size,
-    VkMemoryPropertyFlags properties, uint32_t* index) {
+static inline VkFFTResult findMemoryType(VkFFTApplication* app, pfUINT bits, pfUINT size,
+                                         VkMemoryPropertyFlags properties, uint32_t* index) {
     VkPhysicalDeviceMemoryProperties memory = {};
     vkGetPhysicalDeviceMemoryProperties(app->configuration.physicalDevice[0], &memory);
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
         const auto& type = memory.memoryTypes[i];
-        if ((bits & (uint64_t(1) << i)) && (type.propertyFlags & properties) == properties
-            && memory.memoryHeaps[type.heapIndex].size >= size) {
+        if ((bits & (uint64_t(1) << i)) && (type.propertyFlags & properties) == properties &&
+            memory.memoryHeaps[type.heapIndex].size >= size) {
             *index = i;
             return VKFFT_SUCCESS;
         }
@@ -103,10 +107,12 @@ static inline VkFFTResult findMemoryType(
 
 // Failed allocation always leaves null outputs, including callers that provide
 // uninitialized heap storage. Ownership transfers only after binding succeeds.
-static inline VkFFTResult allocateBufferVulkan(
-    VkFFTApplication* app, VkBuffer* buffer, VkDeviceMemory* memory,
-    VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkDeviceSize size) {
-    if (!buffer || !memory) return VKFFT_ERROR_MALLOC_FAILED;
+static inline VkFFTResult allocateBufferVulkan(VkFFTApplication* app, VkBuffer* buffer,
+                                               VkDeviceMemory* memory, VkBufferUsageFlags usage,
+                                               VkMemoryPropertyFlags properties,
+                                               VkDeviceSize size) {
+    if (!buffer || !memory)
+        return VKFFT_ERROR_MALLOC_FAILED;
     *buffer = VK_NULL_HANDLE;
     *memory = VK_NULL_HANDLE;
     vkfft_memory::Buffer owned(app->configuration.device[0]);
@@ -124,9 +130,10 @@ static inline VkFFTResult allocateBufferVulkan(
     VkMemoryAllocateInfo allocate = {};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate.allocationSize = requirements.size;
-    const VkFFTResult found = findMemoryType(
-        app, requirements.memoryTypeBits, requirements.size, properties, &allocate.memoryTypeIndex);
-    if (found != VKFFT_SUCCESS) return found;
+    const VkFFTResult found = findMemoryType(app, requirements.memoryTypeBits, requirements.size,
+                                             properties, &allocate.memoryTypeIndex);
+    if (found != VKFFT_SUCCESS)
+        return found;
     if (vkAllocateMemory(owned.device, &allocate, nullptr, &owned.memory) != VK_SUCCESS) {
         owned.memory = VK_NULL_HANDLE;
         return VKFFT_ERROR_FAILED_TO_ALLOCATE_MEMORY;
@@ -144,24 +151,30 @@ namespace vkfft_memory {
 
 // Borrowed staging remains caller-owned; internal staging is scoped to this call.
 inline VkFFTResult transfer(VkFFTApplication* app, void* cpu, void* gpu, pfUINT size, bool upload) {
-    if (size == 0) return VKFFT_SUCCESS;
-    if (!cpu || !gpu || !static_cast<VkBuffer*>(gpu)[0]) return VKFFT_ERROR_EMPTY_buffer;
-    if (size > SIZE_MAX) return VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER;
+    if (size == 0)
+        return VKFFT_SUCCESS;
+    if (!cpu || !gpu || !static_cast<VkBuffer*>(gpu)[0])
+        return VKFFT_ERROR_EMPTY_buffer;
+    if (size > SIZE_MAX)
+        return VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER;
     const VkDevice device = app->configuration.device[0];
     Buffer owned(device);
     VkBuffer staging;
     VkDeviceMemory memory;
     if (app->configuration.stagingBuffer) {
-        if (!app->configuration.stagingBufferMemory) return VKFFT_ERROR_EMPTY_buffer;
+        if (!app->configuration.stagingBufferMemory)
+            return VKFFT_ERROR_EMPTY_buffer;
         staging = app->configuration.stagingBuffer[0];
         memory = app->configuration.stagingBufferMemory[0];
-        if (!staging || !memory) return VKFFT_ERROR_EMPTY_buffer;
+        if (!staging || !memory)
+            return VKFFT_ERROR_EMPTY_buffer;
     } else {
         const VkFFTResult result = allocateBufferVulkan(
             app, &owned.buffer, &owned.memory,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, size);
-        if (result != VKFFT_SUCCESS) return result;
+        if (result != VKFFT_SUCCESS)
+            return result;
         staging = owned.buffer;
         memory = owned.memory;
     }
@@ -195,7 +208,7 @@ inline VkFFTResult transfer(VkFFTApplication* app, void* cpu, void* gpu, pfUINT 
     before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(command.handle, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
     const VkBuffer target = static_cast<VkBuffer*>(gpu)[0];
     VkBufferCopy copy = {};
     copy.size = size;
@@ -205,18 +218,20 @@ inline VkFFTResult transfer(VkFFTApplication* app, void* cpu, void* gpu, pfUINT 
     after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     after.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(command.handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-        0, 1, &after, 0, nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
+                         &after, 0, nullptr, 0, nullptr);
     if (vkEndCommandBuffer(command.handle) != VK_SUCCESS)
         return VKFFT_ERROR_FAILED_TO_END_COMMAND_BUFFER;
     VkSubmitInfo submit = {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command.handle;
-    if (vkQueueSubmit(app->configuration.queue[0], 1, &submit, app->configuration.fence[0]) != VK_SUCCESS)
+    if (vkQueueSubmit(app->configuration.queue[0], 1, &submit, app->configuration.fence[0]) !=
+        VK_SUCCESS)
         return VKFFT_ERROR_FAILED_TO_SUBMIT_QUEUE;
     const VkFFTResult waited = wait_for_transfer(app);
-    if (waited != VKFFT_SUCCESS) return waited;
+    if (waited != VKFFT_SUCCESS)
+        return waited;
 
     if (!upload) {
         void* mapped = nullptr;
@@ -230,13 +245,13 @@ inline VkFFTResult transfer(VkFFTApplication* app, void* cpu, void* gpu, pfUINT 
 
 } // namespace vkfft_memory
 
-static inline VkFFTResult VkFFT_TransferDataFromCPU(
-    VkFFTApplication* app, void* cpu, void* gpu, pfUINT size) {
+static inline VkFFTResult VkFFT_TransferDataFromCPU(VkFFTApplication* app, void* cpu, void* gpu,
+                                                    pfUINT size) {
     return vkfft_memory::transfer(app, cpu, gpu, size, true);
 }
 
-static inline VkFFTResult VkFFT_TransferDataToCPU(
-    VkFFTApplication* app, void* cpu, void* gpu, pfUINT size) {
+static inline VkFFTResult VkFFT_TransferDataToCPU(VkFFTApplication* app, void* cpu, void* gpu,
+                                                  pfUINT size) {
     return vkfft_memory::transfer(app, cpu, gpu, size, false);
 }
 

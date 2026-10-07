@@ -35,7 +35,8 @@ int scheduler_primitive_roots_case() {
             return __LINE__;
         }
     }
-    for (auto pair : {std::pair{65537, 3}, {786433, 10}, {754974721, 11}, {2013265921, 31}, {INT_MAX, 7}}) {
+    for (auto pair :
+         {std::pair{65537, 3}, {786433, 10}, {754974721, 11}, {2013265921, 31}, {INT_MAX, 7}}) {
         int generator = -1;
         if (vkfft_scheduler::primitive_root(pair.first, generator) != VKFFT_SUCCESS ||
             generator != pair.second)
@@ -43,7 +44,8 @@ int scheduler_primitive_roots_case() {
     }
     for (int invalid : {INT_MIN, -1, 0, 1, INT_MAX - 1}) {
         int generator = -1;
-        if (vkfft_scheduler::primitive_root(invalid, generator) != VKFFT_ERROR_MATH_FAILED || generator != -1)
+        if (vkfft_scheduler::primitive_root(invalid, generator) != VKFFT_ERROR_MATH_FAILED ||
+            generator != -1)
             return __LINE__;
     }
     return 0;
@@ -101,8 +103,8 @@ int scheduler_rader_counts_case() {
                 // Re-entry must preserve the axis's existing ownership.
                 auto* saved = sc.raderContainer;
                 remaining = sequence;
-                if (VkFFTConstructRaderTree(&fixture.app, &sc.raderContainer, &remaining, &sc.numRaderPrimes,
-                                            part) != VKFFT_ERROR_MATH_FAILED ||
+                if (VkFFTConstructRaderTree(&fixture.app, &sc.raderContainer, &remaining,
+                                            &sc.numRaderPrimes, part) != VKFFT_ERROR_MATH_FAILED ||
                     saved != sc.raderContainer || remaining != sequence)
                     return __LINE__;
             }
@@ -138,8 +140,8 @@ int scheduler_factor_limits_case() {
         auto& sc = fixture.plan->axes[0][0].specializationConstants;
         pfUINT remaining = 17;
         if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) != VKFFT_ERROR_MATH_FAILED ||
-            VkFFTConstructRaderTree(&fixture.app, &sc.raderContainer, &remaining, &sc.numRaderPrimes, 1) !=
-                VKFFT_ERROR_MATH_FAILED ||
+            VkFFTConstructRaderTree(&fixture.app, &sc.raderContainer, &remaining,
+                                    &sc.numRaderPrimes, 1) != VKFFT_ERROR_MATH_FAILED ||
             sc.raderContainer || sc.numRaderPrimes || remaining != 17 || state.attempts)
             return __LINE__;
     }
@@ -167,21 +169,24 @@ int scheduler_input_bounds_case() {
     pfUINT sequence = 17;
     if (VkFFTConstructRaderTree(nullptr, &sc.raderContainer, &sequence, &sc.numRaderPrimes, 1) !=
             VKFFT_ERROR_MATH_FAILED ||
-        VkFFTConstructRaderTree(&app, nullptr, &sequence, &sc.numRaderPrimes, 1) != VKFFT_ERROR_MATH_FAILED ||
+        VkFFTConstructRaderTree(&app, nullptr, &sequence, &sc.numRaderPrimes, 1) !=
+            VKFFT_ERROR_MATH_FAILED ||
         VkFFTConstructRaderTree(&app, &sc.raderContainer, nullptr, &sc.numRaderPrimes, 1) !=
             VKFFT_ERROR_MATH_FAILED ||
-        VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, nullptr, 1) != VKFFT_ERROR_MATH_FAILED)
+        VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, nullptr, 1) !=
+            VKFFT_ERROR_MATH_FAILED)
         return __LINE__;
     for (int part : {0, -1})
-        if (VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, &sc.numRaderPrimes, part) !=
-            VKFFT_ERROR_MATH_FAILED)
+        if (VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, &sc.numRaderPrimes,
+                                    part) != VKFFT_ERROR_MATH_FAILED)
             return __LINE__;
     sequence = 0;
     if (VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, &sc.numRaderPrimes, 1) !=
         VKFFT_ERROR_MATH_FAILED)
         return __LINE__;
     sequence = 1;
-    if (VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, &sc.numRaderPrimes, 1) != VKFFT_SUCCESS)
+    if (VkFFTConstructRaderTree(&app, &sc.raderContainer, &sequence, &sc.numRaderPrimes, 1) !=
+        VKFFT_SUCCESS)
         return __LINE__;
     sequence = 17;
     app.configuration.fixMaxRaderPrimeMult = app.configuration.fixMaxRaderPrimeFFT = 17;
@@ -212,7 +217,9 @@ int scheduler_input_bounds_case() {
 extern "C" int vkfft_test_scheduler_primitive_roots() {
     return codegen_fake::scheduler_primitive_roots_case();
 }
-extern "C" int vkfft_test_scheduler_rader_counts() { return codegen_fake::scheduler_rader_counts_case(); }
+extern "C" int vkfft_test_scheduler_rader_counts() {
+    return codegen_fake::scheduler_rader_counts_case();
+}
 extern "C" int vkfft_test_scheduler_factor_limits() {
     if (int line = codegen_fake::scheduler_factor_limits_case())
         return line;

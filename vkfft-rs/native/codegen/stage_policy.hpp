@@ -8,15 +8,15 @@
 namespace vkfft_codegen {
 
 // Validate the fixed-array lookup before either dispatcher reads its stage metadata.
-static inline bool stage_dispatch_valid(VkFFTSpecializationConstantsLayout* sc, pfUINT stage, pfINT radix,
-                                        pfUINT layout) {
+static inline bool stage_dispatch_valid(VkFFTSpecializationConstantsLayout* sc, pfUINT stage,
+                                        pfINT radix, pfUINT layout) {
     if (sc->res != VKFFT_SUCCESS)
         return false;
     constexpr size_t stages = sizeof(sc->stageRadix) / sizeof(sc->stageRadix[0]);
     if (sc->numStages <= 0 || static_cast<size_t>(sc->numStages) > stages ||
-        stage >= static_cast<pfUINT>(sc->numStages) || radix < 2 || radix != sc->stageRadix[stage] ||
-        sc->rader_generator[stage] < 0 || layout > static_cast<pfUINT>(std::numeric_limits<int>::max()) ||
-        layout % 10 > 2) {
+        stage >= static_cast<pfUINT>(sc->numStages) || radix < 2 ||
+        radix != sc->stageRadix[stage] || sc->rader_generator[stage] < 0 ||
+        layout > static_cast<pfUINT>(std::numeric_limits<int>::max()) || layout % 10 > 2) {
         sc->res = VKFFT_ERROR_MATH_FAILED;
         return false;
     }
@@ -25,7 +25,8 @@ static inline bool stage_dispatch_valid(VkFFTSpecializationConstantsLayout* sc, 
 
 // Clear a previous selection before searching: a missing stage must never borrow
 // an unrelated Rader kernel. The selected container remains owned by the axis.
-static inline bool select_rader_stage(VkFFTSpecializationConstantsLayout* sc, pfUINT stage, pfINT radix) {
+static inline bool select_rader_stage(VkFFTSpecializationConstantsLayout* sc, pfUINT stage,
+                                      pfINT radix) {
     if (!stage_dispatch_valid(sc, stage, radix, 0))
         return false;
     sc->currentRaderContainer = nullptr;
@@ -54,14 +55,15 @@ static inline bool select_rader_stage(VkFFTSpecializationConstantsLayout* sc, pf
 
 // Only active normalization factors need valid dimensions. Check each integer
 // adjustment/product before evaluation; leave the caller's divisor unchanged on error.
-static inline bool stage_normalization(VkFFTSpecializationConstantsLayout* sc, pfINT stage_size, pfLD angle,
-                                       pfINT& divisor) {
+static inline bool stage_normalization(VkFFTSpecializationConstantsLayout* sc, pfINT stage_size,
+                                       pfLD angle, pfINT& divisor) {
     if (sc->res != VKFFT_SUCCESS)
         return false;
     constexpr pfINT maximum = std::numeric_limits<pfINT>::max();
     pfINT value = 1;
     const bool first_upload_stage = stage_size == 1 && sc->axis_upload_id == 0;
-    if (first_upload_stage && ((sc->actualInverse && sc->normalize) || (sc->convolutionStep && angle > 0)) &&
+    if (first_upload_stage &&
+        ((sc->actualInverse && sc->normalize) || (sc->convolutionStep && angle > 0)) &&
         !(sc->useBluesteinFFT && angle < 0)) {
         value = sc->sourceFFTSize.data.i;
         if (value <= 0) {

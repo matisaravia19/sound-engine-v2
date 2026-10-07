@@ -52,7 +52,8 @@ static inline void reset_scheduled_axis(VkFFTApplication* app, VkFFTPlan* plan, 
 // App and plan remain owned by the initializer. Retry only an unsupported length,
 // preserving completed axes and restoring temporary limits on every exit path.
 template <class Schedule>
-static inline VkFFTResult schedule_axis(VkFFTApplication* app, VkFFTPlan* plan, int axis, Schedule schedule) {
+static inline VkFFTResult schedule_axis(VkFFTApplication* app, VkFFTPlan* plan, int axis,
+                                        Schedule schedule) {
     if (!app || !plan || app->configuration.FFTdim > VKFFT_MAX_FFT_DIMENSIONS || axis < 0 ||
         axis >= VKFFT_MAX_FFT_DIMENSIONS || static_cast<pfUINT>(axis) >= app->configuration.FFTdim)
         return VKFFT_ERROR_MATH_FAILED;

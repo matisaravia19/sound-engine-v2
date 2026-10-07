@@ -6,7 +6,8 @@ namespace codegen_fake {
 bool same_scheduler_layout(const SchedulerFixture& left, const SchedulerFixture& right, int axis) {
     const auto& a = *left.plan;
     const auto& b = *right.plan;
-    if (left.temporary_bytes != right.temporary_bytes || a.numAxisUploads[axis] != b.numAxisUploads[axis] ||
+    if (left.temporary_bytes != right.temporary_bytes ||
+        a.numAxisUploads[axis] != b.numAxisUploads[axis] ||
         a.bigSequenceEvenR2C != b.bigSequenceEvenR2C)
         return false;
     for (int i = 0; i < VKFFT_MAX_FFT_DIMENSIONS; ++i)
@@ -17,7 +18,8 @@ bool same_scheduler_layout(const SchedulerFixture& left, const SchedulerFixture&
         const auto& y = b.axes[axis][upload].specializationConstants;
         if (a.axisSplit[axis][upload] != b.axisSplit[axis][upload] || x.numStages != y.numStages ||
             x.registers_per_thread != y.registers_per_thread ||
-            x.min_registers_per_thread != y.min_registers_per_thread || x.registerBoost != y.registerBoost)
+            x.min_registers_per_thread != y.min_registers_per_thread ||
+            x.registerBoost != y.registerBoost)
             return false;
         for (int stage = 0; stage < x.numStages; ++stage)
             if (x.stageRadix[stage] != y.stageRadix[stage])
@@ -53,54 +55,54 @@ int scheduler_invalid_limit_case(LimitFailure scenario) {
         c.coalescedMemory = 1;
         const pfUINT too_wide = pfUINT(1) << 31;
         switch (scenario) {
-        case LimitFailure::ZeroCoalescing:
-            c.coalescedMemory = 0;
-            break;
-        case LimitFailure::WideCoalescing:
-            c.coalescedMemory = too_wide;
-            break;
-        case LimitFailure::CoalescingExceedsShared:
-            c.coalescedMemory = 65536;
-            break;
-        case LimitFailure::ZeroThreads:
-            c.maxThreadsNum = 0;
-            break;
-        case LimitFailure::WideThreads:
-            c.maxThreadsNum = too_wide;
-            break;
-        case LimitFailure::ZeroWarp:
-            c.warpSize = 0;
-            break;
-        case LimitFailure::WideWarp:
-            c.warpSize = too_wide;
-            break;
-        case LimitFailure::ZeroShared:
-            c.sharedMemorySize = 0;
-            break;
-        case LimitFailure::WideShared:
-            c.sharedMemorySize = too_wide;
-            break;
-        case LimitFailure::ZeroPowerShared:
-            c.sharedMemorySizePow2 = 0;
-            break;
-        case LimitFailure::NonPowerShared:
-            c.sharedMemorySizePow2 = 32767;
-            break;
-        case LimitFailure::PowerSharedExceedsTotal:
-            c.sharedMemorySizePow2 = 65536;
-            break;
-        case LimitFailure::InsufficientComplexStorage:
-            c.sharedMemorySizePow2 = 4;
-            break;
-        case LimitFailure::ZeroBoost:
-            c.registerBoost = 0;
-            break;
-        case LimitFailure::ZeroFourStepBoost:
-            c.registerBoost4Step = 0;
-            break;
-        case LimitFailure::WideBandwidthBoost:
-            c.performBandwidthBoost = too_wide;
-            break;
+            case LimitFailure::ZeroCoalescing:
+                c.coalescedMemory = 0;
+                break;
+            case LimitFailure::WideCoalescing:
+                c.coalescedMemory = too_wide;
+                break;
+            case LimitFailure::CoalescingExceedsShared:
+                c.coalescedMemory = 65536;
+                break;
+            case LimitFailure::ZeroThreads:
+                c.maxThreadsNum = 0;
+                break;
+            case LimitFailure::WideThreads:
+                c.maxThreadsNum = too_wide;
+                break;
+            case LimitFailure::ZeroWarp:
+                c.warpSize = 0;
+                break;
+            case LimitFailure::WideWarp:
+                c.warpSize = too_wide;
+                break;
+            case LimitFailure::ZeroShared:
+                c.sharedMemorySize = 0;
+                break;
+            case LimitFailure::WideShared:
+                c.sharedMemorySize = too_wide;
+                break;
+            case LimitFailure::ZeroPowerShared:
+                c.sharedMemorySizePow2 = 0;
+                break;
+            case LimitFailure::NonPowerShared:
+                c.sharedMemorySizePow2 = 32767;
+                break;
+            case LimitFailure::PowerSharedExceedsTotal:
+                c.sharedMemorySizePow2 = 65536;
+                break;
+            case LimitFailure::InsufficientComplexStorage:
+                c.sharedMemorySizePow2 = 4;
+                break;
+            case LimitFailure::ZeroBoost:
+                c.registerBoost = 0;
+                break;
+            case LimitFailure::ZeroFourStepBoost:
+                c.registerBoost4Step = 0;
+                break;
+            case LimitFailure::WideBandwidthBoost:
+                c.performBandwidthBoost = too_wide;
+                break;
         }
         const auto coalesced = c.coalescedMemory;
         fixture.temporary_bytes = 123;
@@ -135,7 +137,8 @@ int scheduler_coalescing_case() {
                         actual.app.configuration.coalescedMemory = hint;
                         control.app.configuration.coalescedMemory = complex_size;
                         if (VkFFTScheduler(&actual.app, actual.plan.get(), axis) != VKFFT_SUCCESS ||
-                            VkFFTScheduler(&control.app, control.plan.get(), axis) != VKFFT_SUCCESS ||
+                            VkFFTScheduler(&control.app, control.plan.get(), axis) !=
+                                VKFFT_SUCCESS ||
                             actual.app.configuration.coalescedMemory != complex_size ||
                             !same_scheduler_layout(actual, control, axis))
                             return __LINE__;
@@ -173,8 +176,10 @@ int scheduler_resource_fallback_case() {
     state = {};
     {
         SchedulerFixture fixture(64, false, true, 1);
-        fixture.app.configuration.sharedMemorySize = fixture.app.configuration.sharedMemorySizePow2 = 32;
-        if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH ||
+        fixture.app.configuration.sharedMemorySize =
+            fixture.app.configuration.sharedMemorySizePow2 = 32;
+        if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) !=
+                VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH ||
             fixture.temporary_bytes || state.attempts)
             return __LINE__;
     }
@@ -202,8 +207,10 @@ int scheduler_boost_hint_case() {
                             }
                             actual.app.configuration.fixMaxRaderPrimeFFT =
                                 control.app.configuration.fixMaxRaderPrimeFFT = 17;
-                            if (VkFFTScheduler(&actual.app, actual.plan.get(), 0) != VKFFT_SUCCESS ||
-                                VkFFTScheduler(&control.app, control.plan.get(), 0) != VKFFT_SUCCESS ||
+                            if (VkFFTScheduler(&actual.app, actual.plan.get(), 0) !=
+                                    VKFFT_SUCCESS ||
+                                VkFFTScheduler(&control.app, control.plan.get(), 0) !=
+                                    VKFFT_SUCCESS ||
                                 !same_scheduler_layout(actual, control, 0))
                                 return __LINE__;
                         }
@@ -216,7 +223,8 @@ int scheduler_boost_hint_case() {
         SchedulerFixture fixture(4099, false, false, 1);
         fixture.app.configuration.fixMaxRaderPrimeFFT = 17;
         fixture.app.configuration.registerBoost4Step = 4;
-        if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) != VKFFT_SUCCESS || !fixture.temporary_bytes)
+        if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) != VKFFT_SUCCESS ||
+            !fixture.temporary_bytes)
             return __LINE__;
     }
     return live() || state.invalid ? __LINE__ : 0;
@@ -227,12 +235,13 @@ int scheduler_boost_hint_case() {
 extern "C" int vkfft_test_scheduler_invalid_resources() {
     using codegen_fake::LimitFailure;
     for (auto scenario :
-         {LimitFailure::ZeroCoalescing, LimitFailure::WideCoalescing, LimitFailure::CoalescingExceedsShared,
-          LimitFailure::ZeroThreads, LimitFailure::WideThreads, LimitFailure::ZeroWarp,
-          LimitFailure::WideWarp, LimitFailure::ZeroShared, LimitFailure::WideShared,
-          LimitFailure::ZeroPowerShared, LimitFailure::NonPowerShared, LimitFailure::PowerSharedExceedsTotal,
-          LimitFailure::InsufficientComplexStorage, LimitFailure::ZeroBoost, LimitFailure::ZeroFourStepBoost,
-          LimitFailure::WideBandwidthBoost})
+         {LimitFailure::ZeroCoalescing, LimitFailure::WideCoalescing,
+          LimitFailure::CoalescingExceedsShared, LimitFailure::ZeroThreads,
+          LimitFailure::WideThreads, LimitFailure::ZeroWarp, LimitFailure::WideWarp,
+          LimitFailure::ZeroShared, LimitFailure::WideShared, LimitFailure::ZeroPowerShared,
+          LimitFailure::NonPowerShared, LimitFailure::PowerSharedExceedsTotal,
+          LimitFailure::InsufficientComplexStorage, LimitFailure::ZeroBoost,
+          LimitFailure::ZeroFourStepBoost, LimitFailure::WideBandwidthBoost})
         if (int line = codegen_fake::scheduler_invalid_limit_case(scenario))
             return line;
     return 0;
@@ -244,4 +253,6 @@ extern "C" int vkfft_test_scheduler_coalescing_limits() {
     return codegen_fake::scheduler_resource_fallback_case();
 }
 
-extern "C" int vkfft_test_scheduler_boost_hints() { return codegen_fake::scheduler_boost_hint_case(); }
+extern "C" int vkfft_test_scheduler_boost_hints() {
+    return codegen_fake::scheduler_boost_hint_case();
+}

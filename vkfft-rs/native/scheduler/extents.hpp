@@ -10,7 +10,8 @@ namespace vkfft_scheduler {
 
 // Preserve an existing R2C split unless a DCT/DST mode replaces it. Zero or wrapped
 // lengths would make the scheduler's repeated-factor division fail to terminate.
-static inline VkFFTResult real_transform_length(const VkFFTConfiguration& c, pfUINT input, pfUINT& length) {
+static inline VkFFTResult real_transform_length(const VkFFTConfiguration& c, pfUINT input,
+                                                pfUINT& length) {
     if (!input || !length)
         return VKFFT_ERROR_MATH_FAILED;
     const auto maximum = (std::numeric_limits<pfUINT>::max)();
@@ -54,7 +55,8 @@ static inline VkFFTResult validate_bluestein_padding(pfUINT padded, pfUINT minim
 // search. The native caller owns both arrays and supplies their common length.
 // Beyond the final entry's capacity, VkFFT's documented default search takes over.
 static inline VkFFTResult initial_bluestein_padding(const VkFFTConfiguration& c, pfUINT length,
-                                                    pfUINT& minimum, pfUINT& padded, bool& selected) {
+                                                    pfUINT& minimum, pfUINT& padded,
+                                                    bool& selected) {
     pfUINT required = 0;
     auto result = bluestein_minimum(length, required);
     if (result != VKFFT_SUCCESS)

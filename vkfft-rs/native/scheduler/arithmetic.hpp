@@ -14,7 +14,8 @@ static inline bool factor_limits_valid(const VkFFTConfiguration& c) {
     return c.fixMinRaderPrimeMult >= 2 && c.fixMinRaderPrimeMult <= 17 &&
            c.fixMinRaderPrimeFFT >= c.fixMinRaderPrimeMult && c.fixMinRaderPrimeFFT <= INT_MAX &&
            c.fixMaxRaderPrimeMult <= INT_MAX && c.fixMaxRaderPrimeFFT <= INT_MAX &&
-           (c.fixMaxRadixBluestein == 0 || (c.fixMaxRadixBluestein >= 2 && c.fixMaxRadixBluestein <= 13));
+           (c.fixMaxRadixBluestein == 0 ||
+            (c.fixMaxRadixBluestein >= 2 && c.fixMaxRadixBluestein <= 13));
 }
 
 // Inputs come from a positive signed-int prime. Wide products cannot overflow,

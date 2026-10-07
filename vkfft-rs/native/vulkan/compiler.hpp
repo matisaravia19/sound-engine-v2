@@ -16,8 +16,14 @@ struct Binary {
     Binary() = default;
     Binary(const Binary&) = delete;
     Binary& operator=(const Binary&) = delete;
-    ~Binary() { free(data); }
-    uint32_t* release() { auto* result = data; data = nullptr; return result; }
+    ~Binary() {
+        free(data);
+    }
+    uint32_t* release() {
+        auto* result = data;
+        data = nullptr;
+        return result;
+    }
 };
 
 // Shader modules are temporary even when a pipeline layout or pipeline fails.
@@ -27,7 +33,10 @@ struct ShaderModule {
     explicit ShaderModule(VkDevice device) : device(device) {}
     ShaderModule(const ShaderModule&) = delete;
     ShaderModule& operator=(const ShaderModule&) = delete;
-    ~ShaderModule() { if (handle) vkDestroyShaderModule(device, handle, nullptr); }
+    ~ShaderModule() {
+        if (handle)
+            vkDestroyShaderModule(device, handle, nullptr);
+    }
 };
 
 } // namespace vkfft_compiler

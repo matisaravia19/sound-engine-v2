@@ -50,8 +50,8 @@ static inline bool padding_factors(pfUINT value, int max_radix, int (&factors)[3
 
 // Enumerate supported prime powers, pruning against the best complete candidate.
 // Recursion is at most six levels; the power-of-two leaf is rounded directly.
-static inline void search_padding_products(pfUINT minimum, int prime_index, pfUINT product, pfUINT& best,
-                                           bool& found) {
+static inline void search_padding_products(pfUINT minimum, int prime_index, pfUINT product,
+                                           pfUINT& best, bool& found) {
     if (product > best)
         return;
     if (product >= minimum) {
@@ -101,11 +101,12 @@ static inline VkFFTResult next_smooth_padding(pfUINT minimum, int max_radix, pfU
 
 // Preserve VkFFT's three-quarter occupancy preference without floating-point
 // rounding or signed-int narrowing at large sequence lengths.
-static inline pfUINT preferred_padding(pfUINT length, pfUINT minimum, pfUINT candidate, pfUINT shared_limit) {
+static inline pfUINT preferred_padding(pfUINT length, pfUINT minimum, pfUINT candidate,
+                                       pfUINT shared_limit) {
     pfUINT rounded = 0;
     if (power_of_two_ceiling(candidate, rounded) &&
-        (length < 128 ||
-         (candidate >= rounded - rounded / 4 && (rounded <= shared_limit || minimum > shared_limit))))
+        (length < 128 || (candidate >= rounded - rounded / 4 &&
+                          (rounded <= shared_limit || minimum > shared_limit))))
         return rounded;
     return candidate;
 }
@@ -115,19 +116,22 @@ static inline pfUINT preferred_padding(pfUINT length, pfUINT minimum, pfUINT can
 // On callback failure or exhausted representable lengths, leave padded unchanged.
 template <class Accept>
 static inline VkFFTResult automatic_bluestein_padding(pfUINT length, pfUINT minimum, int max_radix,
-                                                      int shared_limit, Accept accept, pfUINT& padded) {
+                                                      int shared_limit, Accept accept,
+                                                      pfUINT& padded) {
     if (!length || !minimum || shared_limit <= 0)
         return VKFFT_ERROR_MATH_FAILED;
     if (max_radix)
         return next_smooth_padding(minimum, max_radix, padded);
     auto candidate = minimum;
     for (;;) {
-        candidate = preferred_padding(length, minimum, candidate, static_cast<pfUINT>(shared_limit));
+        candidate =
+            preferred_padding(length, minimum, candidate, static_cast<pfUINT>(shared_limit));
         auto result = next_smooth_padding(candidate, 7, candidate);
         if (result != VKFFT_SUCCESS)
             return result;
         // A skipped gap may cross the point where the old scan preferred a power of two.
-        candidate = preferred_padding(length, minimum, candidate, static_cast<pfUINT>(shared_limit));
+        candidate =
+            preferred_padding(length, minimum, candidate, static_cast<pfUINT>(shared_limit));
         int factors[33];
         if (!padding_factors(candidate, 7, factors))
             return VKFFT_ERROR_MATH_FAILED;

@@ -1,0 +1,5 @@
+# Keep native formatter checks consistent across Windows and Unix checkouts.
+.clang-format text eol=lf
+.gitattributes text eol=lf
+native/** text eol=lf
+tests/native/** text eol=lf

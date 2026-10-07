@@ -41,7 +41,8 @@ int padding_search_boundaries_case() {
         const auto value = pfUINT(1) << exponent;
         if (!vkfft_scheduler::power_of_two_ceiling(value, output) || output != value)
             return __LINE__;
-        if (value > 2 && (!vkfft_scheduler::power_of_two_ceiling(value - 1, output) || output != value))
+        if (value > 2 &&
+            (!vkfft_scheduler::power_of_two_ceiling(value - 1, output) || output != value))
             return __LINE__;
     }
     for (int radix : {2, 3, 7, 13}) {
@@ -58,8 +59,10 @@ int padding_search_boundaries_case() {
         if (vkfft_scheduler::next_smooth_padding(17, radix, output) != VKFFT_ERROR_MATH_FAILED ||
             output != 123)
             return __LINE__;
-    if (vkfft_scheduler::next_smooth_padding(0, 7, output) != VKFFT_ERROR_MATH_FAILED || output != 123 ||
-        vkfft_scheduler::next_smooth_padding(high_bit + 1, 2, output) != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH ||
+    if (vkfft_scheduler::next_smooth_padding(0, 7, output) != VKFFT_ERROR_MATH_FAILED ||
+        output != 123 ||
+        vkfft_scheduler::next_smooth_padding(high_bit + 1, 2, output) !=
+            VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH ||
         output != 123)
         return __LINE__;
     for (pfUINT left : {pfUINT(0), pfUINT(1), pfUINT(2), pfUINT(32), maximum})
@@ -79,8 +82,9 @@ template <class Accept>
 pfUINT reference_default_padding(pfUINT length, pfUINT minimum, int shared_limit, Accept accept) {
     for (auto candidate = minimum;; ++candidate) {
         const auto rounded = static_cast<pfUINT>(std::pow(2, std::ceil(std::log2(candidate))));
-        if (length < 128 || (candidate >= rounded * 0.75 && (rounded <= static_cast<pfUINT>(shared_limit) ||
-                                                             minimum > static_cast<pfUINT>(shared_limit))))
+        if (length < 128 ||
+            (candidate >= rounded * 0.75 && (rounded <= static_cast<pfUINT>(shared_limit) ||
+                                             minimum > static_cast<pfUINT>(shared_limit))))
             candidate = rounded;
         int factors[33]{};
         auto remainder = candidate;
@@ -101,8 +105,8 @@ int padding_register_policy_case() {
         fixture.app.configuration.quadDoubleDoublePrecision = precision == 2;
         auto accept = [&](pfUINT candidate, int(&factors)[33], bool& accepted) {
             int registers[33], maximum = 0, minimum = 10000000, good = 0;
-            auto result = VkFFTGetRegistersPerThread(&fixture.app, candidate, 0, 0, 0, factors, registers,
-                                                     &maximum, &minimum, &good);
+            auto result = VkFFTGetRegistersPerThread(&fixture.app, candidate, 0, 0, 0, factors,
+                                                     registers, &maximum, &minimum, &good);
             accepted = good != 0;
             return result;
         };
@@ -133,7 +137,8 @@ int padding_register_policy_case() {
             VKFFT_ERROR_MALLOC_FAILED ||
         padded != 123 || calls != 1)
         return __LINE__;
-    if (vkfft_scheduler::automatic_bluestein_padding(257, 513, 2, 4096, fail, padded) != VKFFT_SUCCESS ||
+    if (vkfft_scheduler::automatic_bluestein_padding(257, 513, 2, 4096, fail, padded) !=
+            VKFFT_SUCCESS ||
         padded != 1024 || calls != 1)
         return __LINE__;
     calls = 0;
@@ -167,7 +172,8 @@ int scheduler_wide_padding_case() {
                             c.fixMaxRadixBluestein = radix;
                             const auto original_config = c;
                             const auto result = VkFFTScheduler(&fixture.app, fixture.plan.get(), 0);
-                            if (result != VKFFT_SUCCESS && result != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH)
+                            if (result != VKFFT_SUCCESS &&
+                                result != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH)
                                 return __LINE__;
                             const auto& plan = *fixture.plan;
                             auto padded = plan.actualFFTSizePerAxis[0][0];
@@ -175,11 +181,13 @@ int scheduler_wide_padding_case() {
                             if (!fixture.app.useBluesteinFFT[0] || padded < 2 * effective - 1)
                                 return __LINE__;
                             int factors[33];
-                            if (!vkfft_scheduler::padding_factors(padded, radix ? radix : 7, factors))
+                            if (!vkfft_scheduler::padding_factors(padded, radix ? radix : 7,
+                                                                  factors))
                                 return __LINE__;
                             if (radix == 2) {
                                 pfUINT expected = 0;
-                                if (!vkfft_scheduler::power_of_two_ceiling(2 * effective - 1, expected) ||
+                                if (!vkfft_scheduler::power_of_two_ceiling(2 * effective - 1,
+                                                                           expected) ||
                                     padded != expected)
                                     return __LINE__;
                             }
@@ -206,14 +214,16 @@ int scheduler_wide_padding_case() {
                                     pfUINT stages = 1;
                                     for (int stage = 0; stage < sc.numStages; ++stage)
                                         stages *= sc.stageRadix[stage];
-                                    if (stages != plan.axisSplit[0][upload] || sc.registers_per_thread <= 0)
+                                    if (stages != plan.axisSplit[0][upload] ||
+                                        sc.registers_per_thread <= 0)
                                         return __LINE__;
                                 }
-                                const auto bytes =
-                                    (padded + (plan.bigSequenceEvenR2C ? 1 : 0)) * (precision ? 16 : 8);
+                                const auto bytes = (padded + (plan.bigSequenceEvenR2C ? 1 : 0)) *
+                                                   (precision ? 16 : 8);
                                 if (product != padded || fixture.temporary_bytes != bytes)
                                     return __LINE__;
-                            } else if (fixture.temporary_bytes || plan.numAxisUploads[0] || live()) {
+                            } else if (fixture.temporary_bytes || plan.numAxisUploads[0] ||
+                                       live()) {
                                 return __LINE__;
                             }
                         }
@@ -231,6 +241,10 @@ extern "C" int vkfft_test_padding_search() {
     return codegen_fake::padding_search_boundaries_case();
 }
 
-extern "C" int vkfft_test_padding_register_policy() { return codegen_fake::padding_register_policy_case(); }
+extern "C" int vkfft_test_padding_register_policy() {
+    return codegen_fake::padding_register_policy_case();
+}
 
-extern "C" int vkfft_test_scheduler_wide_padding() { return codegen_fake::scheduler_wide_padding_case(); }
+extern "C" int vkfft_test_scheduler_wide_padding() {
+    return codegen_fake::scheduler_wide_padding_case();
+}

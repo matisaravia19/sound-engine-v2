@@ -10,9 +10,10 @@ namespace vkfft_scheduler {
 // Arrays are borrowed from the owning plan. Preserve both arrays and the count
 // on failure; successful appends always keep radix/generator metadata together.
 template <size_t N>
-static inline VkFFTResult append_stage(int& count, int (&radices)[N], int (&generators)[N], int radix,
-                                       int generator) {
-    if (count < 0 || static_cast<size_t>(count) >= N || radix < 2 || generator < 0 || generator >= radix)
+static inline VkFFTResult append_stage(int& count, int (&radices)[N], int (&generators)[N],
+                                       int radix, int generator) {
+    if (count < 0 || static_cast<size_t>(count) >= N || radix < 2 || generator < 0 ||
+        generator >= radix)
         return VKFFT_ERROR_MATH_FAILED;
     radices[count] = radix;
     generators[count] = generator;
@@ -22,14 +23,15 @@ static inline VkFFTResult append_stage(int& count, int (&radices)[N], int (&gene
 
 // The plan owns an acyclic factor tree. Bound traversal as a defensive check:
 // signed-int prime factors cannot require 33 levels of decreasing factorization.
-static inline bool tree_list_valid(const VkFFTRaderContainer* containers, int count, unsigned depth) {
+static inline bool tree_list_valid(const VkFFTRaderContainer* containers, int count,
+                                   unsigned depth) {
     return depth < 33 && count >= 0 && count <= 33 && (!count || containers);
 }
 
 // Resolve only a matching prime/generator pair; missing or duplicate metadata
 // must not leave register sizing dependent on a previous or unrelated stage.
-static inline const VkFFTRaderContainer* find_rader(const VkFFTRaderContainer* containers, int count,
-                                                    int prime, int generator) {
+static inline const VkFFTRaderContainer* find_rader(const VkFFTRaderContainer* containers,
+                                                    int count, int prime, int generator) {
     const VkFFTRaderContainer* found = nullptr;
     for (int i = 0; i < count; ++i) {
         const auto& candidate = containers[i];
@@ -46,11 +48,12 @@ static inline const VkFFTRaderContainer* find_rader(const VkFFTRaderContainer* c
 // Inspect each selected subtree once, using its own stage indexes. Callers keep
 // local extrema until validation succeeds, so failure cannot publish partial sizing.
 template <size_t N>
-static inline VkFFTResult register_limits(int count, const int (&radices)[N], const int (&generators)[N],
-                                          const int (&registers)[33], const VkFFTRaderContainer* containers,
-                                          int container_count, int& minimum, int& maximum,
-                                          unsigned depth = 0) {
-    if (count < 0 || static_cast<size_t>(count) > N || !tree_list_valid(containers, container_count, depth))
+static inline VkFFTResult
+register_limits(int count, const int (&radices)[N], const int (&generators)[N],
+                const int (&registers)[33], const VkFFTRaderContainer* containers,
+                int container_count, int& minimum, int& maximum, unsigned depth = 0) {
+    if (count < 0 || static_cast<size_t>(count) > N ||
+        !tree_list_valid(containers, container_count, depth))
         return VKFFT_ERROR_MATH_FAILED;
     for (int stage = 0; stage < count; ++stage) {
         const int radix = radices[stage];
@@ -71,10 +74,10 @@ static inline VkFFTResult register_limits(int count, const int (&radices)[N], co
             if (rader->type == 0) {
                 if (rader->numStages <= 0)
                     return VKFFT_ERROR_MATH_FAILED;
-                auto result =
-                    register_limits(rader->numStages, rader->stageRadix, rader->stage_rader_generator,
-                                    rader->registers_per_thread_per_radix, rader->container,
-                                    rader->numSubPrimes, minimum, maximum, depth + 1);
+                auto result = register_limits(
+                    rader->numStages, rader->stageRadix, rader->stage_rader_generator,
+                    rader->registers_per_thread_per_radix, rader->container, rader->numSubPrimes,
+                    minimum, maximum, depth + 1);
                 if (result != VKFFT_SUCCESS)
                     return result;
             }
@@ -85,8 +88,8 @@ static inline VkFFTResult register_limits(int count, const int (&radices)[N], co
 
 // Ceil division uses positive integers, and the product is checked before it is
 // stored in the scheduler's signed-int thread count. No floating conversion is needed.
-static inline VkFFTResult rader_threads(const VkFFTRaderContainer* containers, int count, int& maximum,
-                                        unsigned depth = 0) {
+static inline VkFFTResult rader_threads(const VkFFTRaderContainer* containers, int count,
+                                        int& maximum, unsigned depth = 0) {
     if (!tree_list_valid(containers, count, depth))
         return VKFFT_ERROR_MATH_FAILED;
     for (int i = 0; i < count; ++i) {
@@ -111,7 +114,8 @@ static inline VkFFTResult rader_threads(const VkFFTRaderContainer* containers, i
             if (radix < 2 || radix >= 33 || rader.registers_per_thread_per_radix[radix] <= 0)
                 return VKFFT_ERROR_MATH_FAILED;
             const int registers = rader.registers_per_thread_per_radix[radix];
-            const int groups = rader.containerFFTDim / registers + (rader.containerFFTDim % registers != 0);
+            const int groups =
+                rader.containerFFTDim / registers + (rader.containerFFTDim % registers != 0);
             if (rader.containerFFTNum > INT_MAX / groups)
                 return VKFFT_ERROR_MATH_FAILED;
             const int threads = rader.containerFFTNum * groups;
@@ -124,7 +128,8 @@ static inline VkFFTResult rader_threads(const VkFFTRaderContainer* containers, i
 
 // Rader primes index a separate container list, never the 33-slot ordinary-radix
 // register table. Move the first matching ordinary stage with its generator tag.
-static inline VkFFTResult prioritize_register_stage(VkFFTSpecializationConstantsLayout& sc, int minimum) {
+static inline VkFFTResult prioritize_register_stage(VkFFTSpecializationConstantsLayout& sc,
+                                                    int minimum) {
     constexpr int capacity = sizeof(sc.stageRadix) / sizeof(sc.stageRadix[0]);
     if (sc.numStages < 0 || sc.numStages > capacity)
         return VKFFT_ERROR_MATH_FAILED;

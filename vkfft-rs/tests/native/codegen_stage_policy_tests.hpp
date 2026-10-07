@@ -55,27 +55,27 @@ int normalization_policy_case() {
         pfINT stage = 1;
         pfLD angle = 1;
         switch (mode) {
-        case 0:
-            stage = 2;
-            break;
-        case 1:
-            sc.axis_upload_id = 1;
-            break;
-        case 2:
-            sc.actualInverse = 0;
-            break;
-        case 3:
-            sc.useBluesteinFFT = 1;
-            angle = -1;
-            break;
-        case 4:
-            sc.normalize = 0;
-            break;
-        case 5:
-            sc.actualInverse = 0;
-            sc.convolutionStep = 1;
-            angle = -1;
-            break;
+            case 0:
+                stage = 2;
+                break;
+            case 1:
+                sc.axis_upload_id = 1;
+                break;
+            case 2:
+                sc.actualInverse = 0;
+                break;
+            case 3:
+                sc.useBluesteinFFT = 1;
+                angle = -1;
+                break;
+            case 4:
+                sc.normalize = 0;
+                break;
+            case 5:
+                sc.actualInverse = 0;
+                sc.convolutionStep = 1;
+                angle = -1;
+                break;
         }
         pfINT divisor = 77;
         if (!vkfft_codegen::stage_normalization(&sc, stage, angle, divisor) || divisor != 1)
@@ -111,33 +111,33 @@ int stage_dispatch_policy_case() {
             sc.stageRadix[0] = 4;
             int stage = 0, layout = 0;
             switch (mode) {
-            case 0:
-                stage = -1;
-                break;
-            case 1:
-                stage = 1;
-                break;
-            case 2:
-                sc.numStages = 0;
-                break;
-            case 3:
-                sc.numStages = 34;
-                break;
-            case 4:
-                sc.stageRadix[0] = 2;
-                break;
-            case 5:
-                sc.rader_generator[0] = -1;
-                break;
-            case 6:
-                layout = 3;
-                break;
-            case 7:
-                layout = 509;
-                break;
-            case 8:
-                layout = -4;
-                break;
+                case 0:
+                    stage = -1;
+                    break;
+                case 1:
+                    stage = 1;
+                    break;
+                case 2:
+                    sc.numStages = 0;
+                    break;
+                case 3:
+                    sc.numStages = 34;
+                    break;
+                case 4:
+                    sc.stageRadix[0] = 2;
+                    break;
+                case 5:
+                    sc.rader_generator[0] = -1;
+                    break;
+                case 6:
+                    layout = 3;
+                    break;
+                case 7:
+                    layout = 509;
+                    break;
+                case 8:
+                    layout = -4;
+                    break;
             }
             if (shuffle)
                 appendRadixShuffle(&sc, &size, &sum, &angle, &radix, &radix, stage, layout);
@@ -159,30 +159,31 @@ int stage_dispatch_policy_case() {
         sc.currentRaderContainer = &candidates[1];
         radix.data.i = 17;
         switch (mode) {
-        case 0:
-            sc.raderContainer = nullptr;
-            break;
-        case 1:
-            sc.numRaderPrimes = 0;
-            break;
-        case 2:
-            sc.numRaderPrimes = 34;
-            break;
-        case 3:
-            candidates[0].prime = 19;
-            break;
-        case 4:
-            candidates[0].type = 2;
-            break;
-        case 5:
-            candidates[0].generator = 2;
-            break;
-        case 6:
-            sc.numRaderPrimes = 2;
-            break;
+            case 0:
+                sc.raderContainer = nullptr;
+                break;
+            case 1:
+                sc.numRaderPrimes = 0;
+                break;
+            case 2:
+                sc.numRaderPrimes = 34;
+                break;
+            case 3:
+                candidates[0].prime = 19;
+                break;
+            case 4:
+                candidates[0].type = 2;
+                break;
+            case 5:
+                candidates[0].generator = 2;
+                break;
+            case 6:
+                sc.numRaderPrimes = 2;
+                break;
         }
         appendRadixStage(&sc, &size, &sum, &angle, &radix, 0, 0);
-        if (sc.res != VKFFT_ERROR_MATH_FAILED || sc.currentRaderContainer || state.attempts || sc.currentLen)
+        if (sc.res != VKFFT_ERROR_MATH_FAILED || sc.currentRaderContainer || state.attempts ||
+            sc.currentLen)
             return __LINE__;
     }
     VkFFTRaderContainer candidates[2]{};
@@ -198,7 +199,8 @@ int stage_dispatch_policy_case() {
     for (int type : {0, 1}) {
         candidates[1].type = type;
         if (!vkfft_codegen::stage_dispatch_valid(&sc, 0, 17, 502) ||
-            !vkfft_codegen::select_rader_stage(&sc, 0, 17) || sc.currentRaderContainer != &candidates[1])
+            !vkfft_codegen::select_rader_stage(&sc, 0, 17) ||
+            sc.currentRaderContainer != &candidates[1])
             return __LINE__;
     }
     return state.attempts || state.invalid ? __LINE__ : 0;
@@ -234,7 +236,8 @@ int normalization_entry_case(bool rader, bool direct, bool strided, bool overflo
             appendFFTRaderStage(&sc, &stage, &sum, &angle, &radix, 0);
     } else
         generate_radix_stage(&sc, 0, strided, true);
-    if (sc.res != VKFFT_ERROR_MATH_FAILED || state.attempts || live() != baseline || sc.currentLen != length)
+    if (sc.res != VKFFT_ERROR_MATH_FAILED || state.attempts || live() != baseline ||
+        sc.currentLen != length)
         return __LINE__;
     freeRegisterInitialization(&sc, 500);
     deleteAxis(&app, &axis, 0);
@@ -267,8 +270,8 @@ int direct_rader_policy_case(bool strided, bool double_precision, bool lut, int 
     state.attempts = 0;
     state.fail_at = 1;
     appendRadixStage(&sc, &stage, &sum, &angle, &radix, 0, strided ? 1 : 0);
-    if (sc.res != VKFFT_SUCCESS || state.attempts || live() != baseline || std::strstr(sc.code0, "inf") ||
-        std::strstr(sc.code0, "nan"))
+    if (sc.res != VKFFT_SUCCESS || state.attempts || live() != baseline ||
+        std::strstr(sc.code0, "inf") || std::strstr(sc.code0, "nan"))
         return __LINE__;
     if (!lut && stage_size > 1) {
         // Both halves use the integer radix; compare the emitted coefficient to an independent calculation.
@@ -303,7 +306,8 @@ extern "C" int vkfft_test_codegen_direct_rader() {
         for (bool double_precision : {false, true})
             for (bool lut : {false, true})
                 for (int stage_size : {1, 2})
-                    if (int line = direct_rader_policy_case(strided, double_precision, lut, stage_size))
+                    if (int line =
+                            direct_rader_policy_case(strided, double_precision, lut, stage_size))
                         return line;
     return 0;
 }

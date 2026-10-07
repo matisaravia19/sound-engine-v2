@@ -29,8 +29,10 @@ int scheduler_wide_batches_case() {
                                 // These small shapes do not use the even-R2C decomposition.
                                 const pfUINT first = real && axis > 0 ? 9 : 16;
                                 const pfUINT rest = rank == 1 ? 1 : rank == 2 ? 3 : 105;
-                                const pfUINT expected = first * rest * 6 * batches * (precision ? 16 : 8);
-                                if (VkFFTScheduler(&app, fixture.plan.get(), axis) != VKFFT_SUCCESS ||
+                                const pfUINT expected =
+                                    first * rest * 6 * batches * (precision ? 16 : 8);
+                                if (VkFFTScheduler(&app, fixture.plan.get(), axis) !=
+                                        VKFFT_SUCCESS ||
                                     fixture.temporary_bytes != expected)
                                     return __LINE__;
                             }
@@ -102,38 +104,38 @@ int scheduler_size_failure_case(SizeFailure scenario) {
         SchedulerFixture fixture(16, false, false, 4);
         auto& c = fixture.app.configuration;
         switch (scenario) {
-        case SizeFailure::BatchProduct:
-            c.numberBatches = 1ull << 60;
-            break;
-        case SizeFailure::DimensionProduct:
-            c.FFTdim = 2;
-            c.size[1] = 1ull << 60;
-            break;
-        case SizeFailure::FeatureProduct:
-            c.coordinateFeatures = 1ull << 60;
-            break;
-        case SizeFailure::KernelProduct:
-            c.numberKernels = 1ull << 60;
-            break;
-        case SizeFailure::BatchBytes:
-            c.numberBatches = 1ull << 57;
-            break;
-        case SizeFailure::DimensionBytes:
-            c.FFTdim = 2;
-            c.size[1] = 1ull << 57;
-            break;
-        case SizeFailure::ZeroBatches:
-            c.numberBatches = 0;
-            break;
-        case SizeFailure::ZeroFeatures:
-            c.coordinateFeatures = 0;
-            break;
-        case SizeFailure::ZeroKernels:
-            c.numberKernels = 0;
-            break;
-        case SizeFailure::MissingSizeStorage:
-            c.tempBufferSize = nullptr;
-            break;
+            case SizeFailure::BatchProduct:
+                c.numberBatches = 1ull << 60;
+                break;
+            case SizeFailure::DimensionProduct:
+                c.FFTdim = 2;
+                c.size[1] = 1ull << 60;
+                break;
+            case SizeFailure::FeatureProduct:
+                c.coordinateFeatures = 1ull << 60;
+                break;
+            case SizeFailure::KernelProduct:
+                c.numberKernels = 1ull << 60;
+                break;
+            case SizeFailure::BatchBytes:
+                c.numberBatches = 1ull << 57;
+                break;
+            case SizeFailure::DimensionBytes:
+                c.FFTdim = 2;
+                c.size[1] = 1ull << 57;
+                break;
+            case SizeFailure::ZeroBatches:
+                c.numberBatches = 0;
+                break;
+            case SizeFailure::ZeroFeatures:
+                c.coordinateFeatures = 0;
+                break;
+            case SizeFailure::ZeroKernels:
+                c.numberKernels = 0;
+                break;
+            case SizeFailure::MissingSizeStorage:
+                c.tempBufferSize = nullptr;
+                break;
         }
         fixture.temporary_bytes = 1234;
         if (VkFFTScheduler(&fixture.app, fixture.plan.get(), 0) != VKFFT_ERROR_MATH_FAILED ||
@@ -156,7 +158,8 @@ int scheduler_size_boundaries_case() {
             return __LINE__;
         ++shape[0];
         output = 1234;
-        if (vkfft_scheduler::temporary_bytes(app, plan, 0, complex_size, output) != VKFFT_ERROR_MATH_FAILED ||
+        if (vkfft_scheduler::temporary_bytes(app, plan, 0, complex_size, output) !=
+                VKFFT_ERROR_MATH_FAILED ||
             output != 1234)
             return __LINE__;
     }
@@ -170,11 +173,13 @@ int scheduler_size_boundaries_case() {
     app.configuration.performR2C = plan.bigSequenceEvenR2C = 0;
     shape[0] = 16;
     for (int axis : {-1, 1, VKFFT_MAX_FFT_DIMENSIONS})
-        if (vkfft_scheduler::temporary_bytes(app, plan, axis, 8, output) != VKFFT_ERROR_MATH_FAILED ||
+        if (vkfft_scheduler::temporary_bytes(app, plan, axis, 8, output) !=
+                VKFFT_ERROR_MATH_FAILED ||
             output != 1234)
             return __LINE__;
     for (int complex_size : {-1, 0})
-        if (vkfft_scheduler::temporary_bytes(app, plan, 0, complex_size, output) != VKFFT_ERROR_MATH_FAILED ||
+        if (vkfft_scheduler::temporary_bytes(app, plan, 0, complex_size, output) !=
+                VKFFT_ERROR_MATH_FAILED ||
             output != 1234)
             return __LINE__;
     for (pfUINT rank : {0, VKFFT_MAX_FFT_DIMENSIONS + 1}) {
@@ -198,10 +203,11 @@ extern "C" int vkfft_test_scheduler_wide_sizes() {
 
 extern "C" int vkfft_test_scheduler_size_failures() {
     using codegen_fake::SizeFailure;
-    for (auto scenario : {SizeFailure::BatchProduct, SizeFailure::DimensionProduct,
-                          SizeFailure::FeatureProduct, SizeFailure::KernelProduct, SizeFailure::BatchBytes,
-                          SizeFailure::DimensionBytes, SizeFailure::ZeroBatches, SizeFailure::ZeroFeatures,
-                          SizeFailure::ZeroKernels, SizeFailure::MissingSizeStorage})
+    for (auto scenario :
+         {SizeFailure::BatchProduct, SizeFailure::DimensionProduct, SizeFailure::FeatureProduct,
+          SizeFailure::KernelProduct, SizeFailure::BatchBytes, SizeFailure::DimensionBytes,
+          SizeFailure::ZeroBatches, SizeFailure::ZeroFeatures, SizeFailure::ZeroKernels,
+          SizeFailure::MissingSizeStorage})
         if (int line = codegen_fake::scheduler_size_failure_case(scenario))
             return line;
     return codegen_fake::scheduler_size_boundaries_case();

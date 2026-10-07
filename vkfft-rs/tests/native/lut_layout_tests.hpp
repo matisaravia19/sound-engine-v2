@@ -21,17 +21,28 @@ struct LayoutFixture {
         constants.registerBoost = 1;
         rader[0].prime = 17;
         rader[1].prime = 31;
-        for (auto& item : rader) { item.generator = 3; item.type = 1; }
+        for (auto& item : rader) {
+            item.generator = 3;
+            item.type = 1;
+        }
     }
-    VkFFTAxis& axis() { return plan->axes[0][0]; }
-    VkFFTSpecializationConstantsLayout& sc() { return axis().specializationConstants; }
+    VkFFTAxis& axis() {
+        return plan->axes[0][0];
+    }
+    VkFFTSpecializationConstantsLayout& sc() {
+        return axis().specializationConstants;
+    }
     void use_rader() {
         sc().useRader = sc().raderUintLUT = 1;
         sc().numRaderPrimes = 2;
         sc().raderContainer = rader;
     }
-    VkFFTResult build() { return VkFFT_AllocateLUT(&app, plan.get(), &axis(), 0); }
-    VkFFTResult build_integer() { return VkFFT_AllocateRaderUintLUT(&app, &axis()); }
+    VkFFTResult build() {
+        return VkFFT_AllocateLUT(&app, plan.get(), &axis(), 0);
+    }
+    VkFFTResult build_integer() {
+        return VkFFT_AllocateRaderUintLUT(&app, &axis());
+    }
 };
 
 static double uploaded_scalar(int precision, size_t index) {
@@ -47,7 +58,11 @@ static double uploaded_scalar(int precision, size_t index) {
 
 } // namespace lut_fake
 
-#define LAYOUT_CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
+#define LAYOUT_CHECK(condition)                                                                    \
+    do {                                                                                           \
+        if (!(condition))                                                                          \
+            return __LINE__;                                                                       \
+    } while (false)
 
 extern "C" int vkfft_test_lut_layout_bounds() {
     using namespace lut_fake;
@@ -55,58 +70,96 @@ extern "C" int vkfft_test_lut_layout_bounds() {
         LayoutFixture fixture;
         auto& sc = fixture.sc();
         auto& config = fixture.app.configuration;
-        if (invalid >= 10) fixture.use_rader();
+        if (invalid >= 10)
+            fixture.use_rader();
         switch (invalid) {
-        case 0: sc.numStages = -1; break;
-        case 1: sc.numStages = 34; break;
-        case 2: sc.stageRadix[1] = 0; break;
-        case 3: sc.stageRadix[1] = INT_MIN; break;
-        case 4:
-            sc.numStages = 3;
-            sc.stageRadix[0] = INT_MAX;
-            sc.stageRadix[1] = sc.stageRadix[2] = 2;
-            break;
-        case 5: case 6:
-            config.useLUT_4step = 1;
-            sc.axis_upload_id = 1;
-            sc.numAxisUploads = 2;
-            sc.stageStartSize.data.i = invalid == 5 ? int64_t(1) << 32 : -1;
-            sc.fftDim.data.i = int64_t(1) << 32;
-            break;
-        case 7: sc.axis_id = VKFFT_MAX_FFT_DIMENSIONS; break;
-        case 8: sc.axis_id = -1; break;
-        case 9: sc.axis_upload_id = 4; break;
-        case 10: sc.numRaderPrimes = -1; break;
-        case 11: sc.numRaderPrimes = 34; break;
-        case 12: sc.raderContainer = nullptr; break;
-        case 13: case 14:
-            sc.inline_rader_kernel = 1;
-            fixture.rader[0].type = 0;
-            fixture.rader[0].numStages = invalid == 13 ? 21 : -1;
-            break;
-        case 15: fixture.rader[0].prime = 0; break;
-        case 16: fixture.rader[0].generator = fixture.rader[0].prime; break;
-        case 17: fixture.rader[0].type = 2; break;
-        case 18: sc.stageRadix[1] = 11; sc.rader_generator[1] = 2; break;
-        case 19: sc.numAxisUploads = 0; break;
-        case 20: sc.numAxisUploads = 5; break;
-        case 21:
-            fixture.rader[0].type = 0;
-            fixture.rader[0].numStages = 1;
-            fixture.rader[0].stageRadix[0] = 16;
-            fixture.rader[0].raderFFTkernel = nullptr;
-            break;
+            case 0:
+                sc.numStages = -1;
+                break;
+            case 1:
+                sc.numStages = 34;
+                break;
+            case 2:
+                sc.stageRadix[1] = 0;
+                break;
+            case 3:
+                sc.stageRadix[1] = INT_MIN;
+                break;
+            case 4:
+                sc.numStages = 3;
+                sc.stageRadix[0] = INT_MAX;
+                sc.stageRadix[1] = sc.stageRadix[2] = 2;
+                break;
+            case 5:
+            case 6:
+                config.useLUT_4step = 1;
+                sc.axis_upload_id = 1;
+                sc.numAxisUploads = 2;
+                sc.stageStartSize.data.i = invalid == 5 ? int64_t(1) << 32 : -1;
+                sc.fftDim.data.i = int64_t(1) << 32;
+                break;
+            case 7:
+                sc.axis_id = VKFFT_MAX_FFT_DIMENSIONS;
+                break;
+            case 8:
+                sc.axis_id = -1;
+                break;
+            case 9:
+                sc.axis_upload_id = 4;
+                break;
+            case 10:
+                sc.numRaderPrimes = -1;
+                break;
+            case 11:
+                sc.numRaderPrimes = 34;
+                break;
+            case 12:
+                sc.raderContainer = nullptr;
+                break;
+            case 13:
+            case 14:
+                sc.inline_rader_kernel = 1;
+                fixture.rader[0].type = 0;
+                fixture.rader[0].numStages = invalid == 13 ? 21 : -1;
+                break;
+            case 15:
+                fixture.rader[0].prime = 0;
+                break;
+            case 16:
+                fixture.rader[0].generator = fixture.rader[0].prime;
+                break;
+            case 17:
+                fixture.rader[0].type = 2;
+                break;
+            case 18:
+                sc.stageRadix[1] = 11;
+                sc.rader_generator[1] = 2;
+                break;
+            case 19:
+                sc.numAxisUploads = 0;
+                break;
+            case 20:
+                sc.numAxisUploads = 5;
+                break;
+            case 21:
+                fixture.rader[0].type = 0;
+                fixture.rader[0].numStages = 1;
+                fixture.rader[0].stageRadix[0] = 16;
+                fixture.rader[0].raderFFTkernel = nullptr;
+                break;
         }
         // Rejection must precede both host allocation and transfer preparation.
         state.failure = Host;
         LAYOUT_CHECK(fixture.build() == VKFFT_ERROR_MATH_FAILED);
-        LAYOUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !live() && !state.invalid);
+        LAYOUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !live() &&
+                     !state.invalid);
         LAYOUT_CHECK(state.deleted == 1);
     }
     pfUINT total = 7;
     LAYOUT_CHECK(!vkfft_lut::add_product(total, UINT64_MAX, 2, UINT64_MAX) && total == 7);
     LAYOUT_CHECK(!vkfft_lut::add_product(total, UINT64_MAX, 1, UINT64_MAX) && total == 7);
-    LAYOUT_CHECK(vkfft_lut::add_product(total, UINT64_MAX - 7, 1, UINT64_MAX) && total == UINT64_MAX);
+    LAYOUT_CHECK(vkfft_lut::add_product(total, UINT64_MAX - 7, 1, UINT64_MAX) &&
+                 total == UINT64_MAX);
     LAYOUT_CHECK(vkfft_lut::add_product(total, UINT64_MAX, 0, UINT64_MAX) && total == UINT64_MAX);
     const int boundary[] = {INT_MAX, 2, 2};
     total = 0;
@@ -131,7 +184,8 @@ extern "C" int vkfft_test_lut_rader_layout_and_reuse() {
         config.quadDoubleDoublePrecision = precision == 3;
         config.quadDoubleDoublePrecisionDoubleMemory = precision == 4;
         fixture.sc().inline_rader_kernel = 1;
-        for (auto& rader : fixture.rader) rader.type = 0;
+        for (auto& rader : fixture.rader)
+            rader.type = 0;
         auto& first = fixture.rader[0];
         first.numStages = 2;
         first.stageRadix[0] = first.stageRadix[1] = 4;
@@ -150,12 +204,12 @@ extern "C" int vkfft_test_lut_rader_layout_and_reuse() {
         // differing forward/inverse offsets, beyond merely checking table size.
         const double pi = 3.1415926535897932384626433832795;
         const size_t indices[] = {15, 19, 43, 51, 61, 76};
-        const double angles[] = {3*pi/8, pi/3, pi/3, 3*pi/8, 8*pi/15, 14*pi/15};
+        const double angles[] = {3 * pi / 8, pi / 3, pi / 3, 3 * pi / 8, 8 * pi / 15, 14 * pi / 15};
         for (size_t i = 0; i < 6; ++i) {
             for (size_t component = 0; component < 2; ++component) {
                 const size_t scalar = indices[i] * lanes + component * lanes / 2;
                 const double value = uploaded_scalar(precision, scalar) +
-                    (lanes == 4 ? uploaded_scalar(precision, scalar + 1) : 0);
+                                     (lanes == 4 ? uploaded_scalar(precision, scalar + 1) : 0);
                 const double expected = component ? std::sin(angles[i]) : std::cos(angles[i]);
                 LAYOUT_CHECK(std::abs(value - expected) < (precision ? 1e-14 : 2e-7));
             }
@@ -180,19 +234,24 @@ extern "C" int vkfft_test_lut_rader_layout_and_reuse() {
                     sc.axis_upload_id = 1;
                     sc.numAxisUploads = 2;
                     sc.stageStartSize.data.i = sc.fftDim.data.i = 4;
-                } else if (kind < 4) sc.performDCT = kind + 1;
-                else sc.performDST = kind - 2;
+                } else if (kind < 4)
+                    sc.performDCT = kind + 1;
+                else
+                    sc.performDST = kind - 2;
                 LAYOUT_CHECK(fixture.build() == VKFFT_SUCCESS && !live() && !state.invalid);
                 const size_t lanes = precision >= 3 ? 4 : 2;
-                LAYOUT_CHECK(state.uploaded == count * lanes * (precision ? sizeof(double) : sizeof(float)));
-                if (kind) LAYOUT_CHECK(sc.startDCT3LUT.data.i == 8);
-                if (fourth) LAYOUT_CHECK(sc.startDCT4LUT.data.i == 14);
+                LAYOUT_CHECK(state.uploaded ==
+                             count * lanes * (precision ? sizeof(double) : sizeof(float)));
+                if (kind)
+                    LAYOUT_CHECK(sc.startDCT3LUT.data.i == 8);
+                if (fourth)
+                    LAYOUT_CHECK(sc.startDCT4LUT.data.i == 14);
                 const double pi = 3.1415926535897932384626433832795;
-                const double angle = kind == 0 ? 9*pi/8 : fourth ? -15*pi/64 : 9*pi/32;
+                const double angle = kind == 0 ? 9 * pi / 8 : fourth ? -15 * pi / 64 : 9 * pi / 32;
                 for (size_t component = 0; component < 2; ++component) {
                     const size_t scalar = (count - 1) * lanes + component * lanes / 2;
                     const double value = uploaded_scalar(precision, scalar) +
-                        (lanes == 4 ? uploaded_scalar(precision, scalar + 1) : 0);
+                                         (lanes == 4 ? uploaded_scalar(precision, scalar + 1) : 0);
                     const double expected = component ? std::sin(angle) : std::cos(angle);
                     LAYOUT_CHECK(std::abs(value - expected) < (precision ? 1e-14 : 2e-7));
                 }
@@ -209,16 +268,23 @@ extern "C" int vkfft_test_lut_rader_layout_and_reuse() {
             fixture.app.bufferRaderUintLUTSize[0][0] = mode == 0 ? bytes : bytes - 4;
         } else if (mode == 2) {
             fixture.rader[0].prime = fixture.rader[1].prime = INT_MAX;
-        } else if (mode == 3) fixture.rader[0].prime = -1;
-        else if (mode == 4) fixture.sc().numRaderPrimes = 0;
-        else fixture.sc().axis_upload_id = 4;
+        } else if (mode == 3)
+            fixture.rader[0].prime = -1;
+        else if (mode == 4)
+            fixture.sc().numRaderPrimes = 0;
+        else
+            fixture.sc().axis_upload_id = 4;
         state.failure = Host;
-        LAYOUT_CHECK(fixture.build_integer() == (mode == 0 ? VKFFT_SUCCESS : VKFFT_ERROR_MATH_FAILED));
-        LAYOUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !live() && !state.invalid);
+        LAYOUT_CHECK(fixture.build_integer() ==
+                     (mode == 0 ? VKFFT_SUCCESS : VKFFT_ERROR_MATH_FAILED));
+        LAYOUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !live() &&
+                     !state.invalid);
         if (mode == 0) {
-            LAYOUT_CHECK(fixture.rader[0].raderUintLUToffset == 0 && fixture.rader[1].raderUintLUToffset == 17);
+            LAYOUT_CHECK(fixture.rader[0].raderUintLUToffset == 0 &&
+                         fixture.rader[1].raderUintLUToffset == 17);
             LAYOUT_CHECK(fixture.axis().bufferRaderUintLUT == handle<VkBuffer>(3));
-            LAYOUT_CHECK(fixture.axis().bufferRaderUintLUTDeviceMemory == handle<VkDeviceMemory>(4));
+            LAYOUT_CHECK(fixture.axis().bufferRaderUintLUTDeviceMemory ==
+                         handle<VkDeviceMemory>(4));
             LAYOUT_CHECK(fixture.axis().bufferRaderUintLUTSize == bytes);
         }
     }

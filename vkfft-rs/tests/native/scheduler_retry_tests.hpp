@@ -54,8 +54,9 @@ int natural_scheduler_retry_case(bool inverse, bool precision) {
                 first_result = status;
             return status;
         });
-        if (result != VKFFT_SUCCESS || first_result != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH || calls != 2 ||
-            !plan->numAxisUploads[1] || !app.useBluesteinFFT[1] || !unchanged_other_axes(*plan, *saved, 1) ||
+        if (result != VKFFT_SUCCESS || first_result != VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH ||
+            calls != 2 || !plan->numAxisUploads[1] || !app.useBluesteinFFT[1] ||
+            !unchanged_other_axes(*plan, *saved, 1) ||
             app.configuration.fixMaxRaderPrimeFFT != old_fft ||
             app.configuration.fixMaxRaderPrimeMult != old_mult)
             return __LINE__;
@@ -98,44 +99,49 @@ int scheduler_retry_exit_case(int target, RetryScenario scenario) {
         bool caught = false;
         VkFFTResult result = VKFFT_SUCCESS;
         try {
-            result = vkfft_scheduler::schedule_axis(&app, plan, target, [&](auto* a, auto* p, int axis) {
-                ++calls;
-                auto& c = a->configuration;
-                if (calls == 1) {
-                    invalid_state |= c.fixMaxRaderPrimeFFT != old_fft || c.fixMaxRaderPrimeMult != old_mult;
-                    p->numAxisUploads[axis] = 1;
-                    p->actualPerformR2CPerAxis[axis] = 1;
-                    p->actualFFTSizePerAxis[axis][axis] = 17;
-                    p->axisSplit[axis][0] = 17;
-                } else {
-                    invalid_state |= calls != 2 || live() != previous_allocations ||
-                                     c.fixMaxRaderPrimeFFT != c.fixMinRaderPrimeFFT ||
-                                     c.fixMaxRaderPrimeMult != c.fixMinRaderPrimeMult ||
-                                     p->numAxisUploads[axis] || p->actualPerformR2CPerAxis[axis] ||
-                                     p->actualFFTSizePerAxis[axis][axis] || p->axisSplit[axis][0] ||
-                                     p->axes[axis][3].specializationConstants.raderContainer ||
-                                     p->bigSequenceEvenR2C != (axis == 0 ? 0 : 1);
-                }
-                if ((scenario == RetryScenario::FirstAllocationFailure && calls == 1) ||
-                    (scenario == RetryScenario::RetryAllocationFailure && calls == 2))
-                    state.fail_at = state.attempts + 1;
-                auto& sc = p->axes[axis][calls == 1 ? 3 : 2].specializationConstants;
-                sc.numRaderPrimes = 1;
-                sc.raderContainer =
-                    static_cast<VkFFTRaderContainer*>(allocate(1, sizeof(VkFFTRaderContainer)));
-                if (!sc.raderContainer)
-                    return VKFFT_ERROR_MALLOC_FAILED;
-                sc.raderContainer[0].prime = 17;
-                if (calls == 1)
-                    return scenario == RetryScenario::FirstSuccess ? VKFFT_SUCCESS
-                           : scenario == RetryScenario::FirstError ? VKFFT_ERROR_MATH_FAILED
-                                                                   : VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
-                if (scenario == RetryScenario::RetryException)
-                    throw std::bad_alloc();
-                return scenario == RetryScenario::RetryError         ? VKFFT_ERROR_MATH_FAILED
-                       : scenario == RetryScenario::RetryUnsupported ? VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH
-                                                                     : VKFFT_SUCCESS;
-            });
+            result =
+                vkfft_scheduler::schedule_axis(&app, plan, target, [&](auto* a, auto* p, int axis) {
+                    ++calls;
+                    auto& c = a->configuration;
+                    if (calls == 1) {
+                        invalid_state |=
+                            c.fixMaxRaderPrimeFFT != old_fft || c.fixMaxRaderPrimeMult != old_mult;
+                        p->numAxisUploads[axis] = 1;
+                        p->actualPerformR2CPerAxis[axis] = 1;
+                        p->actualFFTSizePerAxis[axis][axis] = 17;
+                        p->axisSplit[axis][0] = 17;
+                    } else {
+                        invalid_state |=
+                            calls != 2 || live() != previous_allocations ||
+                            c.fixMaxRaderPrimeFFT != c.fixMinRaderPrimeFFT ||
+                            c.fixMaxRaderPrimeMult != c.fixMinRaderPrimeMult ||
+                            p->numAxisUploads[axis] || p->actualPerformR2CPerAxis[axis] ||
+                            p->actualFFTSizePerAxis[axis][axis] || p->axisSplit[axis][0] ||
+                            p->axes[axis][3].specializationConstants.raderContainer ||
+                            p->bigSequenceEvenR2C != (axis == 0 ? 0 : 1);
+                    }
+                    if ((scenario == RetryScenario::FirstAllocationFailure && calls == 1) ||
+                        (scenario == RetryScenario::RetryAllocationFailure && calls == 2))
+                        state.fail_at = state.attempts + 1;
+                    auto& sc = p->axes[axis][calls == 1 ? 3 : 2].specializationConstants;
+                    sc.numRaderPrimes = 1;
+                    sc.raderContainer =
+                        static_cast<VkFFTRaderContainer*>(allocate(1, sizeof(VkFFTRaderContainer)));
+                    if (!sc.raderContainer)
+                        return VKFFT_ERROR_MALLOC_FAILED;
+                    sc.raderContainer[0].prime = 17;
+                    if (calls == 1)
+                        return scenario == RetryScenario::FirstSuccess ? VKFFT_SUCCESS
+                               : scenario == RetryScenario::FirstError
+                                   ? VKFFT_ERROR_MATH_FAILED
+                                   : VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH;
+                    if (scenario == RetryScenario::RetryException)
+                        throw std::bad_alloc();
+                    return scenario == RetryScenario::RetryError ? VKFFT_ERROR_MATH_FAILED
+                           : scenario == RetryScenario::RetryUnsupported
+                               ? VKFFT_ERROR_UNSUPPORTED_FFT_LENGTH
+                               : VKFFT_SUCCESS;
+                });
         } catch (const std::bad_alloc&) {
             caught = true;
         }
@@ -172,8 +178,10 @@ int scheduler_retry_invalid_axis_case() {
         if (vkfft_scheduler::schedule_axis(&fixture.app, fixture.plan.get(), axis, schedule) !=
             VKFFT_ERROR_MATH_FAILED)
             return __LINE__;
-    if (vkfft_scheduler::schedule_axis(nullptr, fixture.plan.get(), 0, schedule) != VKFFT_ERROR_MATH_FAILED ||
-        vkfft_scheduler::schedule_axis(&fixture.app, nullptr, 0, schedule) != VKFFT_ERROR_MATH_FAILED ||
+    if (vkfft_scheduler::schedule_axis(nullptr, fixture.plan.get(), 0, schedule) !=
+            VKFFT_ERROR_MATH_FAILED ||
+        vkfft_scheduler::schedule_axis(&fixture.app, nullptr, 0, schedule) !=
+            VKFFT_ERROR_MATH_FAILED ||
         calls)
         return __LINE__;
     fixture.app.configuration.FFTdim = VKFFT_MAX_FFT_DIMENSIONS + 1;
@@ -199,8 +207,9 @@ extern "C" int vkfft_test_scheduler_retry_exits() {
     for (int axis : {0, 1})
         for (auto scenario :
              {RetryScenario::FirstSuccess, RetryScenario::FirstError, RetryScenario::RetrySuccess,
-              RetryScenario::RetryError, RetryScenario::RetryException, RetryScenario::RetryUnsupported,
-              RetryScenario::FirstAllocationFailure, RetryScenario::RetryAllocationFailure})
+              RetryScenario::RetryError, RetryScenario::RetryException,
+              RetryScenario::RetryUnsupported, RetryScenario::FirstAllocationFailure,
+              RetryScenario::RetryAllocationFailure})
             if (int line = codegen_fake::scheduler_retry_exit_case(axis, scenario))
                 return line;
     return codegen_fake::scheduler_retry_invalid_axis_case();

@@ -11,7 +11,8 @@
 
 #define VKFFT_BACKEND 0
 #define VKFFT_MAX_FFT_DIMENSIONS 4
-#define VKFFT_ZERO_INIT {}
+#define VKFFT_ZERO_INIT                                                                            \
+    {}
 #define pfUINT uint64_t
 #define pfINT int64_t
 #define pfLD long double
@@ -36,16 +37,20 @@ thread_local State state;
 
 void* allocate(size_t count, size_t size) {
     ++state.attempts;
-    if (state.attempts == state.throw_at) throw std::bad_alloc();
-    if (state.attempts == state.fail_at) return nullptr;
+    if (state.attempts == state.throw_at)
+        throw std::bad_alloc();
+    if (state.attempts == state.fail_at)
+        return nullptr;
     for (auto& allocation : state.allocations) {
-        if (!allocation) return allocation = std::calloc(count, size);
+        if (!allocation)
+            return allocation = std::calloc(count, size);
     }
     state.invalid = true;
     return nullptr;
 }
 void release(void* pointer) {
-    if (!pointer) return;
+    if (!pointer)
+        return;
     for (auto& allocation : state.allocations) {
         if (allocation == pointer) {
             allocation = nullptr;
@@ -57,12 +62,12 @@ void release(void* pointer) {
 }
 int live() {
     int count = 0;
-    for (auto* allocation : state.allocations) count += allocation != nullptr;
+    for (auto* allocation : state.allocations)
+        count += allocation != nullptr;
     return count;
 }
 
-template<class Handle>
-void unexpected_destroy(VkDevice, Handle, const VkAllocationCallbacks*) {
+template <class Handle> void unexpected_destroy(VkDevice, Handle, const VkAllocationCallbacks*) {
     state.invalid = true;
 }
 
@@ -91,11 +96,14 @@ int container_case(int type, int fail_at, int* attempts) {
     container.type = type;
     PfAllocateContainerFlexible(&sc, &container, 50);
     *attempts = state.attempts;
-    if (sc.res != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS)) return __LINE__;
-    if (!fail_at && type > 100) PfSetContainerName(&sc, &container, "value");
+    if (sc.res != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS))
+        return __LINE__;
+    if (!fail_at && type > 100)
+        PfSetContainerName(&sc, &container, "value");
     PfDeallocateContainer(&sc, &container);
     PfDeallocateContainer(&sc, &container);
-    if (live() || state.invalid || container.type || container.size || container.name) return __LINE__;
+    if (live() || state.invalid || container.type || container.size || container.name)
+        return __LINE__;
     return 0;
 }
 
@@ -110,7 +118,8 @@ int copy_and_swap_case() {
     PfSetContainerName(&sc, &right, "right");
     PfCopyContainer(&sc, &left, &right);
     PfSwapContainers(&sc, &left, &right);
-    if (sc.res != VKFFT_SUCCESS || std::strcmp(left.name, "right")) return __LINE__;
+    if (sc.res != VKFFT_SUCCESS || std::strcmp(left.name, "right"))
+        return __LINE__;
     PfDeallocateContainer(&sc, &left);
     PfDeallocateContainer(&sc, &right);
     return live() || state.invalid ? __LINE__ : 0;
@@ -130,7 +139,8 @@ VkFFTResult initialize_parameters(VkFFTApplication* app, VkFFTAxis* axis) {
         sc->localSize[i].data.i = 64;
     }
     auto result = initMemoryParametersAPI(app, sc);
-    if (result != VKFFT_SUCCESS) return result;
+    if (result != VKFFT_SUCCESS)
+        return result;
     sc->inputMemoryCode = sc->vecTypeInputMemoryCode;
     sc->outputMemoryCode = sc->vecTypeOutputMemoryCode;
     return initParametersAPI(app, sc);
@@ -142,14 +152,16 @@ int parameter_case(int fail_at, bool release_before_drop, int* attempts) {
     VkFFTAxis axis{};
     auto& sc = axis.specializationConstants;
     sc.raderContainer = static_cast<VkFFTRaderContainer*>(allocate(1, sizeof(VkFFTRaderContainer)));
-    if (!sc.raderContainer) return __LINE__;
+    if (!sc.raderContainer)
+        return __LINE__;
     sc.raderContainer[0].prime = 17;
     sc.numRaderPrimes = 1;
     state.attempts = 0;
     state.fail_at = fail_at;
     auto result = initialize_parameters(&app, &axis);
     *attempts = state.attempts;
-    if (result != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS)) return __LINE__;
+    if (result != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS))
+        return __LINE__;
     if (release_before_drop) {
         freeMemoryParametersAPI(&app, &sc);
         freeParametersAPI(&app, &sc);
@@ -165,15 +177,18 @@ int borrowed_rader_case() {
     VkFFTAxis owner{}, borrower{};
     auto& sc = owner.specializationConstants;
     sc.raderContainer = static_cast<VkFFTRaderContainer*>(allocate(1, sizeof(VkFFTRaderContainer)));
-    if (!sc.raderContainer) return __LINE__;
+    if (!sc.raderContainer)
+        return __LINE__;
     sc.raderContainer[0].prime = 17;
     sc.numRaderPrimes = 1;
-    if (initialize_parameters(&app, &owner) != VKFFT_SUCCESS) return __LINE__;
+    if (initialize_parameters(&app, &owner) != VKFFT_SUCCESS)
+        return __LINE__;
     freeMemoryParametersAPI(&app, &sc);
     freeParametersAPI(&app, &sc);
     borrower.specializationConstants.raderContainer = sc.raderContainer;
     borrower.specializationConstants.numRaderPrimes = 1;
-    if (initialize_parameters(&app, &borrower) != VKFFT_SUCCESS) return __LINE__;
+    if (initialize_parameters(&app, &borrower) != VKFFT_SUCCESS)
+        return __LINE__;
     // Match application teardown: the owner's Rader array dies before the borrower.
     deleteAxis(&app, &owner, 0);
     deleteAxis(&app, &borrower, 1);
@@ -185,11 +200,14 @@ int register_case(int mode, int fail_at, bool fail_after_initialization, int* at
     VkFFTApplication app{};
     VkFFTAxis axis{};
     auto& sc = axis.specializationConstants;
-    if (mode == 3) app.configuration.quadDoubleDoublePrecision = 1;
-    if (initialize_parameters(&app, &axis) != VKFFT_SUCCESS) return __LINE__;
+    if (mode == 3)
+        app.configuration.quadDoubleDoublePrecision = 1;
+    if (initialize_parameters(&app, &axis) != VKFFT_SUCCESS)
+        return __LINE__;
     sc.maxCodeLength = 65536;
     sc.code0 = static_cast<char*>(allocate(sc.maxCodeLength, 1));
-    if (!sc.code0) return __LINE__;
+    if (!sc.code0)
+        return __LINE__;
     sc.registers_per_thread = 4;
     sc.registerBoost = 1;
     sc.matrixConvolution = 1;
@@ -214,17 +232,24 @@ int register_case(int mode, int fail_at, bool fail_after_initialization, int* at
     const int before = live();
     state.attempts = 0;
     state.fail_at = fail_at;
-    if (mode == 2) appendRegisterInitialization_R2C(&sc, 500);
-    else appendRegisterInitialization(&sc, 500);
+    if (mode == 2)
+        appendRegisterInitialization_R2C(&sc, 500);
+    else
+        appendRegisterInitialization(&sc, 500);
     *attempts = state.attempts;
-    if (sc.res != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS)) return __LINE__;
-    if (fail_after_initialization) sc.res = VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER;
+    if (sc.res != (fail_at ? VKFFT_ERROR_MALLOC_FAILED : VKFFT_SUCCESS))
+        return __LINE__;
+    if (fail_after_initialization)
+        sc.res = VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER;
     const auto expected = sc.res;
     for (int repeat = 0; repeat < 2; ++repeat) {
-        if (mode == 2) freeRegisterInitialization_R2C(&sc, 500);
-        else freeRegisterInitialization(&sc, 500);
+        if (mode == 2)
+            freeRegisterInitialization_R2C(&sc, 500);
+        else
+            freeRegisterInitialization(&sc, 500);
     }
-    if (live() != before || state.invalid || sc.res != expected || sc.regIDs || sc.regIDs_copy || sc.temp_conv)
+    if (live() != before || state.invalid || sc.res != expected || sc.regIDs || sc.regIDs_copy ||
+        sc.temp_conv)
         return __LINE__;
     deleteAxis(&app, &axis, 0);
     return live() || state.invalid ? __LINE__ : 0;
@@ -235,10 +260,12 @@ int generator_register_failure(bool r2c) {
     VkFFTApplication app{};
     VkFFTAxis axis{};
     auto& sc = axis.specializationConstants;
-    if (initialize_parameters(&app, &axis) != VKFFT_SUCCESS) return __LINE__;
+    if (initialize_parameters(&app, &axis) != VKFFT_SUCCESS)
+        return __LINE__;
     sc.maxCodeLength = 65536;
     sc.code0 = static_cast<char*>(allocate(sc.maxCodeLength, 1));
-    if (!sc.code0) return __LINE__;
+    if (!sc.code0)
+        return __LINE__;
     sc.registers_per_thread = 4;
     sc.registerBoost = 1;
     sc.matrixConvolution = 1;
@@ -257,7 +284,8 @@ int generator_register_failure(bool r2c) {
     state.attempts = 0;
     state.fail_at = 1;
     const auto result = r2c ? shaderGen_R2C_even_decomposition(&sc, 500) : shaderGen_FFT(&sc, 500);
-    if (result != VKFFT_ERROR_MALLOC_FAILED || state.attempts != 1 || live() != before) return __LINE__;
+    if (result != VKFFT_ERROR_MALLOC_FAILED || state.attempts != 1 || live() != before)
+        return __LINE__;
     deleteAxis(&app, &axis, 0);
     return live() || state.invalid ? __LINE__ : 0;
 }
@@ -269,12 +297,16 @@ int format_case(int capacity, const char* input, VkFFTResult expected) {
     sc.tempStr = temporary.data();
     sc.maxTempLength = capacity;
     const int result = PfFormatTemp(&sc, "%s", input);
-    if (sc.res != expected) return __LINE__;
-    if (capacity > 0 && result != static_cast<int>(std::strlen(input))) return __LINE__;
+    if (sc.res != expected)
+        return __LINE__;
+    if (capacity > 0 && result != static_cast<int>(std::strlen(input)))
+        return __LINE__;
     const size_t boundary = capacity > 0 ? static_cast<size_t>(capacity) : 0;
     for (size_t i = boundary; i < temporary.size(); ++i)
-        if (temporary[i] != '!') return __LINE__;
-    if (expected == VKFFT_SUCCESS && std::strcmp(temporary.data(), input)) return __LINE__;
+        if (temporary[i] != '!')
+            return __LINE__;
+    if (expected == VKFFT_SUCCESS && std::strcmp(temporary.data(), input))
+        return __LINE__;
     const auto before = temporary;
     sc.res = VKFFT_ERROR_MATH_FAILED;
     PfFormatTemp(&sc, "%s", "ignored");
@@ -297,8 +329,11 @@ int rewritten_format_case() {
     sc.code0 = output;
     sc.maxCodeLength = sizeof(output);
     PfDefine(&sc, &value, "abcdefghi");
-    if (sc.res != VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER || std::strcmp(output, "unchanged")) return __LINE__;
-    for (size_t i = 8; i < temporary.size(); ++i) if (temporary[i] != '!') return __LINE__;
+    if (sc.res != VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER || std::strcmp(output, "unchanged"))
+        return __LINE__;
+    for (size_t i = 8; i < temporary.size(); ++i)
+        if (temporary[i] != '!')
+            return __LINE__;
     PfDeallocateContainer(&sc, &value);
     return live() || state.invalid ? __LINE__ : 0;
 }
@@ -326,16 +361,20 @@ int append_case(const AppendCase& test) {
     sc.maxCodeLength = test.capacity;
     sc.maxTempLength = test.temporary_capacity;
     PfAppendLine(&sc);
-    if (sc.res != test.expected) return __LINE__;
+    if (sc.res != test.expected)
+        return __LINE__;
     if (test.expected != VKFFT_SUCCESS) {
-        if (output != before || sc.currentLen != test.current) return __LINE__;
+        if (output != before || sc.currentLen != test.current)
+            return __LINE__;
     } else {
         const auto end = static_cast<size_t>(test.current + test.length);
-        if (sc.currentLen != static_cast<pfINT>(end) || output[end] != 0) return __LINE__;
+        if (sc.currentLen != static_cast<pfINT>(end) || output[end] != 0)
+            return __LINE__;
         if (std::memcmp(output.data() + test.current, temporary, static_cast<size_t>(test.length)))
             return __LINE__;
         for (size_t i = end + 1; i < output.size(); ++i) {
-            if (output[i] != before[i]) return __LINE__;
+            if (output[i] != before[i])
+                return __LINE__;
         }
     }
     return 0;
@@ -345,13 +384,15 @@ int append_case(const AppendCase& test) {
 
 extern "C" int vkfft_test_codegen_containers() {
     using namespace codegen_fake;
-    for (int type : {0, 1, 2, 3, 11, 12, 13, 22, 23, 31, 32, 33,
-            101, 112, 113, 122, 123, 132, 133, 201, 213, 300, 313, 323}) {
+    for (int type : {0,   1,   2,   3,   11,  12,  13,  22,  23,  31,  32,  33,
+                     101, 112, 113, 122, 123, 132, 133, 201, 213, 300, 313, 323}) {
         int attempts = 0;
-        if (int line = container_case(type, 0, &attempts)) return line;
+        if (int line = container_case(type, 0, &attempts))
+            return line;
         for (int fail_at = 1; fail_at <= attempts; ++fail_at) {
             int ignored = 0;
-            if (int line = container_case(type, fail_at, &ignored)) return line;
+            if (int line = container_case(type, fail_at, &ignored))
+                return line;
         }
     }
     return copy_and_swap_case();
@@ -363,19 +404,29 @@ extern "C" int vkfft_test_codegen_bounds() {
     constexpr auto temp_error = VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER;
     constexpr auto maximum = std::numeric_limits<pfINT>::max();
     const AppendCase cases[] = {
-        {0, 0, 8, 10, VKFFT_SUCCESS}, {0, 7, 8, 10, VKFFT_SUCCESS},
-        {2, 5, 8, 10, VKFFT_SUCCESS}, {2, 6, 8, 10, code_error},
-        {0, 8, 8, 10, code_error}, {0, 9, 8, 10, code_error},
-        {0, 0, 0, 10, code_error}, {-1, 1, 8, 10, code_error},
-        {8, 0, 8, 10, code_error}, {9, 0, 8, 10, code_error},
+        {0, 0, 8, 10, VKFFT_SUCCESS},
+        {0, 7, 8, 10, VKFFT_SUCCESS},
+        {2, 5, 8, 10, VKFFT_SUCCESS},
+        {2, 6, 8, 10, code_error},
+        {0, 8, 8, 10, code_error},
+        {0, 9, 8, 10, code_error},
+        {0, 0, 0, 10, code_error},
+        {-1, 1, 8, 10, code_error},
+        {8, 0, 8, 10, code_error},
+        {9, 0, 8, 10, code_error},
         {maximum - 2, 8, maximum, 10, code_error},
-        {0, -1, 8, 10, temp_error}, {0, 7, 8, 7, temp_error},
-        {0, 0, 8, 0, temp_error}, {0, 1, 8, -1, temp_error},
+        {0, -1, 8, 10, temp_error},
+        {0, 7, 8, 7, temp_error},
+        {0, 0, 8, 0, temp_error},
+        {0, 1, 8, -1, temp_error},
     };
-    for (const auto& test : cases) if (int line = append_case(test)) return line;
+    for (const auto& test : cases)
+        if (int line = append_case(test))
+            return line;
     VkFFTSpecializationConstantsLayout sc{};
     PfAppendLine(&sc);
-    if (sc.res != temp_error) return __LINE__;
+    if (sc.res != temp_error)
+        return __LINE__;
     sc.res = VKFFT_ERROR_MATH_FAILED;
     PfAppendLine(&sc);
     return sc.res == VKFFT_ERROR_MATH_FAILED ? 0 : __LINE__;
@@ -385,10 +436,12 @@ extern "C" int vkfft_test_codegen_parameters() {
     using namespace codegen_fake;
     for (bool release_before_drop : {false, true}) {
         int attempts = 0;
-        if (int line = parameter_case(0, release_before_drop, &attempts)) return line;
+        if (int line = parameter_case(0, release_before_drop, &attempts))
+            return line;
         for (int fail_at = 1; fail_at <= attempts; ++fail_at) {
             int ignored = 0;
-            if (int line = parameter_case(fail_at, release_before_drop, &ignored)) return line;
+            if (int line = parameter_case(fail_at, release_before_drop, &ignored))
+                return line;
         }
     }
     return borrowed_rader_case();
@@ -398,24 +451,31 @@ extern "C" int vkfft_test_codegen_registers() {
     using namespace codegen_fake;
     for (int mode = 0; mode < 4; ++mode) {
         int attempts = 0;
-        if (int line = register_case(mode, 0, false, &attempts)) return line;
+        if (int line = register_case(mode, 0, false, &attempts))
+            return line;
         for (int fail_at = 1; fail_at <= attempts; ++fail_at) {
             int ignored = 0;
-            if (int line = register_case(mode, fail_at, false, &ignored)) return line;
+            if (int line = register_case(mode, fail_at, false, &ignored))
+                return line;
         }
-        if (int line = register_case(mode, 0, true, &attempts)) return line;
+        if (int line = register_case(mode, 0, true, &attempts))
+            return line;
     }
     for (bool r2c : {false, true}) {
-        if (int line = generator_register_failure(r2c)) return line;
+        if (int line = generator_register_failure(r2c))
+            return line;
     }
     VkFFTSpecializationConstantsLayout sc{};
     sc.registers_per_thread = INT_MAX;
     sc.registerBoost = 2;
-    if (vkfft_codegen::register_count(&sc, 500, false)) return __LINE__;
+    if (vkfft_codegen::register_count(&sc, 500, false))
+        return __LINE__;
     sc.registers_per_thread = 3;
-    if (vkfft_codegen::register_count(&sc, 500, true)) return __LINE__;
+    if (vkfft_codegen::register_count(&sc, 500, true))
+        return __LINE__;
     sc.usedLocRegs = 34;
-    if (vkfft_codegen::register_layout_valid(&sc)) return __LINE__;
+    if (vkfft_codegen::register_layout_valid(&sc))
+        return __LINE__;
     sc.usedLocRegs = 0;
     sc.useRaderMult = 1;
     return vkfft_codegen::register_layout_valid(&sc) ? __LINE__ : 0;
@@ -424,15 +484,19 @@ extern "C" int vkfft_test_codegen_registers() {
 extern "C" int vkfft_test_codegen_formatting() {
     using namespace codegen_fake;
     for (const char* input : {"", "1234567", "12345678", "123456789012345678901234567890"}) {
-        const auto expected = std::strlen(input) < 8 ? VKFFT_SUCCESS : VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER;
-        if (int line = format_case(8, input, expected)) return line;
+        const auto expected =
+            std::strlen(input) < 8 ? VKFFT_SUCCESS : VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER;
+        if (int line = format_case(8, input, expected))
+            return line;
     }
     for (int capacity : {0, -1})
-        if (int line = format_case(capacity, "x", VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER)) return line;
+        if (int line = format_case(capacity, "x", VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER))
+            return line;
     VkFFTSpecializationConstantsLayout sc{};
     sc.maxTempLength = 8;
     PfFormatTemp(&sc, "%s", "x");
-    if (sc.res != VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER) return __LINE__;
+    if (sc.res != VKFFT_ERROR_INSUFFICIENT_TEMP_BUFFER)
+        return __LINE__;
     return rewritten_format_case();
 }
 

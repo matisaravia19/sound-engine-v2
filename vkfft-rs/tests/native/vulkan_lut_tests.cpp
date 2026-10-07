@@ -11,7 +11,8 @@
 
 #define VKFFT_BACKEND 0
 #define VKFFT_MAX_FFT_DIMENSIONS 4
-#define VKFFT_ZERO_INIT {}
+#define VKFFT_ZERO_INIT                                                                            \
+    {}
 #define pfUINT uint64_t
 #define pfINT int64_t
 #define pfLD long double
@@ -25,7 +26,10 @@
 
 namespace lut_fake {
 enum Failure { None, Host, Device, Transfer, ThrowTransfer };
-struct Allocation { void* data = nullptr; size_t size = 0; };
+struct Allocation {
+    void* data = nullptr;
+    size_t size = 0;
+};
 struct State {
     std::array<Allocation, 16> allocations{};
     std::array<unsigned char, 65536> upload{};
@@ -44,12 +48,18 @@ thread_local State state;
 
 void* allocate(size_t size, bool zero) {
     ++state.attempts;
-    if (state.failure == Host) return nullptr;
-    if (size > state.upload.size()) { state.invalid = true; return nullptr; }
+    if (state.failure == Host)
+        return nullptr;
+    if (size > state.upload.size()) {
+        state.invalid = true;
+        return nullptr;
+    }
     for (auto& allocation : state.allocations) {
-        if (allocation.data) continue;
+        if (allocation.data)
+            continue;
         allocation = {std::malloc(size + 16), size};
-        if (!allocation.data) return nullptr;
+        if (!allocation.data)
+            return nullptr;
         std::memset(allocation.data, zero ? 0 : 0xa5, size);
         std::memset(static_cast<unsigned char*>(allocation.data) + size, 0x5a, 16);
         return allocation.data;
@@ -57,17 +67,26 @@ void* allocate(size_t size, bool zero) {
     state.invalid = true;
     return nullptr;
 }
-void* allocate_raw(size_t size) { return allocate(size, false); }
+void* allocate_raw(size_t size) {
+    return allocate(size, false);
+}
 void* allocate_zero(size_t count, size_t size) {
-    if (size && count > SIZE_MAX / size) { state.invalid = true; return nullptr; }
+    if (size && count > SIZE_MAX / size) {
+        state.invalid = true;
+        return nullptr;
+    }
     return allocate(count * size, true);
 }
 void release(void* pointer) {
-    if (!pointer) return;
+    if (!pointer)
+        return;
     for (auto& allocation : state.allocations) {
-        if (allocation.data != pointer) continue;
+        if (allocation.data != pointer)
+            continue;
         const auto* guard = static_cast<unsigned char*>(pointer) + allocation.size;
-        for (int i = 0; i < 16; ++i) if (guard[i] != 0x5a) state.invalid = true;
+        for (int i = 0; i < 16; ++i)
+            if (guard[i] != 0x5a)
+                state.invalid = true;
         std::free(pointer);
         allocation = {};
         return;
@@ -76,37 +95,53 @@ void release(void* pointer) {
 }
 int live() {
     int count = 0;
-    for (const auto& allocation : state.allocations) count += allocation.data != nullptr;
+    for (const auto& allocation : state.allocations)
+        count += allocation.data != nullptr;
     return count;
 }
-template<class Handle> Handle handle(uintptr_t value) {
-    if constexpr (std::is_pointer_v<Handle>) return reinterpret_cast<Handle>(value);
-    else return static_cast<Handle>(value);
+template <class Handle> Handle handle(uintptr_t value) {
+    if constexpr (std::is_pointer_v<Handle>)
+        return reinterpret_cast<Handle>(value);
+    else
+        return static_cast<Handle>(value);
 }
-void destroy_buffer(VkDevice, VkBuffer, const VkAllocationCallbacks*) { ++state.destroyed_buffers; }
-void free_memory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) { ++state.freed_memories; }
-template<class Handle> void unexpected_destroy(VkDevice, Handle, const VkAllocationCallbacks*) {
+void destroy_buffer(VkDevice, VkBuffer, const VkAllocationCallbacks*) {
+    ++state.destroyed_buffers;
+}
+void free_memory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) {
+    ++state.freed_memories;
+}
+template <class Handle> void unexpected_destroy(VkDevice, Handle, const VkAllocationCallbacks*) {
     state.invalid = true;
 }
 } // namespace lut_fake
 
-static inline void deleteVkFFT(VkFFTApplication*) { ++lut_fake::state.deleted; }
+static inline void deleteVkFFT(VkFFTApplication*) {
+    ++lut_fake::state.deleted;
+}
 static inline VkFFTResult allocateBufferVulkan(VkFFTApplication*, VkBuffer* buffer,
-        VkDeviceMemory* memory, VkBufferUsageFlags, VkMemoryPropertyFlags, VkDeviceSize) {
+                                               VkDeviceMemory* memory, VkBufferUsageFlags,
+                                               VkMemoryPropertyFlags, VkDeviceSize) {
     auto& state = lut_fake::state;
     ++state.device_calls;
-    if (state.failure == lut_fake::Device) return VKFFT_ERROR_FAILED_TO_ALLOCATE_MEMORY;
+    if (state.failure == lut_fake::Device)
+        return VKFFT_ERROR_FAILED_TO_ALLOCATE_MEMORY;
     *buffer = lut_fake::handle<VkBuffer>(1);
     *memory = lut_fake::handle<VkDeviceMemory>(2);
     return VKFFT_SUCCESS;
 }
-static inline VkFFTResult VkFFT_TransferDataFromCPU(VkFFTApplication*, void* source,
-        VkBuffer*, uint64_t size) {
+static inline VkFFTResult VkFFT_TransferDataFromCPU(VkFFTApplication*, void* source, VkBuffer*,
+                                                    uint64_t size) {
     auto& state = lut_fake::state;
     ++state.transfer_calls;
-    if (state.failure == lut_fake::ThrowTransfer) throw 1;
-    if (state.failure == lut_fake::Transfer) return VKFFT_ERROR_FAILED_TO_MAP_MEMORY;
-    if (size > state.upload.size()) { state.invalid = true; return VKFFT_ERROR_MATH_FAILED; }
+    if (state.failure == lut_fake::ThrowTransfer)
+        throw 1;
+    if (state.failure == lut_fake::Transfer)
+        return VKFFT_ERROR_FAILED_TO_MAP_MEMORY;
+    if (size > state.upload.size()) {
+        state.invalid = true;
+        return VKFFT_ERROR_MATH_FAILED;
+    }
     state.uploaded = static_cast<size_t>(size);
     std::memcpy(state.upload.data(), source, state.uploaded);
     return VKFFT_SUCCESS;
@@ -137,8 +172,8 @@ static inline VkFFTResult VkFFT_TransferDataFromCPU(VkFFTApplication*, void* sou
 namespace lut_fake {
 // Separate plan storage keeps these large native structs off the test stack.
 VkFFTResult run_case(int kind, int precision, bool shared, Failure failure, bool empty = false,
-                    uint64_t size = 16, bool oversized_dct = false,
-                    VkFFTResult prior = VKFFT_SUCCESS) {
+                     uint64_t size = 16, bool oversized_dct = false,
+                     VkFFTResult prior = VKFFT_SUCCESS) {
     state = {};
     state.failure = failure;
     VkFFTApplication app{};
@@ -157,7 +192,8 @@ VkFFTResult run_case(int kind, int precision, bool shared, Failure failure, bool
     auto& borrowed = kind == 1 ? inverse->R2Cdecomposition : inverse->axes[0][0];
     borrowed.bufferLUT = handle<VkBuffer>(3);
     borrowed.bufferLUTDeviceMemory = handle<VkDeviceMemory>(4);
-    borrowed.bufferLUTSize = 8 * (precision >= 3 ? 4 : 2) * (precision ? sizeof(double) : sizeof(float));
+    borrowed.bufferLUTSize =
+        8 * (precision >= 3 ? 4 : 2) * (precision ? sizeof(double) : sizeof(float));
     sc.numStages = empty ? 1 : 2;
     sc.stageRadix[0] = 4;
     sc.stageRadix[1] = 4;
@@ -177,17 +213,21 @@ VkFFTResult run_case(int kind, int precision, bool shared, Failure failure, bool
     }
     borrowed.specializationConstants = sc;
     borrowed.specializationConstants.maxStageSumLUT = 8;
-    const auto result = kind == 1 ? VkFFT_AllocateLUT_R2C(&app, plan.get(), &axis, 0)
-        : kind == 2 ? VkFFT_AllocateRaderUintLUT(&app, &axis)
-        : VkFFT_AllocateLUT(&app, plan.get(), &axis, 0);
+    const auto result = kind == 1   ? VkFFT_AllocateLUT_R2C(&app, plan.get(), &axis, 0)
+                        : kind == 2 ? VkFFT_AllocateRaderUintLUT(&app, &axis)
+                                    : VkFFT_AllocateLUT(&app, plan.get(), &axis, 0);
     state.borrowed = axis.referenceLUT == 1 && axis.bufferLUT == borrowed.bufferLUT &&
-        axis.bufferLUTDeviceMemory == borrowed.bufferLUTDeviceMemory &&
-        axis.bufferLUTSize == borrowed.bufferLUTSize;
+                     axis.bufferLUTDeviceMemory == borrowed.bufferLUTDeviceMemory &&
+                     axis.bufferLUTSize == borrowed.bufferLUTSize;
     return result;
 }
 } // namespace lut_fake
 
-#define LUT_CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
+#define LUT_CHECK(condition)                                                                       \
+    do {                                                                                           \
+        if (!(condition))                                                                          \
+            return __LINE__;                                                                       \
+    } while (false)
 
 extern "C" int vkfft_test_lut_ownership() {
     using namespace lut_fake;
@@ -196,22 +236,31 @@ extern "C" int vkfft_test_lut_ownership() {
             for (auto failure : {None, Host, Device, Transfer, ThrowTransfer}) {
                 bool threw = false;
                 VkFFTResult result = VKFFT_SUCCESS;
-                try { result = run_case(kind, precision, false, failure); }
-                catch (int) { threw = true; }
-                const auto expected = failure == Host ? VKFFT_ERROR_MALLOC_FAILED
-                    : failure == Device ? VKFFT_ERROR_FAILED_TO_ALLOCATE_MEMORY
-                    : failure == Transfer ? VKFFT_ERROR_FAILED_TO_MAP_MEMORY : VKFFT_SUCCESS;
+                try {
+                    result = run_case(kind, precision, false, failure);
+                } catch (int) {
+                    threw = true;
+                }
+                const auto expected = failure == Host       ? VKFFT_ERROR_MALLOC_FAILED
+                                      : failure == Device   ? VKFFT_ERROR_FAILED_TO_ALLOCATE_MEMORY
+                                      : failure == Transfer ? VKFFT_ERROR_FAILED_TO_MAP_MEMORY
+                                                            : VKFFT_SUCCESS;
                 LUT_CHECK(result == expected && threw == (failure == ThrowTransfer));
                 LUT_CHECK(live() == 0 && !state.invalid);
                 LUT_CHECK(state.attempts == 1);
-                LUT_CHECK(state.deleted == (failure == Host || failure == Device || failure == Transfer));
+                LUT_CHECK(state.deleted ==
+                          (failure == Host || failure == Device || failure == Transfer));
             }
-            if (kind == 2) continue;
+            if (kind == 2)
+                continue;
             LUT_CHECK(run_case(kind, precision, false, None, false, 16, false,
-                VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER) == VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER);
-            LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && state.deleted == 1);
+                               VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER) ==
+                      VKFFT_ERROR_INSUFFICIENT_CODE_BUFFER);
+            LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls &&
+                      state.deleted == 1);
             LUT_CHECK(run_case(kind, precision, true, None) == VKFFT_SUCCESS);
-            LUT_CHECK(state.borrowed && !state.device_calls && !state.transfer_calls && !live() && !state.invalid);
+            LUT_CHECK(state.borrowed && !state.device_calls && !state.transfer_calls && !live() &&
+                      !state.invalid);
             // Reuse must also work when no host allocation could succeed.
             LUT_CHECK(!state.attempts);
             LUT_CHECK(run_case(kind, precision, true, Host) == VKFFT_SUCCESS);
@@ -229,19 +278,28 @@ extern "C" int vkfft_test_lut_values_and_bounds() {
         const size_t lanes = precision >= 3 ? 4 : 2;
         LUT_CHECK(run_case(0, precision, false, None, true) == VKFFT_SUCCESS);
         LUT_CHECK(state.uploaded == scalar_bytes * lanes / 2 && !live() && !state.invalid);
-        for (size_t i = 0; i < state.uploaded; ++i) LUT_CHECK(state.upload[i] == 0);
+        for (size_t i = 0; i < state.uploaded; ++i)
+            LUT_CHECK(state.upload[i] == 0);
         for (int kind : {0, 1}) {
             LUT_CHECK(run_case(kind, precision, false, None) == VKFFT_SUCCESS);
             LUT_CHECK(state.uploaded == 8 * lanes * scalar_bytes && !live() && !state.invalid);
             for (size_t i = 0; i < 8; ++i) {
                 const double angle = kind ? pi * i / 8 : pi * (i % 4) / 4 / (i < 4 ? 1 : 2);
                 for (size_t component = 0; component < 2; ++component) {
-                    const auto* input = state.upload.data() + scalar_bytes * (i * lanes + component * lanes / 2);
+                    const auto* input =
+                        state.upload.data() + scalar_bytes * (i * lanes + component * lanes / 2);
                     double value;
-                    if (!precision) { float scalar; std::memcpy(&scalar, input, sizeof(scalar)); value = scalar; }
-                    else {
+                    if (!precision) {
+                        float scalar;
+                        std::memcpy(&scalar, input, sizeof(scalar));
+                        value = scalar;
+                    } else {
                         std::memcpy(&value, input, sizeof(value));
-                        if (lanes == 4) { double low; std::memcpy(&low, input + sizeof(double), sizeof(low)); value += low; }
+                        if (lanes == 4) {
+                            double low;
+                            std::memcpy(&low, input + sizeof(double), sizeof(low));
+                            value += low;
+                        }
                     }
                     const double expected = component ? std::sin(angle) : std::cos(angle);
                     LUT_CHECK(std::abs(value - expected) < (precision ? 1e-14 : 2e-7));
@@ -249,11 +307,14 @@ extern "C" int vkfft_test_lut_values_and_bounds() {
             }
         }
         // Reject byte multiplication overflow before allocating or writing the table.
-        LUT_CHECK(run_case(0, precision, false, None, true, UINT64_MAX - 1, true) == VKFFT_ERROR_MATH_FAILED);
-        LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !state.invalid);
+        LUT_CHECK(run_case(0, precision, false, None, true, UINT64_MAX - 1, true) ==
+                  VKFFT_ERROR_MATH_FAILED);
+        LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls &&
+                  !state.invalid);
         for (uint64_t size : {uint64_t(0), uint64_t(1), UINT64_MAX}) {
             LUT_CHECK(run_case(1, precision, false, None, false, size) == VKFFT_ERROR_MATH_FAILED);
-            LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls && !state.invalid);
+            LUT_CHECK(!state.attempts && !state.device_calls && !state.transfer_calls &&
+                      !state.invalid);
         }
     }
     LUT_CHECK(run_case(2, 0, false, None) == VKFFT_SUCCESS);

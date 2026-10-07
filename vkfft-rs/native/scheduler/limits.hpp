@@ -11,10 +11,10 @@ namespace vkfft_scheduler {
 // Validate before mutation, including capacities used by later axis splitting.
 static inline VkFFTResult prepare_limits(VkFFTConfiguration& c, int complex_size) {
     const auto signed_max = static_cast<pfUINT>((std::numeric_limits<int>::max)());
-    if (complex_size <= 0 || !c.coalescedMemory || c.coalescedMemory > signed_max || !c.maxThreadsNum ||
-        c.maxThreadsNum > signed_max || !c.warpSize || c.warpSize > signed_max || !c.sharedMemorySize ||
-        c.sharedMemorySize > signed_max || !c.sharedMemorySizePow2 ||
-        c.sharedMemorySizePow2 > c.sharedMemorySize ||
+    if (complex_size <= 0 || !c.coalescedMemory || c.coalescedMemory > signed_max ||
+        !c.maxThreadsNum || c.maxThreadsNum > signed_max || !c.warpSize ||
+        c.warpSize > signed_max || !c.sharedMemorySize || c.sharedMemorySize > signed_max ||
+        !c.sharedMemorySizePow2 || c.sharedMemorySizePow2 > c.sharedMemorySize ||
         (c.sharedMemorySizePow2 & (c.sharedMemorySizePow2 - 1)) || !c.registerBoost ||
         !c.registerBoost4Step || c.performBandwidthBoost > signed_max)
         return VKFFT_ERROR_MATH_FAILED;
