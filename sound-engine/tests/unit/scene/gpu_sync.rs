@@ -44,9 +44,10 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
         .unwrap();
     let initial = scene.sync_gpu_if_needed(&gpu).unwrap();
     let tlas = initial.tlas_id();
-    let blas = initial.instances()[0].blas_id;
-    let diffraction = initial.diffraction_blas_id();
+    let blas = initial.geometry.instances[0].blas_id;
+    let diffraction = initial.diffraction.blas.as_ref().unwrap().id;
     let edge_buffer = initial.diffraction_edge_buffer().buffer;
+    assert_eq!(gpu.rt().resource_counts(), (2, 1));
 
     let mut absorbing = material.clone();
     absorbing.absorption = 0.75;
@@ -56,8 +57,8 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
         vec![SceneUpdate::ReplaceMaterial(absorbing)],
     );
     assert_eq!(resources.tlas_id(), tlas);
-    assert_eq!(resources.instances()[0].blas_id, blas);
-    assert_eq!(resources.diffraction_blas_id(), diffraction);
+    assert_eq!(resources.geometry.instances[0].blas_id, blas);
+    assert_eq!(resources.diffraction.blas.as_ref().unwrap().id, diffraction);
     assert_eq!(resources.diffraction_edge_buffer().buffer, edge_buffer);
     assert_eq!(
         read_records::<GpuMaterial>(&gpu, resources.material_buffer())[0].specular_pressure,
@@ -103,8 +104,8 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
         }],
     );
     assert_ne!(resources.tlas_id(), tlas);
-    assert_eq!(resources.instances()[0].blas_id, blas);
-    assert_eq!(resources.diffraction_blas_id(), diffraction);
+    assert_eq!(resources.geometry.instances[0].blas_id, blas);
+    assert_eq!(resources.diffraction.blas.as_ref().unwrap().id, diffraction);
     assert_eq!(
         read_records::<GpuObject>(&gpu, resources.object_buffer())[0].object_to_world,
         transform.to_cols_array_2d()
@@ -118,9 +119,9 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
         &mut scene,
         vec![SceneUpdate::ReplaceMesh(replacement)],
     );
-    assert_ne!(resources.instances()[0].blas_id, blas);
+    assert_ne!(resources.geometry.instances[0].blas_id, blas);
     assert_ne!(resources.tlas_id(), translated_tlas);
-    assert_eq!(resources.diffraction_blas_id(), diffraction);
+    assert_eq!(resources.diffraction.blas.as_ref().unwrap().id, diffraction);
     let uploaded_object = read_records::<GpuObject>(&gpu, resources.object_buffer())[0];
     assert_eq!(uploaded_object.indexed, 1);
     assert_eq!(
@@ -149,15 +150,16 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
         &mut scene,
         vec![SceneUpdate::ReplaceDiffractionEdge(edge.clone())],
     );
-    assert_eq!(resources.tlas_id(), tlas);
+    assert_ne!(resources.tlas_id(), tlas);
     assert_eq!(resources.object_buffer().buffer, object_buffer);
     assert_eq!(resources.material_buffer().buffer, material_buffer);
-    assert_ne!(resources.diffraction_blas_id(), diffraction);
+    assert_ne!(resources.diffraction.blas.as_ref().unwrap().id, diffraction);
     assert_eq!(
         read_records::<GpuDiffractionEdge>(&gpu, resources.diffraction_edge_buffer())[0]
             .diffraction_radius,
         0.3
     );
+    let tlas = resources.tlas_id();
     let resources = update(
         &gpu,
         &mut scene,
@@ -169,18 +171,21 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
             SceneUpdate::RemoveDiffractionEdge(1),
         ],
     );
-    assert_eq!(resources.tlas_id(), tlas);
+    assert_ne!(resources.tlas_id(), tlas);
     assert_eq!(
         resources.diffraction_edge_buffer().size,
         size_of::<GpuDiffractionEdge>() as u64
     );
+    let tlas = resources.tlas_id();
     let resources = update(
         &gpu,
         &mut scene,
         vec![SceneUpdate::RemoveDiffractionEdge(2)],
     );
-    assert_eq!(resources.tlas_id(), tlas);
-    assert_eq!(resources.diffraction_blas_id(), None);
+    assert_ne!(resources.tlas_id(), tlas);
+    assert!(resources.diffraction.blas.is_none());
+    assert_eq!(gpu.rt().resource_counts(), (1, 1));
+    let tlas = resources.tlas_id();
 
     let resources = update(
         &gpu,
@@ -190,8 +195,10 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
             active: false,
         }],
     );
-    assert_eq!(resources.tlas_id(), None);
-    assert_eq!(resources.instance_count(), 0);
+    assert_ne!(resources.tlas_id(), tlas);
+    assert!(resources.geometry.instances.is_empty());
+    assert_eq!(gpu.rt().resource_counts(), (1, 1));
+    let empty_tlas = resources.tlas_id();
     let resources = update(
         &gpu,
         &mut scene,
@@ -200,8 +207,8 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
             ..object.clone()
         })],
     );
-    assert!(resources.tlas_id().is_some());
-    assert_eq!(resources.instance_count(), 1);
+    assert_ne!(resources.tlas_id(), empty_tlas);
+    assert_eq!(resources.geometry.instances.len(), 1);
     let resources = update(
         &gpu,
         &mut scene,
@@ -213,7 +220,8 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     );
     assert_eq!(
         resources
-            .instances()
+            .geometry
+            .instances
             .iter()
             .map(|instance| instance.custom_index)
             .collect::<Vec<_>>(),
@@ -228,9 +236,10 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
             SceneUpdate::RemoveMesh(1),
         ],
     );
-    assert_eq!(resources.tlas_id(), None);
-    assert_eq!(gpu.rt().resource_counts(), (0, 0));
+    assert!(resources.geometry.instances.is_empty());
+    assert_eq!(gpu.rt().resource_counts(), (0, 1));
     drop(scene);
+    assert_eq!(gpu.rt().resource_counts(), (0, 0));
     assert_eq!(
         gpu.memory().live_allocation_stats().unwrap(),
         (1, 16 * 1024 * 1024)

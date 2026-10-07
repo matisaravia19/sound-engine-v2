@@ -176,7 +176,7 @@ fn trace(
 ) -> SoundResult<IrSnapshot> {
     let mut scene = SceneManager::new();
     scene.load(description)?;
-    let mut pipeline = AcousticPipeline::new(gpu, config)?;
+    let pipeline = AcousticPipeline::new(gpu, config)?;
     pipeline.build_ir(gpu, &mut scene, query)
 }
 

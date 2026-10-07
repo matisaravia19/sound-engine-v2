@@ -44,7 +44,7 @@ The code implements one broadband scalar acoustic model. Material arrays do not 
 
 `.rgen` starts rays; `.rmiss` handles a ray that hits nothing; `.rchit` handles the closest accepted hit; `.rint` intersects procedural geometry; `.comp` runs a compute dispatch. Plain `.glsl` files below are includes, not separately dispatched shaders.
 
-All seven acoustic entry points are loaded and registered by [AcousticPipeline::new](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs:96). Registration does not mean every stage executes in every scene: diffraction stages need edge geometry, and hit stages need a hit. The eighth entry point is loaded by the convolver.
+All seven acoustic entry points are loaded and registered by [AcousticPipeline::new](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs:64). Registration does not mean every stage executes in every scene: diffraction stages need edge geometry, and hit stages need a hit. The eighth entry point is loaded by the convolver.
 
 | ID | Shader | Role and caller | Connected feature |
 | --- | --- | --- | --- |

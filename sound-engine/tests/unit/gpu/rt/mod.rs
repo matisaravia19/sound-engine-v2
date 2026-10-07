@@ -106,8 +106,7 @@ fn audit_scene_rebuilds_release_old_acceleration_structures() {
             }],
         })
         .unwrap();
-    scene.sync_gpu_if_needed(&gpu).unwrap();
-    let first_blas = scene.sync_gpu_if_needed(&gpu).unwrap().instances()[0].blas_id;
+    let first_tlas = scene.sync_gpu_if_needed(&gpu).unwrap().tlas_id();
     for step in 1..9 {
         let mut replacement = mesh.clone();
         replacement.vertices[1].x += step as f32 * 0.1;
@@ -117,7 +116,7 @@ fn audit_scene_rebuilds_release_old_acceleration_structures() {
             })
             .unwrap();
         let rebuilt = scene.sync_gpu_if_needed(&gpu).unwrap();
-        assert_ne!(rebuilt.instances()[0].blas_id, first_blas);
+        assert_ne!(rebuilt.tlas_id(), first_tlas);
         assert_eq!(gpu.rt().resource_counts(), (2, 1));
     }
     drop(scene);

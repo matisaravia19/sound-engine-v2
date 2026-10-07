@@ -272,7 +272,7 @@ fn trace_case(
     let setup_start = Instant::now();
     let mut scene = SceneManager::new();
     scene.load(case.scene.clone())?;
-    let mut pipeline = AcousticPipeline::new(
+    let pipeline = AcousticPipeline::new(
         gpu,
         acoustic_config(options.rays, options.seed, case.max_bounces),
     )?;

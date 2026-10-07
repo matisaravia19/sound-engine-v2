@@ -26,7 +26,7 @@ fn diffraction_requires_visible_ray_traced_geometry() {
         },
         binaural: BinauralConfig::default(),
     };
-    let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
+    let pipeline = AcousticPipeline::new(&gpu, config).unwrap();
 
     let query = AcousticQuery {
         query_id: 1,
@@ -145,7 +145,7 @@ fn multiple_edge_paths_require_each_event_and_preserve_source_scale() {
             let mut scene = SceneManager::new();
             scene.load(description).unwrap();
             config.tracing.max_bounces = bounces;
-            let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
+            let pipeline = AcousticPipeline::new(&gpu, config).unwrap();
             let ir = pipeline
                 .build_ir(
                     &gpu,

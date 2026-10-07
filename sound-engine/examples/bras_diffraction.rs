@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             binaural: BinauralConfig::default(),
         };
-        let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+        let pipeline = AcousticPipeline::new(&gpu, config)?;
 
         for (index, pair) in positions.iter().enumerate() {
             if selected_case

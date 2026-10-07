@@ -100,7 +100,7 @@ fn consecutive_edges_preserve_proxy_measure_and_scene_scale() -> SoundResult<()>
             },
             binaural: BinauralConfig::default(),
         };
-        let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+        let pipeline = AcousticPipeline::new(&gpu, config)?;
 
         for (index, &(scale, first_radius, last_radius)) in cases.iter().enumerate() {
             let mut manager = SceneManager::new();
@@ -240,7 +240,7 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
                 },
                 binaural: BinauralConfig::default(),
             };
-            let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+            let pipeline = AcousticPipeline::new(&gpu, config)?;
 
             for (index, radius) in radii.into_iter().enumerate() {
                 let mut manager = SceneManager::new();

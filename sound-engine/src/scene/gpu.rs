@@ -8,33 +8,37 @@ use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::rt::{
-    AabbBlasBuildSpec, BlasBuildSpec, BlasId, OwnedBlas, OwnedTlas, RtInstanceSpec, RtMeshBuffers,
+    AabbBlasBuildSpec, BlasBuildSpec, OwnedBlas, OwnedTlas, RtInstanceSpec, RtMeshBuffers,
     RtMeshSpec, TlasBuildSpec, TlasId,
 };
 use ash::vk;
+use glam::Mat4;
 use records::{GpuDiffractionEdge, GpuMaterial, GpuObject};
 use std::collections::HashMap;
 
-// Physical geometry is the only class allowed to occlude explicit source
-// connections. Diffraction proxies use 0x02 when assembled into a query TLAS.
+// Visibility rays see only physical surfaces. Continuation rays also see
+// diffraction strips, whose SBT offset selects the procedural hit group.
 const SURFACE_GEOMETRY_MASK: u8 = 0x01;
+const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
+const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
+const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// GPU-side mirror of a `SceneStore`.
 ///
 /// The resource owns uploaded mesh buffers, acceleration-structure handles
-/// stored in `gpu::rt`, compact material/object buffers, and the latest TLAS id.
+/// stored in `gpu::rt`, compact shader records, and one TLAS for surfaces and edges.
 /// Leases retain the RT context and buffers retain the Vulkan device.
 pub struct GpuSceneResources {
     version: SceneVersion,
     revisions: SceneRevisions,
+    // Retire traversal references before their geometry owners.
+    tlas: OwnedTlas,
     geometry: SurfaceGpuResources,
     shading: SceneGpuBuffers,
     diffraction: DiffractionGpuResources,
 }
 
 struct SurfaceGpuResources {
-    // Destroy TLAS references before releasing scene BLAS storage.
-    tlas: Option<OwnedTlas>,
     uploaded_meshes: HashMap<MeshId, UploadedMesh>,
     instances: Vec<RtInstanceSpec>,
 }
@@ -51,14 +55,11 @@ impl SurfaceGpuResources {
     fn build(
         gpu: &VkBackend,
         store: &SceneStore,
-        mut previous: Option<Self>,
+        previous: Option<Self>,
         active_objects: &[&SceneObject],
     ) -> SoundResult<Self> {
-        let mut uploaded_meshes = previous.as_mut().map_or_else(HashMap::new, |resources| {
-            std::mem::take(&mut resources.uploaded_meshes)
-        });
-        // Retire the old TLAS before dropping any BLAS it could reference.
-        drop(previous);
+        let mut uploaded_meshes =
+            previous.map_or_else(HashMap::new, |resources| resources.uploaded_meshes);
         uploaded_meshes.retain(|id, uploaded| store.mesh_revision(*id) == Some(uploaded.revision));
         for mesh in store.meshes() {
             if uploaded_meshes.contains_key(&mesh.id) {
@@ -108,21 +109,8 @@ impl SurfaceGpuResources {
             })
             .collect::<SoundResult<Vec<_>>>()?;
 
-        let tlas = if instances.is_empty() {
-            None
-        } else {
-            Some(
-                gpu.rt_context()
-                    .own_tlas(gpu.rt().build_tlas(TlasBuildSpec {
-                        instances: &instances,
-                        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                    })?),
-            )
-        };
-
         Ok(Self {
             uploaded_meshes,
-            tlas,
             instances,
         })
     }
@@ -137,14 +125,16 @@ impl GpuSceneResources {
     ) -> SoundResult<Self> {
         let revisions = store.revisions();
         let previous_revisions = previous.as_ref().map(|resources| resources.revisions);
-        let (previous_geometry, previous_shading, previous_diffraction) = match previous {
-            Some(resources) => (
-                Some(resources.geometry),
-                Some(resources.shading),
-                Some(resources.diffraction),
-            ),
-            None => (None, None, None),
-        };
+        let (previous_tlas, previous_geometry, previous_shading, previous_diffraction) =
+            match previous {
+                Some(resources) => (
+                    Some(resources.tlas),
+                    Some(resources.geometry),
+                    Some(resources.shading),
+                    Some(resources.diffraction),
+                ),
+                None => (None, None, None, None),
+            };
         let mut active_objects = store
             .objects()
             .filter(|object| object.active)
@@ -175,9 +165,20 @@ impl GpuSceneResources {
             }
             _ => upload_diffraction_edges(gpu, &diffraction_edges(store))?,
         };
+        let tlas = match previous_tlas {
+            Some(tlas)
+                if previous_revisions.is_some_and(|old| {
+                    old.geometry == revisions.geometry && old.diffraction == revisions.diffraction
+                }) =>
+            {
+                tlas
+            }
+            _ => build_scene_tlas(gpu, &geometry.instances, diffraction.blas.as_ref())?,
+        };
         Ok(Self {
             version: store.version(),
             revisions,
+            tlas,
             geometry,
             shading,
             diffraction,
@@ -189,19 +190,12 @@ impl GpuSceneResources {
         self.version
     }
 
-    /// Returns the current TLAS id, or `None` when no object is active.
-    pub fn tlas_id(&self) -> Option<TlasId> {
-        self.geometry.tlas.as_ref().map(|tlas| tlas.id)
-    }
-
-    /// Returns the number of active object instances in the TLAS.
-    pub fn instance_count(&self) -> u32 {
-        self.geometry.instances.len() as u32
-    }
-
-    /// Returns active scene BLAS instances used to build the scene TLAS.
-    pub fn instances(&self) -> &[RtInstanceSpec] {
-        &self.geometry.instances
+    /// Returns the complete acoustic TLAS, valid even when the scene is empty.
+    ///
+    /// Surfaces use mask 0x01 and hit-group offset zero; diffraction strips use
+    /// mask 0x02 and offset two, matching the acoustic pipeline's shader table.
+    pub fn tlas_id(&self) -> TlasId {
+        self.tlas.id
     }
 
     /// Returns compact material data used by GPU scene shaders.
@@ -218,11 +212,30 @@ impl GpuSceneResources {
     pub fn diffraction_edge_buffer(&self) -> &BufferHandle {
         &self.diffraction.edge_buffer
     }
+}
 
-    /// Returns the procedural diffraction-edge BLAS when the scene has edges.
-    pub fn diffraction_blas_id(&self) -> Option<BlasId> {
-        self.diffraction.blas.as_ref().map(|blas| blas.id)
+fn build_scene_tlas(
+    gpu: &VkBackend,
+    surface_instances: &[RtInstanceSpec],
+    diffraction_blas: Option<&OwnedBlas>,
+) -> SoundResult<OwnedTlas> {
+    let mut instances =
+        Vec::with_capacity(surface_instances.len() + usize::from(diffraction_blas.is_some()));
+    instances.extend_from_slice(surface_instances);
+    if let Some(blas) = diffraction_blas {
+        instances.push(RtInstanceSpec {
+            blas_id: blas.id,
+            transform: Mat4::IDENTITY,
+            custom_index: DIFFRACTION_INSTANCE_CUSTOM_INDEX,
+            mask: DIFFRACTION_GEOMETRY_MASK,
+            sbt_record_offset: DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET,
+        });
     }
+    let id = gpu.rt().build_tlas(TlasBuildSpec {
+        instances: &instances,
+        flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+    })?;
+    Ok(gpu.rt_context().own_tlas(id))
 }
 
 struct SceneGpuBuffers {

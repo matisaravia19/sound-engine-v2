@@ -7,40 +7,28 @@ use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
-    BlasId, OwnedRtPipeline, OwnedTlas, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
-    RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtTraceSpec, TlasBuildSpec, TlasId,
+    OwnedRtPipeline, RtDescriptorBindingSpec, RtDescriptorWrite, RtPipelineSpec,
+    RtPushConstantSpec, RtShaderGroupSpec, RtTraceSpec,
 };
 use crate::gpu::shader::ShaderStage;
-use crate::scene::{GpuSceneResources, SceneManager};
-use ash::vk;
-use glam::Mat4;
+use crate::scene::SceneManager;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/shaders");
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
-const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
-const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
-const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// Listener-originated acoustic path tracer that deposits pressure paths directly into a GPU IR.
 ///
 /// The ray-generation invocation owns all path state and performs sequential
 /// continuation and source-visibility traces. The RT pipeline has recursion
 /// depth one because hit shaders only report compact traversal results.
+/// Scenes own their traversal structures, so queries can share this pipeline
+/// without retaining or rebuilding another scene's geometry.
 pub struct AcousticPipeline {
     config: AcousticPipelineConfig,
     listener_pipeline: OwnedRtPipeline,
-    // One query TLAS for the latest geometry; its registry record retains every BLAS.
-    query_tlas: Option<CachedQueryTlas>,
-}
-
-/// Stable AS IDs distinguish separate scene managers even at the same scene version.
-struct CachedQueryTlas {
-    scene_tlas: Option<TlasId>,
-    diffraction_blas: Option<BlasId>,
-    tlas: OwnedTlas,
 }
 
 #[repr(C)]
@@ -72,7 +60,7 @@ impl AcousticPipeline {
         self.listener_pipeline.validate_context(gpu.rt())
     }
 
-    /// Creates the listener-originated RT pipeline; geometry is built on the first query.
+    /// Creates the listener-originated RT pipeline; each scene owns its traversal geometry.
     pub fn new(gpu: &VkBackend, config: AcousticPipelineConfig) -> SoundResult<Self> {
         config.validate()?;
 
@@ -150,13 +138,12 @@ impl AcousticPipeline {
         Ok(Self {
             config,
             listener_pipeline,
-            query_tlas: None,
         })
     }
 
     /// Builds one CPU-resident impulse response for a source/listener query.
     pub fn build_ir(
-        &mut self,
+        &self,
         gpu: &VkBackend,
         scene: &mut SceneManager,
         query: AcousticQuery,
@@ -167,7 +154,7 @@ impl AcousticPipeline {
 
     /// Builds one GPU-resident time-domain pressure IR.
     pub fn build_ir_gpu(
-        &mut self,
+        &self,
         gpu: &VkBackend,
         scene: &mut SceneManager,
         query: AcousticQuery,
@@ -177,7 +164,7 @@ impl AcousticPipeline {
 
     /// Traces a query already validated for cache lookup, preserving its exact basis.
     pub(super) fn build_validated_ir_gpu(
-        &mut self,
+        &self,
         gpu: &VkBackend,
         scene: &mut SceneManager,
         validated_query: ValidatedAcousticQuery,
@@ -193,7 +180,6 @@ impl AcousticPipeline {
         let profile = std::env::var_os("SOUND_ENGINE_TRACE_PROFILE").is_some();
         let started = std::time::Instant::now();
         let gpu_scene = scene.sync_gpu_if_needed(gpu)?;
-        let tlas_id = self.query_tlas(gpu, gpu_scene)?;
         let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_count = self.config.sound.ir_num_samples;
         let bytes = u64::from(storage_count) * size_of::<IrSample>() as u64;
@@ -219,7 +205,7 @@ impl AcousticPipeline {
             max_ild_db: self.config.binaural.max_ild_db,
         };
         let mut record_ms = 0.0;
-        // Scene, query TLAS, pipeline and IR storage are retained until the wait below.
+        // Scene traversal data, pipeline and IR storage are retained until the wait below.
         let submission = unsafe {
             gpu.compute().submit_compute(|command_buffer| {
                 let record_started = profile.then(std::time::Instant::now);
@@ -237,7 +223,7 @@ impl AcousticPipeline {
                     &RtTraceSpec {
                         pipeline_id: self.listener_pipeline.id,
                         descriptor_writes: vec![
-                            RtDescriptorWrite::acceleration_structure(0, tlas_id),
+                            RtDescriptorWrite::acceleration_structure(0, gpu_scene.tlas_id()),
                             RtDescriptorWrite::storage_buffer(1, ir_buffer.buffer),
                             RtDescriptorWrite::storage_buffer(2, gpu_scene.object_buffer().buffer),
                             RtDescriptorWrite::storage_buffer(
@@ -295,49 +281,6 @@ impl AcousticPipeline {
             gpu_scene.version(),
             validated_query,
         )
-    }
-
-    fn query_tlas(&mut self, gpu: &VkBackend, scene: &GpuSceneResources) -> SoundResult<TlasId> {
-        let scene_tlas = scene.tlas_id();
-        let diffraction_blas = scene.diffraction_blas_id();
-        if let Some(cached) = &self.query_tlas
-            && cached.scene_tlas == scene_tlas
-            && cached.diffraction_blas == diffraction_blas
-        {
-            return Ok(cached.tlas.id);
-        }
-        let id = self.build_query_tlas(gpu, scene.instances(), diffraction_blas)?;
-        self.query_tlas = Some(CachedQueryTlas {
-            scene_tlas,
-            diffraction_blas,
-            tlas: gpu.rt_context().own_tlas(id),
-        });
-        Ok(id)
-    }
-
-    fn build_query_tlas(
-        &self,
-        gpu: &VkBackend,
-        scene_instances: &[RtInstanceSpec],
-        diffraction_blas_id: Option<BlasId>,
-    ) -> SoundResult<crate::gpu::rt::TlasId> {
-        let mut instances = Vec::with_capacity(scene_instances.len() + 1);
-        instances.extend_from_slice(scene_instances);
-        if let Some(blas_id) = diffraction_blas_id {
-            // The separate mask keeps virtual strips out of visibility rays;
-            // SBT offset two selects the procedural intersection/hit pair.
-            instances.push(RtInstanceSpec {
-                blas_id,
-                transform: Mat4::IDENTITY,
-                custom_index: DIFFRACTION_INSTANCE_CUSTOM_INDEX,
-                mask: DIFFRACTION_GEOMETRY_MASK,
-                sbt_record_offset: DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET,
-            });
-        }
-        gpu.rt().build_tlas(TlasBuildSpec {
-            instances: &instances,
-            flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-        })
     }
 }
 

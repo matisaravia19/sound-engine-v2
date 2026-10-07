@@ -105,7 +105,7 @@ fn measure_gpu() -> SoundResult<()> {
         )?);
         Ok(())
     })?;
-    let mut acoustic = sound_engine::acoustics::AcousticPipeline::new(
+    let acoustic = sound_engine::acoustics::AcousticPipeline::new(
         &gpu,
         sound_engine::acoustics::AcousticPipelineConfig {
             sound: config.sound,

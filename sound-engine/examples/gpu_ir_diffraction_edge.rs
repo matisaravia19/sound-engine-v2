@@ -197,7 +197,7 @@ fn doorway_position_sweep(
 ) -> SoundResult<(f64, f64, f64, f64)> {
     let mut scene = SceneManager::new();
     scene.load(doorway_scene())?;
-    let mut pipeline = AcousticPipeline::new(gpu, acoustic_config())?;
+    let pipeline = AcousticPipeline::new(gpu, acoustic_config())?;
     let mut levels = Vec::new();
 
     const SWEEP_START: f32 = -3.0;
@@ -339,7 +339,7 @@ fn trace_scene_with_bounces(
 ) -> SoundResult<sound_engine::acoustics::IrSnapshot> {
     let mut scene = SceneManager::new();
     scene.load(scene_description)?;
-    let mut pipeline = AcousticPipeline::new(gpu, acoustic_config_with_bounces(max_bounces))?;
+    let pipeline = AcousticPipeline::new(gpu, acoustic_config_with_bounces(max_bounces))?;
 
     pipeline.build_ir(
         gpu,

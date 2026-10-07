@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{ListenerPose, PointSource};
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 fn test_config() -> AcousticPipelineConfig {
     AcousticPipelineConfig {
@@ -34,7 +34,7 @@ fn test_query() -> AcousticQuery {
 #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
 fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
     let gpu = VkBackend::new().unwrap();
-    let mut pipeline = AcousticPipeline::new(&gpu, test_config()).unwrap();
+    let pipeline = AcousticPipeline::new(&gpu, test_config()).unwrap();
     assert_eq!(gpu.rt().resource_counts(), (0, 0));
     let mut scene = SceneManager::new();
     let device = Arc::downgrade(&gpu.device_context());
@@ -48,7 +48,7 @@ fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
         );
         assert!(ir.energy > 0.0);
         assert_eq!(gpu.rt().resource_counts(), (0, 1));
-        let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
+        let id = scene.sync_gpu_if_needed(&gpu).unwrap().tlas_id();
         assert!(previous_tlas.is_none_or(|previous| previous == id));
         previous_tlas = Some(id);
     }
@@ -60,6 +60,18 @@ fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
     for _ in 0..2 {
         let temporary = AcousticPipeline::new(&gpu, test_config()).unwrap();
         assert_eq!(gpu.rt().pipeline_count(), 1);
+        assert!(
+            temporary
+                .build_ir(&gpu, &mut scene, test_query())
+                .unwrap()
+                .energy
+                > 0.0
+        );
+        assert_eq!(
+            scene.sync_gpu_if_needed(&gpu).unwrap().tlas_id(),
+            previous_tlas.unwrap()
+        );
+        assert_eq!(gpu.rt().resource_counts(), (0, 1));
         drop(temporary);
         assert_eq!(gpu.rt().pipeline_count(), 0);
     }
@@ -73,14 +85,14 @@ fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
 
 #[test]
 #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
-fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
+fn audit_scene_tlas_distinguishes_owners_and_geometry_updates() {
     use crate::scene::*;
     let gpu = VkBackend::new().unwrap();
     let mut config = test_config();
     config.sound.ir_num_samples = 1024;
     config.tracing.max_bounces = 1;
     config.tracing.listener_ray_count = 1024;
-    let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
+    let pipeline = AcousticPipeline::new(&gpu, config).unwrap();
     let wall = SceneDescription {
         meshes: vec![MeshAsset {
             id: 1,
@@ -114,6 +126,9 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
     let mut open = SceneManager::new();
     open.load(open_description).unwrap();
     assert_eq!(obstructed.version(), open.version());
+    let obstructed_tlas = obstructed.sync_gpu_if_needed(&gpu).unwrap().tlas_id();
+    let open_tlas = open.sync_gpu_if_needed(&gpu).unwrap().tlas_id();
+    assert_ne!(obstructed_tlas, open_tlas);
     for _ in 0..4 {
         assert_eq!(
             pipeline
@@ -129,12 +144,24 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
                 .energy
                 > 0.0
         );
-        assert_eq!(gpu.rt().resource_counts(), (2, 3));
+        // Each scene owns one complete traversal structure, shared across queries.
+        assert_eq!(gpu.rt().resource_counts(), (2, 2));
+        assert_eq!(
+            obstructed.sync_gpu_if_needed(&gpu).unwrap().tlas_id(),
+            obstructed_tlas
+        );
+        assert_eq!(open.sync_gpu_if_needed(&gpu).unwrap().tlas_id(), open_tlas);
     }
+    // Immutable pipeline sharing must keep each scene's descriptors and IR separate.
+    std::thread::scope(|scope| {
+        let blocked = scope.spawn(|| pipeline.build_ir(&gpu, &mut obstructed, test_query()));
+        let audible = scope.spawn(|| pipeline.build_ir(&gpu, &mut open, test_query()));
+        assert_eq!(blocked.join().unwrap().unwrap().energy, 0.0);
+        assert!(audible.join().unwrap().unwrap().energy > 0.0);
+    });
     pipeline
         .build_ir(&gpu, &mut obstructed, test_query())
         .unwrap();
-    let material_query_tlas = pipeline.query_tlas.as_ref().unwrap().tlas.id;
     obstructed
         .apply_updates(SceneUpdates {
             updates: vec![SceneUpdate::ReplaceMaterial(Material {
@@ -151,8 +178,8 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
     // A reflecting surface still blocks a source on the opposite side.
     assert_eq!(reflected.energy, 0.0);
     assert_eq!(
-        pipeline.query_tlas.as_ref().unwrap().tlas.id,
-        material_query_tlas
+        obstructed.sync_gpu_if_needed(&gpu).unwrap().tlas_id(),
+        obstructed_tlas
     );
     obstructed
         .apply_updates(SceneUpdates {
@@ -169,10 +196,14 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
             .energy
             > 0.0
     );
+    assert_ne!(
+        obstructed.sync_gpu_if_needed(&gpu).unwrap().tlas_id(),
+        obstructed_tlas
+    );
     drop(open);
     drop(obstructed);
-    // Edge-only scenes have no surface TLAS, so their BLAS identity must
-    // independently invalidate the cached procedural query structure.
+    assert_eq!(gpu.rt().resource_counts(), (0, 0));
+    // Edge edits must rebuild traversal even when there are no surface objects.
     let mut edges = SceneManager::new();
     let mut edge = DiffractionEdge {
         id: 1,
@@ -204,14 +235,14 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
                 .iter()
                 .all(|sample| sample.left.is_finite() && sample.right.is_finite())
         );
-        let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
+        let id = edges.sync_gpu_if_needed(&gpu).unwrap().tlas_id();
         assert!(previous.is_none_or(|previous| previous != id));
         previous = Some(id);
         assert_eq!(gpu.rt().resource_counts(), (1, 1));
     }
     drop(edges);
-    drop(pipeline);
     assert_eq!(gpu.rt().resource_counts(), (0, 0));
+    drop(pipeline);
 }
 
 #[test]

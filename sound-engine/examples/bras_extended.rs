@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             binaural: BinauralConfig::default(),
         };
-        let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+        let pipeline = AcousticPipeline::new(&gpu, config)?;
         let mut scene = SceneManager::new();
         scene.load(description.clone())?;
         for (index, pair) in positions.iter().enumerate() {

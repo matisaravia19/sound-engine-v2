@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 binaural: BinauralConfig::default(),
             };
-            let mut pipeline = AcousticPipeline::new(&gpu, config)?;
+            let pipeline = AcousticPipeline::new(&gpu, config)?;
 
             let query = AcousticQuery {
                 query_id: seed,
