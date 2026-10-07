@@ -1,8 +1,8 @@
 //! Room rendering and playback overlays.
+use super::PlaygroundState;
 use super::geometry::{Block, ROOM_HALF_X, ROOM_HALF_Z, from_glam, to_glam};
 use super::layout::{BISECTOR_BUTTON, PLAYBACK_MODE_BUTTON, START_SOUND_BUTTON, SceneMenuLayout};
-use super::poses::{listener_position_name, source_position_name};
-use super::{PlaygroundState, playback_label};
+use super::scene::PlaybackMode;
 use glam::{Vec3, vec3};
 use raylib::prelude::*;
 use sound_engine::scene::DiffractionEdge;
@@ -13,7 +13,7 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
         d.get_screen_width(),
         d.get_screen_height(),
         state.scene_choice,
-        state.catalog.len(),
+        state.scene.catalog().len(),
     );
     d.draw_rectangle_rec(layout.panel(), Color::new(20, 28, 36, 250));
     d.draw_text("Elegir escena", 48, 62, 24, Color::RAYWHITE);
@@ -25,14 +25,14 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
         Color::LIGHTGRAY,
     );
     for index in layout.entries() {
-        let entry = &state.catalog[index];
+        let entry = &state.scene.catalog()[index];
         let row = layout.row(index);
         if index == state.scene_choice {
             d.draw_rectangle_rec(row, Color::new(40, 83, 105, 255));
         }
         let label = format!(
             "{}{}",
-            if index == state.scene_index {
+            if index == state.scene.index() {
                 "* "
             } else {
                 "  "
@@ -51,7 +51,7 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
         &format!(
             "{}/{}  |  {}",
             state.scene_choice + 1,
-            state.catalog.len(),
+            state.scene.catalog().len(),
             state.ui.status
         ),
         48,
@@ -63,8 +63,8 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
 
 /// Draws the active room, acoustic edges, source, and listener.
 pub(super) fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: &PlaygroundState) {
-    if let Some(scene) = &state.benchmark {
-        for triangle in &scene.triangles {
+    if let Some(scene) = state.scene.benchmark() {
+        for triangle in &scene.loaded.triangles {
             let [a, b, c] = triangle.map(from_glam);
             if state.ui.benchmark_wireframe {
                 d.draw_line_3D(a, b, Color::new(108, 122, 132, 255));
@@ -74,10 +74,10 @@ pub(super) fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: 
                 draw_lit_triangle(d, *triangle, Color::new(164, 177, 186, 255));
             }
         }
-        draw_marker(d, state.source_position(), 0.12, Color::GREEN);
-        draw_listener(d, state.listener_position(), state.listener.forward());
+        draw_marker(d, state.scene.source_position(), 0.12, Color::GREEN);
+        draw_listener(d, state.scene.listener_position(), state.listener.forward());
         if state.ui.show_bisector_planes {
-            draw_bisector_planes(d, &scene.description.diffraction_edges);
+            draw_bisector_planes(d, &scene.loaded.description.diffraction_edges);
         }
         return;
     }
@@ -88,14 +88,14 @@ pub(super) fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: 
     );
     d.draw_grid(20, 1.0);
 
-    for block in &state.scene.blocks {
+    for block in &state.scene.room().geometry.blocks {
         draw_block(d, block);
     }
 
-    draw_marker(d, state.source_position(), 0.38, Color::GREEN);
-    draw_listener(d, state.listener_position(), state.listener.forward());
+    draw_marker(d, state.scene.source_position(), 0.38, Color::GREEN);
+    draw_listener(d, state.scene.listener_position(), state.listener.forward());
     if state.ui.show_bisector_planes {
-        draw_bisector_planes(d, &state.scene.diffraction_edges);
+        draw_bisector_planes(d, &state.scene.room().geometry.diffraction_edges);
     }
 }
 
@@ -243,7 +243,7 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
         Color::RAYWHITE,
     );
 
-    let audio_color = if state.ui.full_acoustics {
+    let audio_color = if state.scene.playback_mode() == PlaybackMode::FullSimulation {
         Color::new(35, 118, 150, 255)
     } else {
         Color::new(115, 82, 35, 255)
@@ -251,7 +251,7 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
     d.draw_rectangle_rec(PLAYBACK_MODE_BUTTON, audio_color);
     d.draw_rectangle_lines_ex(PLAYBACK_MODE_BUTTON, 1.0, Color::new(160, 205, 225, 255));
     d.draw_text(
-        &format!("T: {}", playback_label(state)),
+        &format!("T: {}", state.scene.playback_mode().label()),
         PLAYBACK_MODE_BUTTON.x as i32 + 14,
         PLAYBACK_MODE_BUTTON.y as i32 + 8,
         17,
@@ -278,9 +278,9 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
     d.draw_text(
         &format!(
             "source: {:.1}, {:.1}, {:.1} | active listener ({}): {:.1}, {:.1}, {:.1}",
-            state.source_position().x,
-            state.source_position().y,
-            state.source_position().z,
+            state.scene.source_position().x,
+            state.scene.source_position().y,
+            state.scene.source_position().z,
             state.listener.mode().label(),
             active_listener.x,
             active_listener.y,
@@ -292,23 +292,23 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
         Color::LIGHTGRAY,
     );
     d.draw_text(
-        &if let Some(scene) = &state.benchmark {
+        &if let Some(scene) = state.scene.benchmark() {
             format!(
                 "3: next pair | 5: previous | {} ({}/{})",
-                scene.pairs[state.pair_index].name,
-                state.pair_index + 1,
-                scene.pairs.len()
+                scene.pair().name,
+                scene.pair_index + 1,
+                scene.loaded.pairs.len()
             )
         } else {
             format!(
                 "1 roof: {} | 2 door: {} | 3 red pos: {} | 4 red rot: {}",
-                on_off(state.scene_config.roof_enabled),
-                if state.scene_config.door_open {
+                on_off(state.scene.room().config.roof_enabled),
+                if state.scene.room().config.door_open {
                     "open"
                 } else {
                     "closed"
                 },
-                listener_position_name(state.listener_index),
+                state.scene.listener_label(),
                 state.listener.rotation_label()
             )
         },
@@ -318,16 +318,16 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
         Color::LIGHTGRAY,
     );
     d.draw_text(
-        &if state.benchmark.is_some() {
+        &if state.scene.benchmark().is_some() {
             format!(
                 "{} | H: view pair | V: wire/solid | interactive budget",
-                state.catalog[state.scene_index].title
+                state.scene.catalog()[state.scene.index()].title
             )
         } else {
             format!(
                 "5 source: {} | 6 outer walls: {}",
-                source_position_name(state.source_index),
-                on_off(state.scene_config.outer_walls_enabled)
+                state.scene.source_label(),
+                on_off(state.scene.room().config.outer_walls_enabled)
             )
         },
         24,

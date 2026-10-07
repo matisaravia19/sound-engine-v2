@@ -1,18 +1,18 @@
 //! Input handling and synchronization of interactive scene changes.
+use super::PlaygroundState;
 use super::audio::AudioSession;
-use super::geometry::{from_glam, scene_description, to_glam};
+use super::geometry::{SceneConfig, from_glam, to_glam};
 use super::layout::{BISECTOR_BUTTON, PLAYBACK_MODE_BUTTON, START_SOUND_BUTTON, SceneMenuLayout};
 use super::listener::{ListenerController, ListenerMode};
-use super::poses::{listener_position_count, source_position_count};
-use super::{PlaygroundState, empty_acoustic_scene, playback_label, playback_scene};
 use glam::vec3;
 use raylib::prelude::*;
+use sound_engine::core::error::SoundResult;
 use std::time::Instant;
 
 /// Frames the current source and receiver in the display camera.
 pub(super) fn frame_selected_pair(state: &PlaygroundState, camera: &mut Camera3D) {
-    let source = to_glam(state.source_position());
-    let listener = to_glam(state.listener_position());
+    let source = to_glam(state.scene.source_position());
+    let listener = to_glam(state.scene.listener_position());
     let center = (source + listener) * 0.5;
     let distance = source.distance(listener).max(2.0);
     camera.target = from_glam(center);
@@ -29,7 +29,7 @@ pub(super) fn handle_scene_menu(
 ) {
     if rl.is_key_pressed(KeyboardKey::KEY_F1) {
         state.scene_menu = !state.scene_menu;
-        state.scene_choice = state.scene_index;
+        state.scene_choice = state.scene.index();
         if state.scene_menu {
             rl.enable_cursor();
         } else {
@@ -45,7 +45,7 @@ pub(super) fn handle_scene_menu(
         }
         return;
     }
-    let count = state.catalog.len();
+    let count = state.scene.catalog().len();
     let wheel = rl.get_mouse_wheel_move();
     if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || wheel < 0.0 {
         state.scene_choice = (state.scene_choice + 1) % count;
@@ -83,37 +83,19 @@ fn select_scene(
     state: &mut PlaygroundState,
     camera: &mut Camera3D,
     index: usize,
-) -> Result<(), String> {
-    let entry = state.catalog.get(index).ok_or("Unknown scene index")?;
-    let benchmark = if index == 0 {
-        None
-    } else {
-        Some(entry.load()?)
-    };
-    let description = if state.ui.full_acoustics {
-        benchmark
-            .as_ref()
-            .map(|b| b.description.clone())
-            .unwrap_or_else(|| scene_description(&state.scene))
-    } else {
-        empty_acoustic_scene()
-    };
-    audio
-        .engine
-        .load_scene(description)
-        .map_err(|e| e.to_string())?;
-    state.benchmark = benchmark;
-    state.scene_index = index;
-    state.pair_index = 0;
+) -> SoundResult<()> {
+    state
+        .scene
+        .select(index, |description| audio.engine.load_scene(description))?;
     state.listener = ListenerController::default();
     frame_selected_pair(state, camera);
     sync_source(audio, state);
     sync_red_sphere_listener(audio, state, "scene");
-    if let Some(scene) = &state.benchmark {
+    if let Some(scene) = state.scene.benchmark() {
         state.ui.status = format!(
             "{} diffraction edges ({} inferred from room geometry)",
-            scene.description.diffraction_edges.len(),
-            scene.inferred_edges,
+            scene.loaded.description.diffraction_edges.len(),
+            scene.loaded.inferred_edges,
         );
     }
     Ok(())
@@ -127,13 +109,14 @@ pub(super) fn handle_config_keys(
     camera: &Camera3D,
 ) {
     if rl.is_key_pressed(KeyboardKey::KEY_T) || button_clicked(rl, PLAYBACK_MODE_BUTTON) {
-        state.ui.full_acoustics = !state.ui.full_acoustics;
-        match audio.engine.load_scene(playback_scene(state)) {
+        match state
+            .scene
+            .toggle_playback(|description| audio.engine.load_scene(description))
+        {
             Ok(_) => {
-                state.ui.status = format!("Playback: {}", playback_label(state));
+                state.ui.status = format!("Playback: {}", state.scene.playback_mode().label());
             }
             Err(error) => {
-                state.ui.full_acoustics = !state.ui.full_acoustics;
                 state.ui.status = format!("Playback switch failed: {error}");
             }
         }
@@ -142,22 +125,22 @@ pub(super) fn handle_config_keys(
     if rl.is_key_pressed(KeyboardKey::KEY_V) {
         state.ui.benchmark_wireframe = !state.ui.benchmark_wireframe;
     }
-    if state.benchmark.is_none() && rl.is_key_pressed(KeyboardKey::KEY_ONE) {
-        state.scene_config.roof_enabled = !state.scene_config.roof_enabled;
-        reload_scene(audio, state, "roof");
+    if state.scene.benchmark().is_none() && rl.is_key_pressed(KeyboardKey::KEY_ONE) {
+        let mut config = state.scene.room().config;
+        config.roof_enabled = !config.roof_enabled;
+        reload_scene(audio, state, config, "roof");
     }
 
-    if state.benchmark.is_none() && rl.is_key_pressed(KeyboardKey::KEY_TWO) {
-        state.scene_config.door_open = !state.scene_config.door_open;
-        reload_scene(audio, state, "door");
+    if state.scene.benchmark().is_none() && rl.is_key_pressed(KeyboardKey::KEY_TWO) {
+        let mut config = state.scene.room().config;
+        config.door_open = !config.door_open;
+        reload_scene(audio, state, config, "door");
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_THREE) {
-        if let Some(scene) = &state.benchmark {
-            state.pair_index = next_index(state.pair_index, scene.pairs.len());
+        state.scene.next_listener();
+        if state.scene.benchmark().is_some() {
             sync_source(audio, state);
-        } else {
-            state.listener_index = next_index(state.listener_index, listener_position_count());
         }
         sync_red_sphere_listener(audio, state, "red sphere position");
     }
@@ -168,18 +151,17 @@ pub(super) fn handle_config_keys(
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_FIVE) {
-        if let Some(scene) = &state.benchmark {
-            state.pair_index = (state.pair_index + scene.pairs.len() - 1) % scene.pairs.len();
+        state.scene.next_source();
+        if state.scene.benchmark().is_some() {
             sync_red_sphere_listener(audio, state, "benchmark pair");
-        } else {
-            state.source_index = next_index(state.source_index, source_position_count());
         }
         sync_source(audio, state);
     }
 
-    if state.benchmark.is_none() && rl.is_key_pressed(KeyboardKey::KEY_SIX) {
-        state.scene_config.outer_walls_enabled = !state.scene_config.outer_walls_enabled;
-        reload_scene(audio, state, "outer walls");
+    if state.scene.benchmark().is_none() && rl.is_key_pressed(KeyboardKey::KEY_SIX) {
+        let mut config = state.scene.room().config;
+        config.outer_walls_enabled = !config.outer_walls_enabled;
+        reload_scene(audio, state, config, "outer walls");
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_SEVEN) {
@@ -209,7 +191,7 @@ fn sync_source(audio: &mut AudioSession, state: &mut PlaygroundState) {
         Ok(()) => {
             state.ui.status = format!(
                 "Changed source to {}; active voices will refresh IR if needed",
-                state.position_label(true)
+                state.scene.source_label()
             );
         }
         Err(error) => {
@@ -218,9 +200,16 @@ fn sync_source(audio: &mut AudioSession, state: &mut PlaygroundState) {
     }
 }
 
-fn reload_scene(audio: &mut AudioSession, state: &mut PlaygroundState, label: &str) {
-    state.rebuild_scene();
-    match audio.engine.load_scene(playback_scene(state)) {
+fn reload_scene(
+    audio: &mut AudioSession,
+    state: &mut PlaygroundState,
+    config: SceneConfig,
+    label: &str,
+) {
+    match state
+        .scene
+        .update_room(config, |description| audio.engine.load_scene(description))
+    {
         Ok(version) => {
             state.ui.status = format!("{label} changed; scene version {version}");
         }
@@ -239,7 +228,7 @@ pub(super) fn sync_red_sphere_listener(
     if state.listener.mode() == ListenerMode::Camera {
         state.ui.status = format!(
             "Changed {label}: {} / {}; camera remains the active listener",
-            state.position_label(false),
+            state.scene.listener_label(),
             state.listener.rotation_label()
         );
         return;
@@ -252,7 +241,7 @@ pub(super) fn sync_red_sphere_listener(
         Ok(()) => {
             state.ui.status = format!(
                 "Changed {label}: {} / {}",
-                state.position_label(false),
+                state.scene.listener_label(),
                 state.listener.rotation_label()
             );
         }
@@ -287,10 +276,6 @@ pub(super) fn sync_camera_listener_if_changed(
             state.ui.status = format!("Camera listener update error: {error}");
         }
     }
-}
-
-fn next_index(index: usize, len: usize) -> usize {
-    (index + 1) % len
 }
 
 /// Recognizes the keyboard and mouse actions that start playback.
