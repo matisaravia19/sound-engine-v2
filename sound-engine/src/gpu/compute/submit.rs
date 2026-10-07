@@ -1,6 +1,26 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
+/// Completion handle for asynchronous work submitted through one compute context.
+///
+/// The borrow keeps the context alive. Call [`Self::wait`] before releasing the
+/// submitted work's resources; the handle does not own those resources or wait on drop.
+#[must_use = "submitted GPU work must complete before its resources are released"]
+pub struct Submission<'context> {
+    context: &'context ComputeContext,
+    id: u64,
+}
+
+impl Submission<'_> {
+    /// Waits for completion on the originating context and recycles submission resources.
+    ///
+    /// Transient allocation failures are reported only after completion or device loss,
+    /// so callers can release the resources referenced by their submitted commands.
+    pub fn wait(self) -> SoundResult<()> {
+        self.context.complete_submission(self.id)
+    }
+}
+
 // Reclaims unsubmitted work on every error path, including a recording panic.
 // The queue/pool write guard in submit_compute outlives this guard.
 struct PendingSubmission<'a> {
@@ -20,10 +40,10 @@ impl ComputeContext {
     /// Records and submits work on the serialized compute queue.
     ///
     /// # Safety
-    /// The caller must retain every referenced GPU resource until `wait_for`
+    /// The caller must retain every referenced GPU resource until [`Submission::wait`]
     /// completes and prevent conflicting host accesses in the meantime.
     /// Dependencies inside `record` remain the caller's responsibility.
-    pub unsafe fn submit_compute<F>(&self, record: F) -> SoundResult<FrameToken>
+    pub unsafe fn submit_compute<F>(&self, record: F) -> SoundResult<Submission<'_>>
     where
         F: FnOnce(vk::CommandBuffer) -> SoundResult<()>,
     {
@@ -85,10 +105,12 @@ impl ComputeContext {
             .in_flight
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Compute in_flight lock is poisoned"))?;
-        let token = self
-            .next_token
+        let id = self
+            .next_submission_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| SoundError::resource_allocation_failed("Frame token space exhausted"))?;
+            .map_err(|_| {
+                SoundError::resource_allocation_failed("Submission identifier space exhausted")
+            })?;
         let submit_info =
             vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
         unsafe {
@@ -98,8 +120,11 @@ impl ComputeContext {
                 fence,
             )?;
         }
-        in_flight.insert(token, pending.submission.take().unwrap());
-        Ok(FrameToken(token))
+        in_flight.insert(id, pending.submission.take().unwrap());
+        Ok(Submission {
+            context: self,
+            id,
+        })
     }
 
     fn acquire_command_buffer(&self, queue: &QueueSet) -> SoundResult<vk::CommandBuffer> {
@@ -124,21 +149,17 @@ impl ComputeContext {
         F: FnOnce(vk::CommandBuffer) -> SoundResult<()>,
     {
         // No borrow can end before the completion wait below, including its error paths.
-        let token = unsafe { self.submit_compute(record)? };
-        self.wait_for(token)
+        unsafe { self.submit_compute(record)? }.wait()
     }
 
-    /// Waits for a token and recycles its descriptors, fence and command buffer.
-    /// Transient allocation failures are reported only after completion or device
-    /// loss, so synchronous callers can safely release their borrowed resources.
-    pub fn wait_for(&self, token: FrameToken) -> SoundResult<()> {
+    fn complete_submission(&self, id: u64) -> SoundResult<()> {
         let mut in_flight = self
             .in_flight
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let submission = in_flight
-            .get(&token.0)
-            .ok_or_else(|| SoundError::not_found(format!("Unknown frame token {}", token.0)))?;
+            .get(&id)
+            .ok_or_else(|| SoundError::not_found(format!("Unknown submission {id}")))?;
         let mut wait_error = None;
         loop {
             let result = unsafe {
@@ -162,7 +183,7 @@ impl ComputeContext {
                 }
             }
         }
-        let submission = in_flight.remove(&token.0).unwrap();
+        let submission = in_flight.remove(&id).unwrap();
         self.recycle_submission(submission)?;
         wait_error.map_or(Ok(()), |error| Err(error.into()))
     }
@@ -171,16 +192,16 @@ impl ComputeContext {
     pub(crate) fn wait_for_all(&self) -> SoundResult<()> {
         let mut first_error = None;
         loop {
-            let token = self
+            let id = self
                 .in_flight
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .keys()
                 .next()
                 .copied();
-            match token {
-                Some(token) => {
-                    if let Err(error) = self.wait_for(FrameToken(token)) {
+            match id {
+                Some(id) => {
+                    if let Err(error) = self.complete_submission(id) {
                         first_error.get_or_insert(error);
                     }
                 }

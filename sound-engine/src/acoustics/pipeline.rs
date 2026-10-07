@@ -246,7 +246,7 @@ impl AcousticPipeline {
         };
         let mut record_ms = 0.0;
         // Scene, query TLAS, pipeline and IR storage are retained until the wait below.
-        let token = unsafe {
+        let submission = unsafe {
             gpu.compute().submit_compute(|command_buffer| {
                 let record_started = profile.then(std::time::Instant::now);
                 gpu.memory()
@@ -301,7 +301,7 @@ impl AcousticPipeline {
         } else {
             0.0
         };
-        gpu.compute().wait_for(token)?;
+        submission.wait()?;
         let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
         if profile {
             eprintln!(

@@ -15,18 +15,19 @@ mod sync;
 
 pub use dispatch::DispatchSpec;
 pub use pipeline::{ComputePipelineSpec, PushConstantSpec};
+pub use submit::Submission;
 pub use sync::{BufferBarrierSpec, MemoryBarrierSpec};
 
 const COMMAND_BUFFER_POOL_SIZE: u32 = 12;
 
 /// Owns compute pipelines and command submission state for the backend.
 ///
-/// The context records work onto a preallocated pool of command buffers and
-/// tracks in-flight submissions by `FrameToken`.
+/// The context records work onto a preallocated pool of command buffers.
+/// Submission handles borrow it and expose an explicit completion wait.
 pub struct ComputeContext {
     device_context: Arc<VkDeviceContext>,
     shaders: Arc<ShaderLibrary>,
-    next_token: AtomicU64,
+    next_submission_id: AtomicU64,
     next_pipeline_id: AtomicU32,
     in_flight: Mutex<HashMap<u64, InFlightSubmission>>,
     queue: RwLock<QueueSet>,
@@ -38,9 +39,6 @@ pub struct ComputeContext {
     descriptor_pool_access: Mutex<()>,
     pipelines: Mutex<HashMap<PipelineId, ComputePipeline>>,
 }
-
-/// Token returned for an asynchronous compute submission.
-pub struct FrameToken(pub u64);
 
 struct InFlightSubmission {
     fence: vk::Fence,
@@ -85,7 +83,7 @@ impl ComputeContext {
         Ok(Self {
             device_context,
             shaders,
-            next_token: AtomicU64::new(1),
+            next_submission_id: AtomicU64::new(1),
             next_pipeline_id: AtomicU32::new(0),
             in_flight: Mutex::new(HashMap::new()),
             queue: RwLock::new(compute_queue),
