@@ -15,11 +15,23 @@ pub struct AcousticQuery {
 }
 
 impl AcousticQuery {
-    /// Validates the source and returns an orthonormal listener basis.
-    pub(crate) fn canonicalized(mut self) -> SoundResult<Self> {
+    /// Validates the source and fixes the listener basis once for tracing and caching.
+    pub(super) fn canonicalized(mut self) -> SoundResult<ValidatedAcousticQuery> {
         validate_source(self.source)?;
         self.listener = canonicalize_listener(self.listener)?;
-        Ok(self)
+        Ok(ValidatedAcousticQuery(self))
+    }
+}
+
+/// Immutable acoustic input whose finite source and listener basis have been validated.
+/// Keeping this value through tracing and publication prevents normalization drift.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ValidatedAcousticQuery(AcousticQuery);
+
+impl ValidatedAcousticQuery {
+    /// Copies the canonical values; changing the copy cannot alter the validated query.
+    pub(super) fn as_query(self) -> AcousticQuery {
+        self.0
     }
 }
 

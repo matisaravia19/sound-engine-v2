@@ -1,3 +1,4 @@
+use super::spatial::ValidatedAcousticQuery;
 use crate::acoustics::{
     AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrSample, IrSnapshot,
 };
@@ -197,8 +198,18 @@ impl AcousticPipeline {
         scene: &mut SceneManager,
         query: AcousticQuery,
     ) -> SoundResult<GpuIrSnapshot> {
+        self.build_validated_ir_gpu(gpu, scene, query.canonicalized()?)
+    }
+
+    /// Traces a query already validated for cache lookup, preserving its exact basis.
+    pub(super) fn build_validated_ir_gpu(
+        &mut self,
+        gpu: &VkBackend,
+        scene: &mut SceneManager,
+        validated_query: ValidatedAcousticQuery,
+    ) -> SoundResult<GpuIrSnapshot> {
         self.validate_backend(gpu)?;
-        let query = query.canonicalized()?;
+        let query = validated_query.as_query();
         let ray_count = if self.config.tracing.max_bounces == 0 || query.source.amplitude == 0.0 {
             1
         } else {
@@ -303,12 +314,12 @@ impl AcousticPipeline {
             );
         }
 
-        GpuIrSnapshot::new(
+        GpuIrSnapshot::from_validated_query(
             ir_buffer,
             self.config.sound.sample_rate,
             storage_count,
             gpu_scene.version(),
-            query,
+            validated_query,
         )
     }
 

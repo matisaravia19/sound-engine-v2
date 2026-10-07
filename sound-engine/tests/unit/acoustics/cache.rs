@@ -8,6 +8,40 @@ use glam::Vec3;
 mod gpu;
 
 #[test]
+fn unchanged_orientations_match_at_the_strictest_threshold() {
+    let cache = IrCache::new(IrCacheConfig {
+        listener_orientation_dot_threshold: 1.0,
+        ..IrCacheConfig::default()
+    })
+    .unwrap();
+    for step in 0..24 {
+        let rotation =
+            glam::Quat::from_rotation_y(step as f32 * 0.17) * glam::Quat::from_rotation_x(0.37);
+        let mut original = query();
+        original.listener.forward = rotation * -Vec3::Z;
+        original.listener.up = rotation * Vec3::Y;
+        let original = original.canonicalized().unwrap().as_query();
+        assert_eq!(cache.reuse_score(original, original), Some(0.0));
+
+        let mut nearby = original;
+        nearby.source.position.x += 0.1;
+        assert!(cache.reuse_score(original, nearby).is_some());
+    }
+}
+
+#[test]
+fn distinct_source_amplitudes_never_share_a_response() {
+    let cache = IrCache::new(IrCacheConfig::default()).unwrap();
+    let mut quiet = query();
+    quiet.source.amplitude = f32::EPSILON * 0.5;
+    let mut silent = quiet;
+    silent.source.amplitude = 0.0;
+    assert!(cache.reuse_score(quiet, silent).is_none());
+    assert!(cache.reuse_score(silent, quiet).is_none());
+    assert_eq!(cache.reuse_score(silent, silent), Some(0.0));
+}
+
+#[test]
 fn reuse_requires_matching_orientation_locations_amplitude_and_query_id() {
     let cache = IrCache::new(IrCacheConfig::default()).unwrap();
     let original = query();
@@ -55,7 +89,7 @@ fn zero_capacity_or_budget_disables_reuse() {
     ] {
         let mut cache = IrCache::new(config).unwrap();
         assert!(!cache.is_enabled());
-        assert!(cache.get_ir(1, query()).is_none());
+        assert!(cache.get_ir(1, query().canonicalized().unwrap()).is_none());
     }
 }
 

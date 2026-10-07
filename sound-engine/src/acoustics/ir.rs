@@ -1,4 +1,5 @@
 use super::AcousticQuery;
+use super::spatial::ValidatedAcousticQuery;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
@@ -18,7 +19,7 @@ pub struct GpuIrSnapshot {
     sample_rate: u32,
     sample_count: u32,
     scene_version: SceneVersion,
-    query: AcousticQuery,
+    query: ValidatedAcousticQuery,
 }
 
 impl GpuIrSnapshot {
@@ -31,13 +32,30 @@ impl GpuIrSnapshot {
         scene_version: SceneVersion,
         query: AcousticQuery,
     ) -> SoundResult<Self> {
+        Self::from_validated_query(
+            buffer,
+            sample_rate,
+            sample_count,
+            scene_version,
+            query.canonicalized()?,
+        )
+    }
+
+    /// Publishes a completed IR while preserving the exact query used by the pipeline.
+    pub(super) fn from_validated_query(
+        buffer: Arc<BufferHandle>,
+        sample_rate: u32,
+        sample_count: u32,
+        scene_version: SceneVersion,
+        query: ValidatedAcousticQuery,
+    ) -> SoundResult<Self> {
         validate_layout(buffer.size, sample_rate, sample_count)?;
         Ok(Self {
             buffer,
             sample_rate,
             sample_count,
             scene_version,
-            query: query.canonicalized()?,
+            query,
         })
     }
 
@@ -68,7 +86,7 @@ impl GpuIrSnapshot {
 
     /// Returns the canonical source/listener query that produced this response.
     pub fn query(&self) -> AcousticQuery {
-        self.query
+        self.query.as_query()
     }
 
     /// Downloads the samples and measures their summed stereo energy.
@@ -86,7 +104,7 @@ impl GpuIrSnapshot {
             samples,
             energy,
             scene_version: self.scene_version,
-            query_id: self.query.query_id,
+            query_id: self.query().query_id,
         })
     }
 }

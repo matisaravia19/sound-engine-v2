@@ -86,7 +86,9 @@ impl AcousticsEngine {
 
         // Building an IR can update scene-side acceleration data, so the scene
         // manager remains mutable even though the acoustic query is read-only.
-        let snapshot = self.pipeline.build_ir_gpu(gpu, &mut self.scene, query)?;
+        let snapshot = self
+            .pipeline
+            .build_validated_ir_gpu(gpu, &mut self.scene, query)?;
         self.cache.insert_ir(snapshot.clone());
         Ok(snapshot)
     }

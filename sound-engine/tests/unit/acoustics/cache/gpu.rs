@@ -11,7 +11,7 @@ fn replacing_a_query_recounts_the_full_retained_allocation() {
     cache.insert_ir(snapshot(&gpu, 1, query, 32));
     let newer = snapshot(&gpu, 1, query, 48);
     cache.insert_ir(newer.clone());
-    let cached = cache.get_ir(1, query).unwrap();
+    let cached = cache.get_ir(1, query.canonicalized().unwrap()).unwrap();
     assert!(Arc::ptr_eq(cached.buffer(), newer.buffer()));
     assert_eq!(cache.entries.len(), 1);
     // Only one sample is declared, but the cache owns all 48 allocation bytes.
@@ -57,8 +57,8 @@ fn gpu_byte_budget_evicts_old_entries_without_invalidating_external_owners() {
     cache.insert_ir(retained.clone());
     cache.insert_ir(snapshot(&gpu, 1, second, 32));
     assert_eq!(cache.gpu_bytes, 32);
-    assert!(cache.get_ir(1, first).is_none());
-    assert!(cache.get_ir(1, second).is_some());
+    assert!(cache.get_ir(1, first.canonicalized().unwrap()).is_none());
+    assert!(cache.get_ir(1, second.canonicalized().unwrap()).is_some());
     assert!(weak.upgrade().is_some());
     drop(retained);
     assert!(weak.upgrade().is_none());
@@ -66,7 +66,13 @@ fn gpu_byte_budget_evicts_old_entries_without_invalidating_external_owners() {
     // An impossible replacement must not evict otherwise useful responses.
     cache.insert_ir(snapshot(&gpu, 1, second, 56));
     assert_eq!(cache.gpu_bytes, 32);
-    assert_eq!(cache.get_ir(1, second).unwrap().byte_size(), 32);
+    assert_eq!(
+        cache
+            .get_ir(1, second.canonicalized().unwrap())
+            .unwrap()
+            .byte_size(),
+        32
+    );
 }
 
 #[test]
@@ -86,13 +92,13 @@ fn a_cache_hit_refreshes_only_that_entry_before_eviction() {
     third.source.position.x = 0.02;
     cache.insert_ir(snapshot(&gpu, 1, first, 32));
     cache.insert_ir(snapshot(&gpu, 1, second, 32));
-    assert!(cache.get_ir(1, first).is_some());
+    assert!(cache.get_ir(1, first.canonicalized().unwrap()).is_some());
     cache.insert_ir(snapshot(&gpu, 1, third, 32));
     assert_eq!(cache.entries.len(), 2);
     assert_eq!(cache.gpu_bytes, 64);
-    assert!(cache.get_ir(1, second).is_none());
-    assert!(cache.get_ir(1, first).is_some());
-    assert!(cache.get_ir(1, third).is_some());
+    assert!(cache.get_ir(1, second.canonicalized().unwrap()).is_none());
+    assert!(cache.get_ir(1, first.canonicalized().unwrap()).is_some());
+    assert!(cache.get_ir(1, third.canonicalized().unwrap()).is_some());
 }
 
 #[test]
@@ -109,12 +115,15 @@ fn lookup_prefers_the_closest_response_with_matching_provenance() {
     let mut nearby = second;
     nearby.listener.position.x = 0.09;
     assert!(Arc::ptr_eq(
-        cache.get_ir(1, nearby).unwrap().buffer(),
+        cache
+            .get_ir(1, nearby.canonicalized().unwrap())
+            .unwrap()
+            .buffer(),
         closest.buffer()
     ));
-    assert!(cache.get_ir(2, nearby).is_none());
+    assert!(cache.get_ir(2, nearby.canonicalized().unwrap()).is_none());
     nearby.query_id += 1;
-    assert!(cache.get_ir(1, nearby).is_none());
+    assert!(cache.get_ir(1, nearby.canonicalized().unwrap()).is_none());
 }
 
 fn snapshot(

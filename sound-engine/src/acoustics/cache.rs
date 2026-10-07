@@ -1,6 +1,8 @@
+use super::spatial::ValidatedAcousticQuery;
 use crate::acoustics::{AcousticQuery, GpuIrSnapshot};
 use crate::core::error::{SoundError, SoundResult};
 use crate::scene::SceneVersion;
+use glam::Vec3;
 use std::collections::VecDeque;
 
 /// Shared public policy for acoustic impulse-response reuse.
@@ -43,7 +45,7 @@ impl IrCache {
     pub(super) fn get_ir(
         &mut self,
         scene_version: SceneVersion,
-        query: AcousticQuery,
+        query: ValidatedAcousticQuery,
     ) -> Option<GpuIrSnapshot> {
         if !self.is_enabled() {
             return None;
@@ -57,7 +59,7 @@ impl IrCache {
             .enumerate()
             .filter(|(_, entry)| entry.scene_version() == scene_version)
             .filter_map(|(index, entry)| {
-                self.reuse_score(entry.query(), query)
+                self.reuse_score(entry.query(), query.as_query())
                     .map(|score| (index, score))
             })
             .min_by(|(_, left), (_, right)| left.total_cmp(right))
@@ -110,7 +112,9 @@ impl IrCache {
     }
 
     fn reuse_score(&self, cached: AcousticQuery, requested: AcousticQuery) -> Option<f32> {
-        if cached.query_id != requested.query_id {
+        if cached.query_id != requested.query_id
+            || cached.source.amplitude != requested.source.amplitude
+        {
             return None;
         }
         let source_distance = cached
@@ -121,24 +125,26 @@ impl IrCache {
             .listener
             .position
             .distance_squared(requested.listener.position);
-        let forward_alignment = cached
-            .listener
-            .forward
-            .normalize_or_zero()
-            .dot(requested.listener.forward.normalize_or_zero());
-        let up_alignment = cached
-            .listener
-            .up
-            .normalize_or_zero()
-            .dot(requested.listener.up.normalize_or_zero());
-        let reusable = (cached.source.amplitude - requested.source.amplitude).abs() <= f32::EPSILON
-            && source_distance.sqrt() <= self.config.reuse_distance_meters
+        let forward_alignment =
+            orientation_alignment(cached.listener.forward, requested.listener.forward);
+        let up_alignment = orientation_alignment(cached.listener.up, requested.listener.up);
+        let reusable = source_distance.sqrt() <= self.config.reuse_distance_meters
             && listener_distance.sqrt() <= self.config.reuse_distance_meters
             && forward_alignment >= self.config.listener_orientation_dot_threshold
             && up_alignment >= self.config.listener_orientation_dot_threshold;
         reusable.then_some(
             source_distance + listener_distance + (1.0 - forward_alignment) + (1.0 - up_alignment),
         )
+    }
+}
+
+fn orientation_alignment(left: Vec3, right: Vec3) -> f32 {
+    // Queries already have unit axes. Equal axes must match even at threshold 1;
+    // f32 normalization and dot products can round to either side of that limit.
+    if left == right {
+        1.0
+    } else {
+        left.dot(right).clamp(-1.0, 1.0)
     }
 }
 
