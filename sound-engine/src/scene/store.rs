@@ -1,8 +1,12 @@
+//! Atomic scene transactions and revisions for independently reusable GPU resources.
+
 use super::types::{
     DiffractionEdge, DiffractionEdgeId, Material, MaterialId, MeshAsset, MeshId, ObjectId,
     SceneDescription, SceneObject, SceneUpdate, SceneUpdates, SceneVersion,
 };
+use super::validation::{validate_diffraction_edge, validate_material, validate_mesh};
 use crate::core::error::{SoundError, SoundResult};
+use crate::core::geometry::validate_instance_transform;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,15 +17,15 @@ use std::sync::Arc;
 #[derive(Clone, Default)]
 pub struct SceneStore {
     /// Revision used to invalidate scene-derived GPU data and acoustic caches.
-    pub(super) version: SceneVersion,
+    version: SceneVersion,
     revisions: SceneRevisions,
     meshes: HashMap<MeshId, StoredMesh>,
     /// Validated acoustic materials addressable by scene objects.
-    pub(super) materials: HashMap<MaterialId, Material>,
+    materials: HashMap<MaterialId, Material>,
     /// Placed objects, including inactive instances.
-    pub(super) objects: HashMap<ObjectId, SceneObject>,
+    objects: HashMap<ObjectId, SceneObject>,
     /// Authored edge geometry used by diffraction proxies.
-    pub(super) diffraction_edges: HashMap<DiffractionEdgeId, DiffractionEdge>,
+    diffraction_edges: HashMap<DiffractionEdgeId, DiffractionEdge>,
 }
 
 // Transactions share immutable geometry; moving one object must not copy every
@@ -82,7 +86,7 @@ impl SceneStore {
         Self::default()
     }
 
-    /// Replaces the entire CPU scene and increments the version.
+    /// Validates a complete replacement and commits it atomically at the next version.
     pub fn load(&mut self, scene: SceneDescription) -> SoundResult<()> {
         let revision = self.next_version()?;
         let mut next = Self::default();
@@ -111,7 +115,7 @@ impl SceneStore {
             }
         }
         for object in scene.objects {
-            validate_object_refs(&next, &object)?;
+            next.validate_object_refs(&object)?;
             if next.objects.insert(object.id, object).is_some() {
                 return Err(SoundError::invalid_argument("Duplicate object id in scene"));
             }
@@ -135,7 +139,8 @@ impl SceneStore {
         Ok(())
     }
 
-    /// Applies incremental changes and increments the version if anything changed.
+    /// Commits an ordered, nonempty batch at the next version.
+    /// Any failed edit leaves both scene records and resource revisions unchanged.
     pub fn apply_updates(&mut self, updates: SceneUpdates) -> SoundResult<()> {
         if updates.updates.is_empty() {
             return Ok(());
@@ -273,7 +278,7 @@ impl SceneStore {
                 })?;
             }
             SceneUpdate::AddObject(object) => {
-                validate_object_refs(self, &object)?;
+                self.validate_object_refs(&object)?;
                 if self.objects.insert(object.id, object).is_some() {
                     return Err(SoundError::invalid_argument(
                         "AddObject received an existing object id",
@@ -281,7 +286,7 @@ impl SceneStore {
                 }
             }
             SceneUpdate::ReplaceObject(object) => {
-                validate_object_refs(self, &object)?;
+                self.validate_object_refs(&object)?;
                 if !self.objects.contains_key(&object.id) {
                     return Err(SoundError::not_found(format!(
                         "Object {} does not exist",
@@ -322,7 +327,7 @@ impl SceneStore {
                 id,
                 transform,
             } => {
-                crate::core::geometry::validate_instance_transform(transform)?;
+                validate_instance_transform(transform)?;
                 self.object_mut(id)?.transform = transform;
             }
             SceneUpdate::SetActive {
@@ -352,91 +357,23 @@ impl SceneStore {
             .get_mut(&id)
             .ok_or_else(|| SoundError::not_found(format!("Object {} does not exist", id)))
     }
-}
 
-fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
-    crate::core::geometry::validate_triangle_mesh(
-        &mesh.vertices,
-        (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
-    )
-}
-
-fn validate_material(material: &Material) -> SoundResult<()> {
-    for (name, value) in [
-        ("absorption", material.absorption),
-        ("scattering", material.scattering),
-        ("roughness", material.roughness),
-    ] {
-        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(SoundError::invalid_argument(format!(
-                "Material {} {name} must be finite and in [0, 1]",
-                material.id
+    fn validate_object_refs(&self, object: &SceneObject) -> SoundResult<()> {
+        validate_instance_transform(object.transform)?;
+        if !self.meshes.contains_key(&object.mesh_id) {
+            return Err(SoundError::not_found(format!(
+                "Mesh {} does not exist",
+                object.mesh_id
             )));
         }
+        if !self.materials.contains_key(&object.material_id) {
+            return Err(SoundError::not_found(format!(
+                "Material {} does not exist",
+                object.material_id
+            )));
+        }
+        Ok(())
     }
-    Ok(())
-}
-
-fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult<()> {
-    crate::core::geometry::validate_instance_transform(object.transform)?;
-    if !store.meshes.contains_key(&object.mesh_id) {
-        return Err(SoundError::not_found(format!(
-            "Mesh {} does not exist",
-            object.mesh_id
-        )));
-    }
-    if !store.materials.contains_key(&object.material_id) {
-        return Err(SoundError::not_found(format!(
-            "Material {} does not exist",
-            object.material_id
-        )));
-    }
-    Ok(())
-}
-
-fn validate_diffraction_edge(edge: &DiffractionEdge) -> SoundResult<()> {
-    if !edge.start.is_finite() || !edge.end.is_finite() {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} endpoints must be finite",
-            edge.id
-        )));
-    }
-    let direction = edge.end - edge.start;
-    if direction.length_squared() <= f32::EPSILON {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} must have nonzero length",
-            edge.id
-        )));
-    }
-    if !edge.bisector_dir.is_finite() || edge.bisector_dir.length_squared() <= f32::EPSILON {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} bisector must be finite and nonzero",
-            edge.id
-        )));
-    }
-    let edge_dir = direction.normalize();
-    let bisector = edge.bisector_dir.normalize();
-    if edge_dir.cross(bisector).length_squared() <= 1.0e-6 {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} bisector must not be parallel to the edge",
-            edge.id
-        )));
-    }
-    if !edge.edge_angle_radians.is_finite()
-        || !(std::f32::consts::PI..=std::f32::consts::TAU).contains(&edge.edge_angle_radians)
-    {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} angle must be finite and in [PI, 2*PI]",
-            edge.id
-        )));
-    }
-    if !edge.diffraction_radius.is_finite() || edge.diffraction_radius <= 0.0 {
-        return Err(SoundError::invalid_argument(format!(
-            "Diffraction edge {} radius must be finite and > 0",
-            edge.id
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

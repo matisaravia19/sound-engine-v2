@@ -59,6 +59,7 @@ pub struct SceneObject {
 }
 
 /// Manually authored geometry that can diffract acoustic rays.
+/// The edge direction and bisector must permit finite, nonzero f32 normalization.
 /// Remove an edge from the scene to disable its diffraction contribution.
 #[derive(Debug, Clone)]
 pub struct DiffractionEdge {

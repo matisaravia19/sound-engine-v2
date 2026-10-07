@@ -166,20 +166,6 @@ fn apply_updates_rejects_material_removal_when_current_scene_still_references_it
     assert_eq!(store.version(), original_version);
 }
 
-#[test]
-fn material_roughness_must_be_finite_and_normalized() {
-    for roughness in [-0.1, 1.1, f32::NAN] {
-        let material = Material {
-            id: 1,
-            absorption: 0.2,
-            scattering: 0.1,
-            roughness,
-        };
-
-        assert!(validate_material(&material).is_err());
-    }
-}
-
 fn populated_store() -> SceneStore {
     let mut store = SceneStore::new();
     store
@@ -379,5 +365,66 @@ fn invalid_material_coefficients_cannot_enter_or_replace_scene_state() {
             );
             assert_eq!(store.version(), version);
         }
+    }
+}
+
+#[test]
+fn overflowing_edge_directions_cannot_enter_or_replace_scene_state() {
+    let mut store = populated_store();
+    store
+        .apply_updates(SceneUpdates {
+            updates: vec![SceneUpdate::AddDiffractionEdge(edge(1))],
+        })
+        .unwrap();
+    let version = store.version();
+    let revisions = store.revisions();
+    let mut invalid = edge(1);
+    // Finite endpoints can still overflow when subtracted or squared for normalization.
+    for (start, end) in [
+        (glam::Vec3::splat(-f32::MAX), glam::Vec3::splat(f32::MAX)),
+        (glam::Vec3::ZERO, vec3(1.0e20, 0.0, 0.0)),
+    ] {
+        invalid.start = start;
+        invalid.end = end;
+        assert_eq!(
+            store
+                .load(SceneDescription {
+                    diffraction_edges: vec![invalid.clone()],
+                    ..Default::default()
+                })
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        for update in [
+            SceneUpdate::ReplaceDiffractionEdge(invalid.clone()),
+            SceneUpdate::AddDiffractionEdge(DiffractionEdge {
+                id: 2,
+                ..invalid.clone()
+            }),
+        ] {
+            assert_eq!(
+                store
+                    .apply_updates(SceneUpdates {
+                        updates: vec![
+                            SceneUpdate::SetActive {
+                                id: 10,
+                                active: false
+                            },
+                            update
+                        ],
+                    })
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidArgument
+            );
+        }
+        assert_eq!(store.version(), version);
+        assert_eq!(store.revisions(), revisions);
+        assert_eq!(store.meshes().count(), 2);
+        assert!(store.objects[&10].active);
+        assert_eq!(store.diffraction_edges().count(), 1);
+        assert_eq!(store.diffraction_edges[&1].start, edge(1).start);
+        assert_eq!(store.diffraction_edges[&1].end, edge(1).end);
     }
 }

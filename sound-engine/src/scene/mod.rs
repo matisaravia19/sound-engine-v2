@@ -8,6 +8,7 @@ mod gpu;
 mod manager;
 mod store;
 mod types;
+mod validation;
 
 pub use gpu::GpuSceneResources;
 pub use manager::SceneManager;
