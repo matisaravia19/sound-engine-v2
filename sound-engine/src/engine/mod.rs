@@ -26,9 +26,17 @@ use runtime::EngineRuntime;
 
 /// Public handle for synchronous rendering or feature-gated background playback.
 /// Dropping the handle stops and joins its worker before releasing the engine core.
+/// If stopping cannot recover the core after a worker panic, subsequent operations
+/// return that failure. Audio-format getters remain available.
 pub struct SoundEngine {
-    /// Current owner mode; temporarily `None` while ownership moves between modes.
-    mode: Option<EngineMode>,
+    /// Current core owner, or the failure that prevented ownership recovery.
+    mode: SoundResult<EngineMode>,
+    /// Immutable sample rate, retained independently of worker ownership.
+    sample_rate: u32,
+    /// Immutable number of frames rendered per block.
+    block_size: usize,
+    /// Immutable number of interleaved output channels per frame.
+    output_channels: usize,
 }
 
 /// Internal ownership mode for the engine core.
@@ -44,9 +52,17 @@ impl SoundEngine {
     /// Creates the scalar acoustic engine with an empty scene and sound bank.
     /// Invalid settings are rejected before Vulkan initialization.
     pub fn new(config: EngineConfig) -> SoundResult<Self> {
-        Ok(Self {
-            mode: Some(EngineMode::Direct(Box::new(EngineCore::new(config)?))),
-        })
+        let core = Box::new(EngineCore::new(config)?);
+        Ok(Self::from_core(core))
+    }
+
+    fn from_core(core: Box<EngineCore>) -> Self {
+        Self {
+            sample_rate: core.sample_rate(),
+            block_size: core.block_size(),
+            output_channels: core.output_channels(),
+            mode: Ok(EngineMode::Direct(core)),
+        }
     }
 
     /// Replaces the scene and invalidates cached impulse responses.
@@ -159,111 +175,90 @@ impl SoundEngine {
     /// device audio can remain after all voices finish rendering.
     pub fn has_active_voices(&self) -> bool {
         match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => core.has_active_voices(),
+            Ok(EngineMode::Direct(core)) => core.has_active_voices(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => runtime.active_voice_count() != 0,
-            None => false,
+            Ok(EngineMode::Runtime(runtime)) => runtime.active_voice_count() != 0,
+            Err(_) => false,
         }
     }
 
     /// Returns active or tail-flushing voices, including the latest worker snapshot.
-    /// A stopped worker retains voices until direct ownership is recovered.
+    /// A stopped worker retains voices until direct ownership is recovered,
+    /// unless a panic destroyed the core.
     pub fn active_voice_count(&self) -> usize {
         match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => core.active_voice_count(),
+            Ok(EngineMode::Direct(core)) => core.active_voice_count(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => runtime.active_voice_count(),
-            None => 0,
+            Ok(EngineMode::Runtime(runtime)) => runtime.active_voice_count(),
+            Err(_) => 0,
         }
     }
 
     /// Returns the configured engine sample rate.
     pub fn sample_rate(&self) -> u32 {
-        match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => core.sample_rate(),
-            #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => runtime.sample_rate(),
-            None => 0,
-        }
+        self.sample_rate
     }
 
     /// Returns the number of frames rendered per block.
     pub fn block_size(&self) -> usize {
-        match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => core.block_size(),
-            #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => runtime.block_size(),
-            None => 0,
-        }
+        self.block_size
     }
 
     /// Returns the number of interleaved output channels per frame.
     pub fn output_channels(&self) -> usize {
-        match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => core.output_channels(),
-            #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => runtime.output_channels(),
-            None => 0,
-        }
+        self.output_channels
     }
 
     /// Starts a feature-gated background sound player.
     #[cfg(feature = "playback")]
     pub fn start_sound_player(&mut self, config: PlaybackConfig) -> SoundResult<()> {
-        let Some(mode) = self.mode.take() else {
-            return Err(SoundError::invalid_state(
-                "sound engine is already transitioning modes",
-            ));
-        };
-
-        match mode {
+        match self.take_mode()? {
             EngineMode::Direct(core) => match EngineRuntime::start(core, config) {
                 Ok(runtime) => {
-                    self.mode = Some(EngineMode::Runtime(runtime));
+                    self.mode = Ok(EngineMode::Runtime(runtime));
                     Ok(())
                 }
                 Err(error) => {
-                    self.mode = Some(EngineMode::Direct(error.core));
+                    self.mode = Ok(EngineMode::Direct(error.core));
                     Err(error.error)
                 }
             },
             EngineMode::Runtime(runtime) => {
-                self.mode = Some(EngineMode::Runtime(runtime));
+                self.mode = Ok(EngineMode::Runtime(runtime));
                 Err(SoundError::invalid_state("sound player is already running"))
             }
         }
     }
 
     /// Stops the feature-gated background sound player and returns to direct mode.
+    /// Device and rendering errors return with direct ownership restored. A worker
+    /// panic destroys the core, leaving the handle permanently failed.
     #[cfg(feature = "playback")]
     pub fn stop_sound_player(&mut self) -> SoundResult<()> {
-        let Some(mode) = self.mode.take() else {
-            return Err(SoundError::invalid_state(
-                "sound engine is already transitioning modes",
-            ));
-        };
-
-        match mode {
+        match self.take_mode()? {
             EngineMode::Direct(core) => {
-                self.mode = Some(EngineMode::Direct(core));
+                self.mode = Ok(EngineMode::Direct(core));
                 Ok(())
             }
-            EngineMode::Runtime(runtime) => {
-                let (core, result) = runtime.stop();
-                if let Some(core) = core {
-                    self.mode = Some(EngineMode::Direct(core));
+            EngineMode::Runtime(runtime) => match runtime.stop() {
+                Ok((core, result)) => {
+                    self.mode = Ok(EngineMode::Direct(core));
+                    result
                 }
-                result
-            }
+                Err(error) => {
+                    self.mode = Err(error.clone());
+                    Err(error)
+                }
+            },
         }
     }
 
     /// Returns whether the feature-gated background sound player is running.
     /// After asynchronous failure, call `stop_sound_player` to retrieve the error
-    /// and recover the engine's direct ownership.
+    /// and recover direct ownership unless the worker panicked.
     #[cfg(feature = "playback")]
     pub fn is_sound_player_running(&self) -> bool {
-        matches!(&self.mode, Some(EngineMode::Runtime(runtime)) if runtime.is_running())
+        matches!(&self.mode, Ok(EngineMode::Runtime(runtime)) if runtime.is_running())
     }
 
     /// Applies an operation directly or waits for it on the core's owning worker.
@@ -278,11 +273,21 @@ impl SoundEngine {
         }
     }
 
-    /// Borrows the current mode unless ownership is being transferred.
+    /// Borrows the current owner or reports the retained ownership failure.
     fn mode_mut(&mut self) -> SoundResult<&mut EngineMode> {
-        self.mode
-            .as_mut()
-            .ok_or_else(|| SoundError::invalid_state("sound engine is transitioning modes"))
+        self.mode.as_mut().map_err(|error| error.clone())
+    }
+
+    /// Moves ownership out while leaving a failure if the transfer unwinds.
+    #[cfg(feature = "playback")]
+    fn take_mode(&mut self) -> SoundResult<EngineMode> {
+        self.mode_mut()?;
+        std::mem::replace(
+            &mut self.mode,
+            Err(SoundError::invalid_state(
+                "sound engine ownership transfer was interrupted",
+            )),
+        )
     }
 }
 

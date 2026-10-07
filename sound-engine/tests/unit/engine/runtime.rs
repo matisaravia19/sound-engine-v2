@@ -14,7 +14,7 @@ fn panicking_worker_publishes_failure_without_stale_voices() {
     let status = Arc::new(RuntimeStatus::new(3));
     let worker_status = status.clone();
     let worker = thread::spawn(move || {
-        let _guard = PanicStatusGuard(worker_status);
+        let _guard = PanicStatusGuard(&worker_status);
         panic!("simulated playback panic");
     });
     assert!(worker.join().is_err());
@@ -86,14 +86,13 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
         .request(|core| core.create_sound_source(PointSource::new(Vec3::X)))
         .unwrap_err();
     assert!(error.to_string().contains("simulated device disconnect"));
-    let (core, result) = runtime.stop();
+    let (mut core, result) = runtime.stop().unwrap();
     assert!(
         result
             .unwrap_err()
             .to_string()
             .contains("simulated device disconnect")
     );
-    let mut core = core.unwrap();
     assert_eq!(core.active_voice_count(), 1);
     core.stop_voice(voice);
 
@@ -115,12 +114,11 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
         .request(|core| core.create_sound_source(PointSource::new(Vec3::X)))
         .unwrap_err();
     assert_eq!(error.code(), crate::core::error::ErrorCode::PoisonedLock);
-    let (core, result) = runtime.stop();
+    let (mut core, result) = runtime.stop().unwrap();
     assert_eq!(
         result.unwrap_err().code(),
         crate::core::error::ErrorCode::PoisonedLock
     );
-    let mut core = core.unwrap();
     core.stop_voice(voice);
 
     // Restart with an existing voice, then drive real queue callbacks until its
@@ -137,9 +135,8 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
         assert!(output.iter().all(|sample| sample.is_finite()));
         thread::sleep(Duration::from_millis(1));
     }
-    let (core, result) = runtime.stop();
+    let (mut core, result) = runtime.stop().unwrap();
     result.unwrap();
-    let mut core = core.unwrap();
     assert_eq!(core.active_voice_count(), 0);
     core.play_sound(PlaySpatialSoundRequest::new(long, Vec3::X))
         .unwrap();
@@ -157,11 +154,27 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
 fn facade_routes_owned_requests_and_recovers_direct_rendering_after_stop() {
     let core = Box::new(EngineCore::new(runtime_config()).unwrap());
     let device = core.device_lifetime();
-    let (runtime, control) = start_headless(core);
-    let listener_mailbox = runtime.pending_listener.clone();
-    let mut engine = SoundEngine {
-        mode: Some(EngineMode::Runtime(runtime)),
+    let mut engine = SoundEngine::from_core(core);
+    let control = start_engine_headless(&mut engine);
+    let EngineMode::Runtime(runtime) = engine.mode.as_ref().unwrap() else {
+        unreachable!();
     };
+    let listener_mailbox = runtime.pending_listener.clone();
+    assert_eq!(
+        (
+            engine.sample_rate(),
+            engine.block_size(),
+            engine.output_channels()
+        ),
+        (48_000, 64, 2)
+    );
+    assert_eq!(
+        engine
+            .start_sound_player(PlaybackConfig::default())
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidState
+    );
 
     let version = engine.load_scene(SceneDescription::default()).unwrap();
     let updated = engine
@@ -214,6 +227,7 @@ fn facade_routes_owned_requests_and_recovers_direct_rendering_after_stop() {
     wait_until(|| control.queued_samples() == 128);
     // Shutdown must wake the full queue before waiting for ownership to return.
     engine.stop_sound_player().unwrap();
+    engine.stop_sound_player().unwrap();
     assert!(!engine.is_sound_player_running());
     assert_eq!(engine.active_voice_count(), 1);
     let mut output = [f32::NAN; 128];
@@ -224,17 +238,59 @@ fn facade_routes_owned_requests_and_recovers_direct_rendering_after_stop() {
     assert!(!engine.has_active_voices());
 
     // Dropping the public facade must also join a worker blocked on queued audio.
-    let Some(EngineMode::Direct(core)) = engine.mode.take() else {
-        panic!("Stop did not recover direct ownership");
-    };
-    let (runtime, control) = start_headless(core);
-    engine.mode = Some(EngineMode::Runtime(runtime));
+    let control = start_engine_headless(&mut engine);
     engine
         .play_sound(PlaySpatialSoundRequest::new(sound, Vec3::X))
         .unwrap();
     wait_until(|| control.queued_samples() == 128);
     drop(engine);
     assert!(device.upgrade().is_none());
+}
+
+#[test]
+#[ignore = "requires Vulkan; uses simulated audio callbacks; run serially"]
+fn facade_retains_format_and_failure_after_worker_panic() {
+    let core = Box::new(EngineCore::new(runtime_config()).unwrap());
+    let device = core.device_lifetime();
+    let mut engine = SoundEngine::from_core(core);
+    let _control = start_engine_headless(&mut engine);
+    let EngineMode::Runtime(runtime) = engine.mode.as_ref().unwrap() else {
+        unreachable!();
+    };
+    let error = runtime
+        .request::<()>(|_| panic!("simulated request panic"))
+        .unwrap_err();
+    assert!(error.to_string().contains("panicked"));
+    let stopped = engine.stop_sound_player().unwrap_err();
+    assert_eq!(stopped.to_string(), error.to_string());
+    assert!(stopped.to_string().contains("panicked"));
+    assert!(!engine.is_sound_player_running());
+    assert!(!engine.has_active_voices());
+    assert_eq!(engine.active_voice_count(), 0);
+    assert!(device.upgrade().is_none());
+    assert_eq!(
+        (
+            engine.sample_rate(),
+            engine.block_size(),
+            engine.output_channels()
+        ),
+        (48_000, 64, 2)
+    );
+    let errors = [
+        engine.load_scene(SceneDescription::default()).unwrap_err(),
+        engine
+            .set_listener_pose(ListenerPose::default())
+            .unwrap_err(),
+        engine.render_block(&mut [0.0; 128]).unwrap_err(),
+        engine
+            .start_sound_player(PlaybackConfig::default())
+            .unwrap_err(),
+        engine.stop_sound_player().unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.code(), stopped.code());
+        assert_eq!(error.to_string(), stopped.to_string());
+    }
 }
 
 fn runtime_config() -> EngineConfig {
@@ -268,6 +324,15 @@ fn start_headless(core: Box<EngineCore>) -> (EngineRuntime, TestPlaybackControl)
     })
     .unwrap_or_else(|error| panic!("{}", error.error));
     (runtime, receiver.recv().unwrap())
+}
+
+fn start_engine_headless(engine: &mut SoundEngine) -> TestPlaybackControl {
+    let EngineMode::Direct(core) = engine.take_mode().unwrap() else {
+        panic!("Expected direct ownership before starting playback");
+    };
+    let (runtime, control) = start_headless(core);
+    engine.mode = Ok(EngineMode::Runtime(runtime));
+    control
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool) {

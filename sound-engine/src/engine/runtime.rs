@@ -23,6 +23,9 @@ impl EngineCommand {
     ) -> (Self, Receiver<SoundResult<T>>) {
         let (reply, response) = mpsc::sync_channel(1);
         let command = Self::Run(Box::new(move |core, status| {
+            let reply = reply;
+            // Publish a panic before dropping the reply channel during unwinding.
+            let _panic_status = PanicStatusGuard(status);
             let result = operation(core);
             // An acknowledged operation must expose its updated voice count.
             status.publish(core);
@@ -39,12 +42,6 @@ pub(super) struct EngineRuntime {
     commands: Sender<EngineCommand>,
     /// Join handle for recovering direct engine ownership when playback stops.
     worker: Option<super::worker::OwnerThread<Box<EngineCore>>>,
-    /// Sample rate copied from the core before it moved to the worker thread.
-    sample_rate: u32,
-    /// Render block size copied from the core before it moved to the worker thread.
-    block_size: usize,
-    /// Output channel count copied from the core before it moved to the worker thread.
-    output_channels: usize,
     /// Capacity-one pose mailbox; stale game frames are replaced before rendering.
     pending_listener: Arc<Mutex<Option<ListenerPose>>>,
     /// Wakes a full-queue producer before shutdown waits for its command loop.
@@ -84,9 +81,9 @@ impl RuntimeStatus {
     }
 }
 
-struct PanicStatusGuard(Arc<RuntimeStatus>);
+struct PanicStatusGuard<'a>(&'a RuntimeStatus);
 
-impl Drop for PanicStatusGuard {
+impl Drop for PanicStatusGuard<'_> {
     fn drop(&mut self) {
         if thread::panicking() {
             // A panicking worker destroys its owner instead of returning it.
@@ -117,9 +114,6 @@ impl EngineRuntime {
         core: Box<EngineCore>,
         initialize: impl FnOnce() -> SoundResult<SoundPlayer> + Send + 'static,
     ) -> Result<Self, RuntimeStartError> {
-        let sample_rate = core.sample_rate();
-        let block_size = core.block_size();
-        let output_channels = core.output_channels();
         let (sender, receiver) = mpsc::channel();
         let pending_listener = Arc::new(Mutex::new(None));
         let worker_listener = pending_listener.clone();
@@ -134,7 +128,7 @@ impl EngineRuntime {
                 Ok((player, stop_handle))
             },
             move |mut core, player| {
-                let _panic_status = PanicStatusGuard(worker_status.clone());
+                let _panic_status = PanicStatusGuard(&worker_status);
                 let result = runtime_loop(
                     &mut core,
                     &player,
@@ -160,9 +154,6 @@ impl EngineRuntime {
         Ok(Self {
             commands: sender,
             worker: Some(worker),
-            sample_rate,
-            block_size,
-            output_channels,
             pending_listener,
             stop_handle,
             status,
@@ -198,43 +189,29 @@ impl EngineRuntime {
         Ok(())
     }
 
-    /// Stops the runtime thread and returns direct engine ownership.
-    pub(super) fn stop(mut self) -> (Option<Box<EngineCore>>, SoundResult<()>) {
+    /// Joins the worker, returning the recovered core and its playback result.
+    /// The outer error means the worker could not return ownership.
+    pub(super) fn stop(mut self) -> SoundResult<(Box<EngineCore>, SoundResult<()>)> {
         // A command cannot wake a worker blocked in push_block. Wake its queue
         // first; the command separately wakes an idle receiver.
         let stopped = self.stop_handle.request_stop();
         let _ = self.commands.send(EngineCommand::Shutdown);
-        let Some(worker) = self.worker.take() else {
-            return (
-                None,
-                Err(SoundError::invalid_state(
-                    "sound player worker was already stopped",
-                )),
-            );
-        };
+        let worker = self
+            .worker
+            .take()
+            .ok_or_else(|| SoundError::invalid_state("sound player worker was already stopped"))?;
         match worker.join() {
-            Ok(Some((core, result))) => (
-                Some(core),
+            Ok(Some((core, result))) => Ok((
+                core,
                 result
                     .and(stopped)
                     .and_then(|()| self.stop_handle.check_error()),
-            ),
-            Ok(None) => (
-                None,
-                Err(SoundError::external(
-                    "sound player worker stopped before ownership transfer",
-                )),
-            ),
-            Err(_) => (
-                None,
-                Err(SoundError::external("sound player worker thread panicked")),
-            ),
+            )),
+            Ok(None) => Err(SoundError::external(
+                "sound player worker stopped before ownership transfer",
+            )),
+            Err(_) => Err(self.stopped_error("sound player worker thread panicked")),
         }
-    }
-
-    /// Returns the engine sample rate used by the runtime thread.
-    pub(super) fn sample_rate(&self) -> u32 {
-        self.sample_rate
     }
 
     /// Reports worker liveness even when an asynchronous device failure stopped it.
@@ -252,16 +229,6 @@ impl EngineRuntime {
     fn check_error(&self) -> SoundResult<()> {
         self.status.check_error()?;
         self.stop_handle.check_error()
-    }
-
-    /// Returns the render block size used by the runtime thread.
-    pub(super) fn block_size(&self) -> usize {
-        self.block_size
-    }
-
-    /// Returns the output channel count used by the runtime thread.
-    pub(super) fn output_channels(&self) -> usize {
-        self.output_channels
     }
 
     /// Runs an owned operation on the worker, publishing status before returning its result.
