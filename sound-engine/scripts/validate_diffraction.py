@@ -2,12 +2,13 @@
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import statistics
 import subprocess
 from pathlib import Path
+
+from benchmark_runner import source_hashes, write_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,29 +43,28 @@ def main():
         "diffraction_proxy_radius_020",
         "diffraction_proxy_radius_090",
     ]:
-        summary[case] = {}
-        for mode in ["proxy"]:
-            output = (args.output / f"{case}-{mode}.csv").resolve()
-            command = [
-                str(executable),
-                "--case",
-                case,
-                "--rays",
-                str(args.rays),
-                "--seed-repeats",
-                "3",
-                "--warm-repeats",
-                "21",
-                "--output",
-                str(output),
-            ]
-            subprocess.run(command, cwd=ROOT, check=True)
-            with output.open() as stream:
-                rows = list(csv.DictReader(stream))
-            assert len(rows) == 21, "each case must export 3 seeds x 7 frequencies"
-            values = [float(r["sampled_complex_relative_error"]) for r in rows]
-            assert all(math.isfinite(v) for v in values), "nonfinite response"
-            summary[case][mode] = {
+        output = (args.output / f"{case}-proxy.csv").resolve()
+        command = [
+            str(executable),
+            "--case",
+            case,
+            "--rays",
+            str(args.rays),
+            "--seed-repeats",
+            "3",
+            "--warm-repeats",
+            "21",
+            "--output",
+            str(output),
+        ]
+        subprocess.run(command, cwd=ROOT, check=True)
+        with output.open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == 21, "each case must export 3 seeds x 7 frequencies"
+        values = [float(r["sampled_complex_relative_error"]) for r in rows]
+        assert all(math.isfinite(v) for v in values), "nonfinite response"
+        summary[case] = {
+            "proxy": {
                 "mean_sampled_complex_error": statistics.mean(values),
                 "max_sampled_complex_error": max(values),
                 "mean_time_relative_l2": statistics.mean(
@@ -72,15 +72,9 @@ def main():
                 ),
                 "median_query_ms": statistics.median(float(r["warm_gpu_ms"]) for r in rows),
             }
-    # Content hashes identify dirty/untracked source as well as the Git revision.
-    hashes = {
-        str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for folder in ["sound-engine/src", "sound-engine/examples"]
-        for p in sorted((ROOT / folder).rglob("*"))
-        if p.suffix in [".rs", ".glsl"]
-    }
-    (args.output / "source-sha256.json").write_text(json.dumps(hashes, indent=2) + "\n")
-    (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        }
+    write_json(args.output / "source-sha256.json", source_hashes())
+    write_json(args.output / "summary.json", summary)
     print(json.dumps(summary, indent=2))
 
 
