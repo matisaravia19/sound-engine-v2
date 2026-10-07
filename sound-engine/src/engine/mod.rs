@@ -25,6 +25,7 @@ use crate::playback::PlaybackConfig;
 use runtime::EngineRuntime;
 
 /// Public handle for synchronous rendering or feature-gated background playback.
+/// Dropping the handle stops and joins its worker before releasing the engine core.
 pub struct SoundEngine {
     /// Current owner mode; temporarily `None` while ownership moves between modes.
     mode: Option<EngineMode>,
@@ -49,20 +50,12 @@ impl SoundEngine {
 
     /// Replaces the scene and invalidates cached impulse responses.
     pub fn load_scene(&mut self, scene: SceneDescription) -> SoundResult<SceneVersion> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.load_scene(scene),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.load_scene(scene),
-        }
+        self.with_core(move |core| core.load_scene(scene))
     }
 
     /// Applies scene updates and invalidates cached impulse responses when anything changed.
     pub fn apply_scene_updates(&mut self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.apply_scene_updates(updates),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.apply_scene_updates(updates),
-        }
+        self.with_core(move |core| core.apply_scene_updates(updates))
     }
 
     /// Sets the listener pose used by subsequent spatial play requests.
@@ -76,21 +69,13 @@ impl SoundEngine {
 
     /// Loads a WAV asset into the engine sound bank at the configured sample rate.
     pub fn load_wav_sound(&mut self, path: impl AsRef<Path>) -> SoundResult<SoundId> {
-        let path = path.as_ref();
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.load_wav_sound(path),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.load_wav_sound(path.to_path_buf()),
-        }
+        let path = path.as_ref().to_path_buf();
+        self.with_core(move |core| core.load_wav_sound(path))
     }
 
     /// Inserts an already decoded mono sound asset into the engine sound bank.
     pub fn insert_sound(&mut self, asset: SoundAsset) -> SoundResult<SoundId> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.insert_sound(asset),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.insert_sound(asset),
-        }
+        self.with_core(move |core| core.insert_sound(asset))
     }
 
     /// Submits the latest listener pose without waiting for background rendering.
@@ -108,11 +93,7 @@ impl SoundEngine {
 
     /// Creates a tracked movable source for future spatial playback.
     pub fn create_sound_source(&mut self, source: PointSource) -> SoundResult<SoundSourceId> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.create_sound_source(source),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.create_sound_source(source),
-        }
+        self.with_core(move |core| core.create_sound_source(source))
     }
 
     /// Updates the position and amplitude of an existing tracked source.
@@ -121,29 +102,17 @@ impl SoundEngine {
         id: SoundSourceId,
         source: PointSource,
     ) -> SoundResult<()> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.update_sound_source(id, source),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.update_sound_source(id, source),
-        }
+        self.with_core(move |core| core.update_sound_source(id, source))
     }
 
     /// Removes a tracked source that is not referenced by an active voice.
     pub fn remove_sound_source(&mut self, id: SoundSourceId) -> SoundResult<()> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.remove_sound_source(id),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.remove_sound_source(id),
-        }
+        self.with_core(move |core| core.remove_sound_source(id))
     }
 
     /// Plays a sound through an acoustic IR generated from the current scene and listener.
     pub fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.play_sound(request),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.play_sound(request),
-        }
+        self.with_core(move |core| core.play_sound(request))
     }
 
     /// Plays a sound through an acoustic IR generated from a tracked source.
@@ -153,13 +122,7 @@ impl SoundEngine {
         source_id: SoundSourceId,
         volume: f32,
     ) -> SoundResult<VoiceId> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.play_sound_from_source(sound_id, source_id, volume),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => {
-                runtime.play_sound_from_source(sound_id, source_id, volume)
-            }
-        }
+        self.with_core(move |core| core.play_sound_from_source(sound_id, source_id, volume))
     }
 
     /// Builds or reuses the raw acoustic impulse response for a source/listener pair.
@@ -168,23 +131,15 @@ impl SoundEngine {
         source: PointSource,
         listener: ListenerPose,
     ) -> SoundResult<IrSnapshot> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => core.build_impulse_response(source, listener),
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.build_impulse_response(source, listener),
-        }
+        self.with_core(move |core| core.build_impulse_response(source, listener))
     }
 
     /// Stops an active voice.
     pub fn stop_voice(&mut self, voice_id: VoiceId) -> SoundResult<()> {
-        match self.mode_mut()? {
-            EngineMode::Direct(core) => {
-                core.stop_voice(voice_id);
-                Ok(())
-            }
-            #[cfg(feature = "playback")]
-            EngineMode::Runtime(runtime) => runtime.stop_voice(voice_id),
-        }
+        self.with_core(move |core| {
+            core.stop_voice(voice_id);
+            Ok(())
+        })
     }
 
     /// Renders and mixes one interleaved output block from all active voices.
@@ -310,20 +265,23 @@ impl SoundEngine {
         matches!(&self.mode, Some(EngineMode::Runtime(runtime)) if runtime.is_running())
     }
 
+    /// Applies an operation directly or waits for it on the core's owning worker.
+    fn with_core<T: Send + 'static>(
+        &mut self,
+        operation: impl FnOnce(&mut EngineCore) -> SoundResult<T> + Send + 'static,
+    ) -> SoundResult<T> {
+        match self.mode_mut()? {
+            EngineMode::Direct(core) => operation(core),
+            #[cfg(feature = "playback")]
+            EngineMode::Runtime(runtime) => runtime.request(operation),
+        }
+    }
+
     /// Borrows the current mode unless ownership is being transferred.
     fn mode_mut(&mut self) -> SoundResult<&mut EngineMode> {
         self.mode
             .as_mut()
             .ok_or_else(|| SoundError::invalid_state("sound engine is transitioning modes"))
-    }
-}
-
-impl Drop for SoundEngine {
-    fn drop(&mut self) {
-        #[cfg(feature = "playback")]
-        if matches!(self.mode, Some(EngineMode::Runtime(_))) {
-            let _ = self.stop_sound_player();
-        }
     }
 }
 

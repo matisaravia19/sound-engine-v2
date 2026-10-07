@@ -1,58 +1,39 @@
 //! Background playback runtime for the public engine facade.
 
 use super::diagnostics::RuntimeDiagnostics;
-use super::{EngineCore, ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId};
-use crate::acoustics::IrSnapshot;
-use crate::auralization::{SoundAsset, SoundId, VoiceId};
+use super::{EngineCore, ListenerPose};
 use crate::core::error::{SoundError, SoundResult};
 use crate::playback::{PlaybackConfig, PlaybackStopHandle, SoundPlayer};
-use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
-/// Commands sent from the public handle to the runtime-owned engine core.
+/// Operation and reply performed on the core's owning thread between audio blocks.
+type CoreRequest = Box<dyn FnOnce(&mut EngineCore, &RuntimeStatus) + Send>;
+
 enum EngineCommand {
-    /// Replace the scene and reply with the new scene version.
-    LoadScene(SceneDescription, SyncSender<SoundResult<SceneVersion>>),
-    /// Apply scene edits and reply with the resulting scene version.
-    ApplySceneUpdates(SceneUpdates, SyncSender<SoundResult<SceneVersion>>),
-    /// Update the listener pose used by later spatial play requests.
-    SetListenerPose(ListenerPose, SyncSender<SoundResult<()>>),
-    /// Load a WAV file on the worker thread and reply with its sound id.
-    LoadWavSound(PathBuf, SyncSender<SoundResult<SoundId>>),
-    /// Insert an already decoded asset on the worker thread.
-    InsertSound(SoundAsset, SyncSender<SoundResult<SoundId>>),
-    /// Create a tracked movable sound source.
-    CreateSoundSource(PointSource, SyncSender<SoundResult<SoundSourceId>>),
-    /// Update an existing tracked sound source.
-    UpdateSoundSource(SoundSourceId, PointSource, SyncSender<SoundResult<()>>),
-    /// Remove a tracked sound source.
-    RemoveSoundSource(SoundSourceId, SyncSender<SoundResult<()>>),
-    /// Start a spatial voice and reply with its voice id.
-    PlaySound(PlaySpatialSoundRequest, SyncSender<SoundResult<VoiceId>>),
-    /// Start a spatial voice from a tracked sound source.
-    PlaySoundFromSource(
-        SoundId,
-        SoundSourceId,
-        f32,
-        SyncSender<SoundResult<VoiceId>>,
-    ),
-    /// Build or reuse an impulse response and reply with the raw snapshot.
-    BuildImpulseResponse(
-        PointSource,
-        ListenerPose,
-        SyncSender<SoundResult<IrSnapshot>>,
-    ),
-    /// Stop an active voice if it exists.
-    StopVoice(VoiceId, SyncSender<SoundResult<()>>),
-    /// Stop the worker loop and return the owned engine core.
+    Run(CoreRequest),
     Shutdown,
 }
 
+impl EngineCommand {
+    fn request<T: Send + 'static>(
+        operation: impl FnOnce(&mut EngineCore) -> SoundResult<T> + Send + 'static,
+    ) -> (Self, Receiver<SoundResult<T>>) {
+        let (reply, response) = mpsc::sync_channel(1);
+        let command = Self::Run(Box::new(move |core, status| {
+            let result = operation(core);
+            // An acknowledged operation must expose its updated voice count.
+            status.publish(core);
+            let _ = reply.send(result);
+        }));
+        (command, response)
+    }
+}
+
 /// Handle for the background thread that owns [`EngineCore`] while playback is running.
+/// Dropping it wakes blocked playback and joins the worker before releasing the core.
 pub(super) struct EngineRuntime {
     /// Command sender used by the public facade to request worker-thread work.
     commands: Sender<EngineCommand>,
@@ -188,23 +169,13 @@ impl EngineRuntime {
         })
     }
 
-    /// Sends a scene replacement command to the runtime.
-    pub(super) fn load_scene(&self, scene: SceneDescription) -> SoundResult<SceneVersion> {
-        self.request(|reply| EngineCommand::LoadScene(scene, reply))
-    }
-
-    /// Sends a scene update command to the runtime.
-    pub(super) fn apply_scene_updates(&self, updates: SceneUpdates) -> SoundResult<SceneVersion> {
-        self.request(|reply| EngineCommand::ApplySceneUpdates(updates, reply))
-    }
-
-    /// Sends a listener pose update command to the runtime.
+    /// Clears older coalesced poses and waits for this pose to reach the worker.
     pub(super) fn set_listener_pose(&self, listener: ListenerPose) -> SoundResult<()> {
         self.pending_listener
             .lock()
             .map_err(|_| SoundError::poisoned_lock("listener mailbox"))?
             .take();
-        self.request(|reply| EngineCommand::SetListenerPose(listener, reply))
+        self.request(move |core| core.set_listener_pose(listener))
     }
 
     /// Replaces an unapplied listener pose without waiting for the audio worker.
@@ -225,64 +196,6 @@ impl EngineRuntime {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("listener mailbox"))? = Some(listener);
         Ok(())
-    }
-
-    /// Sends a WAV loading command to the runtime.
-    pub(super) fn load_wav_sound(&self, path: PathBuf) -> SoundResult<SoundId> {
-        self.request(|reply| EngineCommand::LoadWavSound(path, reply))
-    }
-
-    /// Sends an already decoded sound asset to the runtime.
-    pub(super) fn insert_sound(&self, asset: SoundAsset) -> SoundResult<SoundId> {
-        self.request(|reply| EngineCommand::InsertSound(asset, reply))
-    }
-
-    /// Sends a tracked source creation command to the runtime.
-    pub(super) fn create_sound_source(&self, source: PointSource) -> SoundResult<SoundSourceId> {
-        self.request(|reply| EngineCommand::CreateSoundSource(source, reply))
-    }
-
-    /// Sends a tracked source update command to the runtime.
-    pub(super) fn update_sound_source(
-        &self,
-        id: SoundSourceId,
-        source: PointSource,
-    ) -> SoundResult<()> {
-        self.request(|reply| EngineCommand::UpdateSoundSource(id, source, reply))
-    }
-
-    /// Sends a tracked source removal command to the runtime.
-    pub(super) fn remove_sound_source(&self, id: SoundSourceId) -> SoundResult<()> {
-        self.request(|reply| EngineCommand::RemoveSoundSource(id, reply))
-    }
-
-    /// Sends a spatial play command to the runtime and waits for the voice id.
-    pub(super) fn play_sound(&self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
-        self.request(|reply| EngineCommand::PlaySound(request, reply))
-    }
-
-    /// Sends a tracked-source play command to the runtime and waits for the voice id.
-    pub(super) fn play_sound_from_source(
-        &self,
-        sound_id: SoundId,
-        source_id: SoundSourceId,
-        volume: f32,
-    ) -> SoundResult<VoiceId> {
-        self.request(|reply| EngineCommand::PlaySoundFromSource(sound_id, source_id, volume, reply))
-    }
-
-    /// Sends an acoustic IR query to the runtime and waits for the raw snapshot.
-    pub(super) fn build_impulse_response(
-        &self,
-        source: PointSource,
-        listener: ListenerPose,
-    ) -> SoundResult<IrSnapshot> {
-        self.request(|reply| EngineCommand::BuildImpulseResponse(source, listener, reply))
-    }
-
-    /// Sends a voice stop command to the runtime.
-    pub(super) fn stop_voice(&self, voice_id: VoiceId) -> SoundResult<()> {
-        self.request(|reply| EngineCommand::StopVoice(voice_id, reply))
     }
 
     /// Stops the runtime thread and returns direct engine ownership.
@@ -351,17 +264,18 @@ impl EngineRuntime {
         self.output_channels
     }
 
-    /// Sends a command with a one-shot reply channel and waits for the result.
-    fn request<T>(
+    /// Runs an owned operation on the worker, publishing status before returning its result.
+    /// Inputs and results cross the thread boundary; the engine core remains worker-owned.
+    pub(super) fn request<T: Send + 'static>(
         &self,
-        build: impl FnOnce(SyncSender<SoundResult<T>>) -> EngineCommand,
+        operation: impl FnOnce(&mut EngineCore) -> SoundResult<T> + Send + 'static,
     ) -> SoundResult<T> {
         self.check_error()?;
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let (command, response) = EngineCommand::request(operation);
         self.commands
-            .send(build(reply_tx))
+            .send(command)
             .map_err(|_| self.stopped_error("sound player worker is not running"))?;
-        reply_rx
+        response
             .recv()
             .map_err(|_| self.stopped_error("sound player worker stopped before replying"))?
     }
@@ -498,68 +412,10 @@ fn receive_while_running<T>(receiver: &Receiver<T>, running: impl Fn() -> bool) 
 /// Applies one runtime command and returns `true` when the worker should stop.
 fn handle_command(command: EngineCommand, core: &mut EngineCore, status: &RuntimeStatus) -> bool {
     match command {
-        EngineCommand::LoadScene(scene, reply) => {
-            let result = core.load_scene(scene);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::ApplySceneUpdates(updates, reply) => {
-            let result = core.apply_scene_updates(updates);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::SetListenerPose(listener, reply) => {
-            let result = core.set_listener_pose(listener);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::LoadWavSound(path, reply) => {
-            let result = core.load_wav_sound(path);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::InsertSound(asset, reply) => {
-            let result = core.insert_sound(asset);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::CreateSoundSource(source, reply) => {
-            let result = core.create_sound_source(source);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::UpdateSoundSource(id, source, reply) => {
-            let result = core.update_sound_source(id, source);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::RemoveSoundSource(id, reply) => {
-            let result = core.remove_sound_source(id);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::PlaySound(request, reply) => {
-            let result = core.play_sound(request);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::PlaySoundFromSource(sound_id, source_id, volume, reply) => {
-            let result = core.play_sound_from_source(sound_id, source_id, volume);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::BuildImpulseResponse(source, listener, reply) => {
-            let result = core.build_impulse_response(source, listener);
-            reply_with_status(core, status, reply, result);
-        }
-        EngineCommand::StopVoice(voice_id, reply) => {
-            core.stop_voice(voice_id);
-            reply_with_status(core, status, reply, Ok(()));
-        }
+        EngineCommand::Run(operation) => operation(core, status),
         EngineCommand::Shutdown => return true,
     }
     false
-}
-
-fn reply_with_status<T>(
-    core: &EngineCore,
-    status: &RuntimeStatus,
-    reply: SyncSender<SoundResult<T>>,
-    result: SoundResult<T>,
-) {
-    // An acknowledged command must not leave the caller seeing the old count.
-    status.publish(core);
-    let _ = reply.send(result);
 }
 
 #[cfg(test)]

@@ -1,6 +1,11 @@
 use super::*;
+use crate::acoustics::PointSource;
+use crate::auralization::SoundAsset;
 use crate::core::config::*;
+use crate::core::error::ErrorCode;
+use crate::engine::{EngineMode, PlaySpatialSoundRequest, SoundEngine};
 use crate::playback::TestPlaybackControl;
+use crate::scene::{Material, SceneDescription, SceneUpdate, SceneUpdates};
 use glam::Vec3;
 use std::time::{Duration, Instant};
 
@@ -26,26 +31,7 @@ fn panicking_worker_publishes_failure_without_stale_voices() {
 #[test]
 #[ignore = "requires Vulkan; uses simulated audio callbacks; run serially"]
 fn audit_runtime_handoff_status_failure_recovery_and_drop() {
-    let config = EngineConfig {
-        sound: SoundConfig {
-            sample_rate: 48_000,
-            output_channels: OutputChannels::Stereo,
-            ir_num_samples: 1024,
-        },
-        acoustics: AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 100.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: Default::default(),
-        binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: 64,
-        },
-    };
-    let mut core = Box::new(EngineCore::new(config).unwrap());
+    let mut core = Box::new(EngineCore::new(runtime_config()).unwrap());
     let device = core.device_lifetime();
     let short = core
         .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.01; 256]).unwrap())
@@ -71,27 +57,24 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
     // Test publication at the acknowledgment boundary, before any render can
     // independently publish the same count and hide a stale-command snapshot.
     let status = RuntimeStatus::new(0);
-    let (reply, response) = mpsc::sync_channel(1);
-    assert!(!handle_command(
-        EngineCommand::PlaySound(PlaySpatialSoundRequest::new(short, Vec3::X), reply),
-        &mut core,
-        &status
-    ));
+    let (command, response) = EngineCommand::request(move |core| {
+        core.play_sound(PlaySpatialSoundRequest::new(short, Vec3::X))
+    });
+    assert!(!handle_command(command, &mut core, &status));
     let voice = response.recv().unwrap().unwrap();
     assert_eq!(status.active_voices.load(Ordering::Acquire), 1);
-    let (reply, response) = mpsc::sync_channel(1);
-    assert!(!handle_command(
-        EngineCommand::StopVoice(voice, reply),
-        &mut core,
-        &status
-    ));
+    let (command, response) = EngineCommand::request(move |core| {
+        core.stop_voice(voice);
+        Ok(())
+    });
+    assert!(!handle_command(command, &mut core, &status));
     response.recv().unwrap().unwrap();
     assert_eq!(status.active_voices.load(Ordering::Acquire), 0);
 
     let (runtime, control) = start_headless(core);
     assert_eq!(runtime.active_voice_count(), 0);
     let voice = runtime
-        .play_sound(PlaySpatialSoundRequest::new(long, Vec3::X))
+        .request(move |core| core.play_sound(PlaySpatialSoundRequest::new(long, Vec3::X)))
         .unwrap();
     assert_eq!(runtime.active_voice_count(), 1);
     wait_until(|| control.queued_samples() == 128);
@@ -100,7 +83,7 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
     ));
     wait_until(|| !runtime.is_running());
     let error = runtime
-        .create_sound_source(PointSource::new(Vec3::X))
+        .request(|core| core.create_sound_source(PointSource::new(Vec3::X)))
         .unwrap_err();
     assert!(error.to_string().contains("simulated device disconnect"));
     let (core, result) = runtime.stop();
@@ -125,11 +108,11 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
         .is_err()
     );
     let voice = runtime
-        .play_sound(PlaySpatialSoundRequest::new(long, Vec3::X))
+        .request(move |core| core.play_sound(PlaySpatialSoundRequest::new(long, Vec3::X)))
         .unwrap();
     wait_until(|| !runtime.is_running());
     let error = runtime
-        .create_sound_source(PointSource::new(Vec3::X))
+        .request(|core| core.create_sound_source(PointSource::new(Vec3::X)))
         .unwrap_err();
     assert_eq!(error.code(), crate::core::error::ErrorCode::PoisonedLock);
     let (core, result) = runtime.stop();
@@ -167,6 +150,113 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
         device.upgrade().is_none(),
         "runtime drop retained the device owner"
     );
+}
+
+#[test]
+#[ignore = "requires Vulkan; uses simulated audio callbacks; run serially"]
+fn facade_routes_owned_requests_and_recovers_direct_rendering_after_stop() {
+    let core = Box::new(EngineCore::new(runtime_config()).unwrap());
+    let device = core.device_lifetime();
+    let (runtime, control) = start_headless(core);
+    let listener_mailbox = runtime.pending_listener.clone();
+    let mut engine = SoundEngine {
+        mode: Some(EngineMode::Runtime(runtime)),
+    };
+
+    let version = engine.load_scene(SceneDescription::default()).unwrap();
+    let updated = engine
+        .apply_scene_updates(SceneUpdates {
+            updates: vec![SceneUpdate::AddMaterial(Material {
+                id: 1,
+                absorption: 0.2,
+                scattering: 0.0,
+                roughness: 0.0,
+            })],
+        })
+        .unwrap();
+    assert!(updated > version);
+    let sound = engine
+        .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.01; 16384]).unwrap())
+        .unwrap();
+    let source = engine
+        .create_sound_source(PointSource::new(Vec3::X))
+        .unwrap();
+    let invalid = PointSource {
+        position: Vec3::Y,
+        amplitude: f32::NAN,
+    };
+    assert_eq!(
+        engine
+            .update_sound_source(source, invalid)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert!(engine.is_sound_player_running());
+    engine
+        .update_sound_source(source, PointSource::new(Vec3::Y))
+        .unwrap();
+    engine
+        .update_listener_pose(ListenerPose::new(Vec3::Z, Vec3::Z, Vec3::Y))
+        .unwrap();
+    assert!(listener_mailbox.lock().unwrap().is_some());
+    engine.set_listener_pose(ListenerPose::default()).unwrap();
+    assert!(listener_mailbox.lock().unwrap().is_none());
+    let ir = engine
+        .build_impulse_response(PointSource::new(Vec3::Y), ListenerPose::default())
+        .unwrap();
+    assert_eq!(ir.scene_version, updated);
+    assert_eq!(ir.samples.len(), 1024);
+    assert!(ir.energy.is_finite());
+
+    let voice = engine.play_sound_from_source(sound, source, 1.0).unwrap();
+    assert!(engine.has_active_voices());
+    wait_until(|| control.queued_samples() == 128);
+    // Shutdown must wake the full queue before waiting for ownership to return.
+    engine.stop_sound_player().unwrap();
+    assert!(!engine.is_sound_player_running());
+    assert_eq!(engine.active_voice_count(), 1);
+    let mut output = [f32::NAN; 128];
+    engine.render_block(&mut output).unwrap();
+    assert!(output.iter().all(|sample| sample.is_finite()));
+    engine.stop_voice(voice).unwrap();
+    engine.remove_sound_source(source).unwrap();
+    assert!(!engine.has_active_voices());
+
+    // Dropping the public facade must also join a worker blocked on queued audio.
+    let Some(EngineMode::Direct(core)) = engine.mode.take() else {
+        panic!("Stop did not recover direct ownership");
+    };
+    let (runtime, control) = start_headless(core);
+    engine.mode = Some(EngineMode::Runtime(runtime));
+    engine
+        .play_sound(PlaySpatialSoundRequest::new(sound, Vec3::X))
+        .unwrap();
+    wait_until(|| control.queued_samples() == 128);
+    drop(engine);
+    assert!(device.upgrade().is_none());
+}
+
+fn runtime_config() -> EngineConfig {
+    EngineConfig {
+        sound: SoundConfig {
+            sample_rate: 48_000,
+            output_channels: OutputChannels::Stereo,
+            ir_num_samples: 1024,
+        },
+        acoustics: AcousticsConfig {
+            listener_ray_count: 1,
+            max_bounces: 0,
+            maximum_path_length: 100.0,
+            minimum_throughput: 0.0,
+            sampling_seed: 0,
+        },
+        cache: Default::default(),
+        binaural: Default::default(),
+        auralization: AuralizationConfig {
+            block_size: 64,
+        },
+    }
 }
 
 fn start_headless(core: Box<EngineCore>) -> (EngineRuntime, TestPlaybackControl) {
