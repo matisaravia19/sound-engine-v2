@@ -585,8 +585,3 @@ fn rejects_invalid_acoustic_query_orientation() {
     query.listener_up = Vec3::splat(f32::NAN);
     assert!(validate_query(query).is_err());
 }
-
-#[test]
-fn visibility_hit_group_follows_surface_continuation() {
-    assert_eq!(SURFACE_VISIBILITY_HIT_GROUP_OFFSET, 1);
-}

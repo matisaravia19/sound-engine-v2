@@ -19,4 +19,5 @@ pub mod rt;
 pub mod shader;
 
 #[cfg(test)]
+#[path = "../../tests/unit/gpu/audit.rs"]
 mod audit_tests;

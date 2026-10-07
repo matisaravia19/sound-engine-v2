@@ -379,3 +379,13 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
     core.stop_voice(voice);
     assert!(!core.has_active_voices());
 }
+
+impl EngineCore {
+    /// Observes final device release without extending its lifetime in lifecycle tests.
+    #[cfg(feature = "playback")]
+    pub(in crate::engine) fn device_lifetime(
+        &self,
+    ) -> std::sync::Weak<crate::gpu::backend::VkDeviceContext> {
+        Arc::downgrade(&self.gpu.device_context())
+    }
+}

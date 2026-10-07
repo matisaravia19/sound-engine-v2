@@ -9,9 +9,9 @@ mod types;
 #[cfg(feature = "playback")]
 mod worker;
 
-pub use types::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId};
+pub use types::{PlaySpatialSoundRequest, SoundSourceId};
 
-use crate::acoustics::IrSnapshot;
+use crate::acoustics::{IrSnapshot, ListenerPose, PointSource};
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
@@ -336,24 +336,5 @@ fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use glam::Vec3;
-
-    #[test]
-    fn play_request_defaults_to_unit_amplitude_and_volume() {
-        let request = PlaySpatialSoundRequest::new(7, Vec3::new(1.0, 2.0, 3.0));
-
-        assert_eq!(request.sound_id, 7);
-        assert_eq!(request.source.position, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(request.source.amplitude, 1.0);
-        assert_eq!(request.volume, 1.0);
-    }
-
-    #[test]
-    fn rejects_non_finite_playback_volume() {
-        let mut request = PlaySpatialSoundRequest::new(1, Vec3::ZERO);
-        request.volume = f32::NAN;
-        assert!(validate_play_request(request).is_err());
-    }
-}
+#[path = "../../tests/unit/engine/mod.rs"]
+mod tests;

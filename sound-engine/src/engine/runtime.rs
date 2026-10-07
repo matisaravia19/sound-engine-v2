@@ -13,10 +13,6 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
-#[cfg(test)]
-#[path = "runtime_tests.rs"]
-mod tests;
-
 /// Commands sent from the public handle to the runtime-owned engine core.
 enum EngineCommand {
     /// Replace the scene and reply with the new scene version.
@@ -567,28 +563,9 @@ fn reply_with_status<T>(
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+#[path = "../../tests/unit/engine/runtime.rs"]
+mod tests;
 
-    #[test]
-    fn idle_receiver_observes_stop_without_a_command() {
-        let (_sender, receiver) = mpsc::channel::<()>();
-        let running = Arc::new(AtomicBool::new(true));
-        let worker_running = running.clone();
-        let (result_tx, result_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            let result =
-                receive_while_running(&receiver, || worker_running.load(Ordering::Acquire));
-            result_tx.send(result).unwrap();
-        });
-        running.store(false, Ordering::Release);
-        assert_eq!(
-            result_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .unwrap(),
-            None
-        );
-        worker.join().unwrap();
-    }
-}
+#[cfg(test)]
+#[path = "../../tests/unit/engine/runtime_lifecycle.rs"]
+mod lifecycle_tests;

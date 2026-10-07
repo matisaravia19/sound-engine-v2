@@ -213,5 +213,5 @@ fn parse_position_row(line: &str) -> Result<PositionPair, String> {
 }
 
 #[cfg(test)]
-#[path = "text_tests.rs"]
+#[path = "../tests/unit/text.rs"]
 mod tests;

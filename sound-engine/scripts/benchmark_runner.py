@@ -68,16 +68,20 @@ def source_hashes():
     files = []
     for directory in (
         "acoustic-fixtures/src",
+        "acoustic-fixtures/tests",
         "sound-engine/src",
         "sound-engine/examples",
         "sound-engine/tests",
         "vkfft-rs/src",
+        "vkfft-rs/tests",
         "vkfft-rs/patches",
         "vkfft-rs/lib/vkfft/vkFFT",
         "sandbox/src",
+        "sandbox/tests",
     ):
         files.extend(path for path in (ROOT / directory).rglob("*") if path.is_file())
     files.extend((ROOT / "sound-engine/scripts").glob("*.py"))
+    files.extend((ROOT / "sound-engine/scripts/tests").rglob("*.py"))
     files.extend(
         ROOT / name
         for name in (

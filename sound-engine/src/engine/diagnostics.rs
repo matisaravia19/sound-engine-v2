@@ -441,5 +441,5 @@ impl OutputWriter {
 }
 
 #[cfg(test)]
-#[path = "diagnostics_tests.rs"]
+#[path = "../../tests/unit/engine/diagnostics.rs"]
 mod tests;

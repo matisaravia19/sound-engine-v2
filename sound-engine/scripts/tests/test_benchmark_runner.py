@@ -88,13 +88,18 @@ class BenchmarkRunTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Input changed"):
             verify_hashes(self.output, expected)
 
-    def test_provenance_rejects_native_build_input_changes(self):
+    def test_provenance_rejects_build_and_test_input_changes(self):
         runner = BenchmarkRun(self.output)
         write_json(self.output / "provenance.json", {"source_sha256": source_hashes()})
         for name in (
             "vkfft-rs/build_support.rs",
             "vkfft-rs/patches/compiler_cleanup.patch",
             "vkfft-rs/lib/vkfft/vkFFT/vkFFT.h",
+            "vkfft-rs/tests/native/vulkan_memory_tests.cpp",
+            "acoustic-fixtures/tests/unit/text.rs",
+            "sandbox/tests/unit/app/config.rs",
+            "sound-engine/tests/unit/engine/direct.rs",
+            "sound-engine/scripts/tests/test_benchmark_runner.py",
         ):
             with self.subTest(name=name):
                 changed = ROOT / name

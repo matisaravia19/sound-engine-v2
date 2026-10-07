@@ -21,8 +21,6 @@ const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
 const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
 const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
-#[cfg(test)]
-const SURFACE_VISIBILITY_HIT_GROUP_OFFSET: u32 = 1;
 const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// Source/listener pair that should produce one impulse response.
@@ -512,5 +510,5 @@ fn output_channels_to_shader(output_channels: OutputChannels) -> u32 {
 }
 
 #[cfg(test)]
-#[path = "pipeline_tests.rs"]
+#[path = "../../tests/unit/acoustics/pipeline.rs"]
 mod tests;

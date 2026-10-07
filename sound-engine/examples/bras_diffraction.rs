@@ -7,9 +7,9 @@ mod timing;
 
 use acoustic_fixtures::{bras, read_positions};
 use glam::Vec3;
+use sound_engine::acoustics::export_ir;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
 use sound_engine::core::config::*;
-use sound_engine::core::debug::export_ir;
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::SceneManager;
 use std::{

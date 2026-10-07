@@ -16,10 +16,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(test)]
-#[path = "direct_tests.rs"]
-mod tests;
-
 /// Private owner of GPU, scene, acoustic cache, assets, voices, and block rendering.
 pub(super) struct EngineCore {
     /// Scene-backed acoustic IR builder and cache.
@@ -92,12 +88,6 @@ pub(super) struct RenderMetrics {
 }
 
 impl EngineCore {
-    /// Observes final device release without extending its lifetime in lifecycle tests.
-    #[cfg(all(test, feature = "playback"))]
-    pub(super) fn device_lifetime(&self) -> std::sync::Weak<crate::gpu::backend::VkDeviceContext> {
-        Arc::downgrade(&self.gpu.device_context())
-    }
-
     /// Creates a direct scalar engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
@@ -546,3 +536,7 @@ impl EngineCore {
         crate::core::id::allocate_id(&mut self.next_impulse_response_id, "Impulse response")
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/engine/direct.rs"]
+mod tests;

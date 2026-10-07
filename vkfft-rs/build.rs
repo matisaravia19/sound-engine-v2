@@ -10,14 +10,12 @@ fn main() {
             path.extension().and_then(|value| value.to_str()),
             Some("cpp" | "hpp")
         );
-        let is_test = path
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with("_tests");
-        if is_native && (native_tests || !is_test) {
+        if is_native {
             println!("cargo:rerun-if-changed={}", path.display());
         }
+    }
+    if native_tests {
+        println!("cargo:rerun-if-changed=tests/native");
     }
     println!("cargo:rerun-if-changed=patches");
     println!("cargo:rerun-if-changed=build_support.rs");
@@ -206,10 +204,10 @@ fn main() {
     build.file("src/ffi.cpp");
     if native_tests {
         build.files([
-            "src/vulkan_memory_tests.cpp",
-            "src/vulkan_compiler_tests.cpp",
-            "src/vulkan_lut_tests.cpp",
-            "src/codegen_tests.cpp",
+            "tests/native/vulkan_memory_tests.cpp",
+            "tests/native/vulkan_compiler_tests.cpp",
+            "tests/native/vulkan_lut_tests.cpp",
+            "tests/native/codegen_tests.cpp",
         ]);
     }
 

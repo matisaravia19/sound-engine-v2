@@ -1,9 +1,9 @@
 use glam::{Mat4, Vec3, vec3};
+use sound_engine::acoustics::export_ir;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
 use sound_engine::core::config::{
     AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
 };
-use sound_engine::core::debug::export_ir;
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{

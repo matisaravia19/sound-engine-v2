@@ -152,12 +152,6 @@ impl ComputeContext {
             .remove(&id);
     }
 
-    /// Returns the live pipeline count for lifetime regression tests.
-    #[cfg(test)]
-    pub(crate) fn pipeline_count(&self) -> usize {
-        self.pipelines.lock().unwrap().len()
-    }
-
     /// Retains a descriptor set until the command buffer's fence completes.
     pub(super) fn track_descriptor_set(
         &self,
@@ -223,3 +217,7 @@ impl Drop for ComputeContext {
         self.drop_command_pool();
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/gpu/compute/mod.rs"]
+mod tests;

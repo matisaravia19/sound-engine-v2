@@ -464,5 +464,5 @@ fn validate_diffraction_edge(edge: &DiffractionEdge) -> SoundResult<()> {
 }
 
 #[cfg(test)]
-#[path = "store_tests.rs"]
+#[path = "../../tests/unit/scene/store.rs"]
 mod tests;

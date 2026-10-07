@@ -216,5 +216,5 @@ impl Drop for FFTPlan {
 }
 
 #[cfg(test)]
-#[path = "plan_tests.rs"]
+#[path = "../tests/unit/plan.rs"]
 mod tests;

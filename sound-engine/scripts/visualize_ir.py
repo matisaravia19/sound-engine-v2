@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Visualize an impulse response exported by sound_engine::debug::export_ir."""
+"""Visualize an impulse response exported by sound_engine::acoustics::export_ir."""
 
 from __future__ import annotations
 

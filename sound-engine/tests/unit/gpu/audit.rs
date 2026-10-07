@@ -1,8 +1,7 @@
 use super::backend::VkBackend;
-use crate::acoustics::AcousticsEngine;
+use crate::acoustics::{AcousticsEngine, ListenerPose, PointSource};
 use crate::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
 use crate::core::config::*;
-use crate::engine::{ListenerPose, PointSource};
 use crate::scene::*;
 use glam::{Mat4, Vec3};
 use std::sync::Arc;

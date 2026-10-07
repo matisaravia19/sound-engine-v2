@@ -704,5 +704,5 @@ fn validate_gpu_ir_snapshot(
 }
 
 #[cfg(test)]
-#[path = "convolver_tests.rs"]
+#[path = "../../tests/unit/auralization/convolver.rs"]
 mod tests;
