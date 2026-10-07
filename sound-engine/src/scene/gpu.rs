@@ -311,7 +311,7 @@ fn upload_scene_buffers(
                 .index_buffer
                 .as_ref()
                 .map_or(0, |buffer| gpu.memory().buffer_device_address(buffer)),
-            object_to_world: matrix_to_columns(object.transform),
+            object_to_world: object.transform.to_cols_array_2d(),
         });
     }
 
@@ -322,7 +322,7 @@ fn upload_scene_buffers(
             _pad: [0; 2],
             vertex_address: 0,
             index_address: 0,
-            object_to_world: matrix_to_columns(glam::Mat4::IDENTITY),
+            object_to_world: glam::Mat4::IDENTITY.to_cols_array_2d(),
         });
     }
 
@@ -500,10 +500,6 @@ fn gpu_diffraction_edge(edge: &DiffractionEdge) -> GpuDiffractionEdge {
         negative_shadow_dir: negative_shadow_dir.to_array(),
         solid_wedge_cos,
     }
-}
-
-fn matrix_to_columns(matrix: glam::Mat4) -> [[f32; 4]; 4] {
-    matrix.to_cols_array_2d()
 }
 
 fn upload_gpu_slice<T: bytemuck::Pod>(gpu: &VkBackend, values: &[T]) -> SoundResult<BufferHandle> {

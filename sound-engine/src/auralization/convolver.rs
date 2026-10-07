@@ -258,16 +258,7 @@ impl FftConvolver {
                 input_block,
                 &mut transition.output_buffer,
             )?;
-            blend_ir_transition(
-                output_block,
-                &transition.output_buffer,
-                self.sound.output_channels.count(),
-                transition.processed_frames,
-                transition.total_frames,
-            );
-            transition.processed_frames =
-                transition.processed_frames.saturating_add(self.block_size);
-            transition.processed_frames >= transition.total_frames
+            transition.blend_into(output_block, self.sound.output_channels.count())
         } else {
             false
         };
@@ -305,16 +296,7 @@ impl FftConvolver {
             let previous_has_tail =
                 self.flush_state_block(&mut transition.previous, &mut transition.output_buffer);
             any_tail |= previous_has_tail;
-            blend_ir_transition(
-                output_block,
-                &transition.output_buffer,
-                output_channels,
-                transition.processed_frames,
-                transition.total_frames,
-            );
-            transition.processed_frames =
-                transition.processed_frames.saturating_add(self.block_size);
-            transition.processed_frames >= transition.total_frames || !previous_has_tail
+            transition.blend_into(output_block, output_channels) || !previous_has_tail
         } else {
             false
         };
@@ -419,13 +401,6 @@ impl FftConvolver {
             output_channels,
             input_block.len(),
         );
-        crate::validate!(
-            output_block.len() <= self.fft_size * output_channels,
-            ErrorCode::InvalidArgument,
-            "output_block length {} exceeds fft output sample capacity {}",
-            output_block.len(),
-            self.fft_size * output_channels
-        );
 
         Ok(())
     }
@@ -462,12 +437,8 @@ impl FftConvolver {
                     ),
                 );
 
-                self.append_multiply(
-                    command_buffer,
-                    &convolution.impulse_response.buffer,
-                    self.fft_size as u32,
-                )
-                .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
+                self.append_multiply(command_buffer, &convolution.impulse_response.buffer)
+                    .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
                 self.gpu.compute().record_buffer_barrier(
                     command_buffer,
                     &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(
@@ -484,9 +455,11 @@ impl FftConvolver {
                 Ok(())
             })?;
 
-        self.download_convolution_output(&mut convolution.complex_cpu_buffer)?;
-
-        Ok(())
+        self.gpu.memory().download_typed(
+            &self.signal_buffer,
+            self.fft_size,
+            &mut convolution.complex_cpu_buffer,
+        )
     }
 
     /// Uploads a complex signal block to the GPU, overwriting the previous contents.
@@ -500,23 +473,15 @@ impl FftConvolver {
         self.gpu.memory().upload_typed(&self.signal_buffer, signal)
     }
 
-    /// Downloads the convolved time-domain result from GPU to CPU buffer.
-    fn download_convolution_output(&self, output: &mut [[f32; 2]]) -> SoundResult<()> {
-        self.gpu
-            .memory()
-            .download_typed::<[f32; 2]>(&self.signal_buffer, output.len(), output)
-    }
-
     /// Records a complex frequency-domain multiply dispatch.
     ///
-    /// Multiplies `count` complex elements from the signal buffer with the IR spectrum buffer,
-    /// storing results back into the signal buffer.
+    /// Multiplies the signal by the IR spectrum in place across all FFT bins.
     fn append_multiply(
         &self,
         command_buffer: vk::CommandBuffer,
         ir_buffer: &BufferHandle,
-        count: u32,
     ) -> SoundResult<()> {
+        let count = self.fft_size as u32;
         let dispatch_spec = DispatchSpec {
             pipeline_id: self.multiply_pipeline_id,
             descriptor_writes: vec![
@@ -646,31 +611,6 @@ fn validated_fft_size(sound: SoundConfig, config: AuralizationConfig) -> SoundRe
         // fit Rust's addressable slice size before any GPU work is initialized.
         .filter(|size| *size <= u32::MAX as usize && *size <= isize::MAX as usize / 8)
         .ok_or_else(|| SoundError::invalid_argument("FFT size exceeds addressable capacity"))
-}
-
-/// Blends an outgoing block into an incoming block with a sample-continuous ramp.
-fn blend_ir_transition(
-    incoming: &mut [f32],
-    outgoing: &[f32],
-    output_channels: usize,
-    processed_frames: usize,
-    total_frames: usize,
-) {
-    debug_assert!(output_channels > 0);
-    debug_assert_eq!(incoming.len(), outgoing.len());
-    for (frame_index, (incoming_frame, outgoing_frame)) in incoming
-        .chunks_exact_mut(output_channels)
-        .zip(outgoing.chunks_exact(output_channels))
-        .enumerate()
-    {
-        let incoming_weight =
-            ((processed_frames + frame_index + 1) as f32 / total_frames.max(1) as f32).min(1.0);
-        let outgoing_weight = 1.0 - incoming_weight;
-        for (incoming_sample, outgoing_sample) in incoming_frame.iter_mut().zip(outgoing_frame) {
-            *incoming_sample =
-                *outgoing_sample * outgoing_weight + *incoming_sample * incoming_weight;
-        }
-    }
 }
 
 fn validate_ir_length(sample_count: usize, capacity: usize) -> SoundResult<()> {

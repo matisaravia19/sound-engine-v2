@@ -131,9 +131,27 @@ pub(crate) struct VoiceIrTransition {
     /// Interleaved scratch output rendered by the outgoing filter.
     pub(crate) output_buffer: Vec<f32>,
     /// Output frames already blended since this transition began.
-    pub(crate) processed_frames: usize,
+    processed_frames: usize,
     /// Total output frames across which the incoming IR reaches full weight.
-    pub(crate) total_frames: usize,
+    total_frames: usize,
+}
+
+impl VoiceIrTransition {
+    /// Blends equally sized interleaved blocks and reports whether the ramp is complete.
+    /// `output_channels` must match the voice's mono or stereo layout.
+    pub(crate) fn blend_into(&mut self, incoming: &mut [f32], output_channels: usize) -> bool {
+        blend_ir_transition(
+            incoming,
+            &self.output_buffer,
+            output_channels,
+            self.processed_frames,
+            self.total_frames,
+        );
+        self.processed_frames = self
+            .processed_frames
+            .saturating_add(incoming.len() / output_channels);
+        self.processed_frames >= self.total_frames
+    }
 }
 
 impl VoiceConvolutionState {
@@ -161,3 +179,32 @@ impl VoiceConvolutionState {
         }
     }
 }
+
+/// Blends an outgoing block into an incoming block with a sample-continuous ramp.
+fn blend_ir_transition(
+    incoming: &mut [f32],
+    outgoing: &[f32],
+    output_channels: usize,
+    processed_frames: usize,
+    total_frames: usize,
+) {
+    debug_assert!(output_channels > 0);
+    debug_assert_eq!(incoming.len(), outgoing.len());
+    for (frame_index, (incoming_frame, outgoing_frame)) in incoming
+        .chunks_exact_mut(output_channels)
+        .zip(outgoing.chunks_exact(output_channels))
+        .enumerate()
+    {
+        let incoming_weight =
+            ((processed_frames + frame_index + 1) as f32 / total_frames.max(1) as f32).min(1.0);
+        let outgoing_weight = 1.0 - incoming_weight;
+        for (incoming_sample, outgoing_sample) in incoming_frame.iter_mut().zip(outgoing_frame) {
+            *incoming_sample =
+                *outgoing_sample * outgoing_weight + *incoming_sample * incoming_weight;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/auralization/voice.rs"]
+mod tests;
