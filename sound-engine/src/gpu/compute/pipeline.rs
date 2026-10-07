@@ -6,31 +6,10 @@ use std::ffi::CString;
 pub struct ComputePipelineSpec {
     /// Shader module ID; it must refer to a compute shader.
     pub shader_id: ShaderId,
-    /// Descriptor bindings exposed to the compute shader.
-    pub descriptor_bindings: Vec<DescriptorBindingSpec>,
+    /// Single storage-buffer bindings exposed to the compute shader.
+    pub storage_buffer_bindings: Vec<u32>,
     /// Push-constant ranges available to dispatches.
     pub push_constant_ranges: Vec<PushConstantSpec>,
-}
-
-/// Descriptor binding kinds currently supported by compute pipelines.
-pub enum DescriptorBindingSpec {
-    /// Storage buffer binding with the given descriptor count.
-    StorageBuffer {
-        /// Descriptor binding number in the set.
-        binding: u32,
-        /// Number of storage-buffer descriptors in the binding.
-        descriptor_count: u32,
-    },
-}
-
-impl DescriptorBindingSpec {
-    /// Creates a single storage-buffer binding.
-    pub fn storage_buffer(binding: u32) -> Self {
-        Self::StorageBuffer {
-            binding,
-            descriptor_count: 1,
-        }
-    }
 }
 
 /// Push-constant byte range available to a compute shader.
@@ -62,7 +41,7 @@ impl ComputeContext {
         }
 
         let shader_module = self.shaders.shader_module(spec.shader_id)?;
-        let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
+        let descriptor_bindings = build_vk_descriptor_bindings(&spec.storage_buffer_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
         let mut resources = PipelineResources::new(
             self.device_context.clone(),
@@ -128,25 +107,17 @@ impl ComputeContext {
     }
 }
 
-fn build_vk_descriptor_bindings(
-    specs: &[DescriptorBindingSpec],
-) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
-    let mut bindings = Vec::with_capacity(specs.len());
-    for spec in specs {
-        match spec {
-            DescriptorBindingSpec::StorageBuffer {
-                binding,
-                descriptor_count,
-            } => bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(*binding)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(*descriptor_count)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            ),
-        }
-    }
+fn build_vk_descriptor_bindings(bindings: &[u32]) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     bindings
+        .iter()
+        .map(|&binding| {
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        })
+        .collect()
 }
 
 fn build_vk_push_constant_ranges(specs: &[PushConstantSpec]) -> Vec<vk::PushConstantRange> {

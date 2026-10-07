@@ -164,27 +164,6 @@ pub(crate) fn validate_descriptor_writes(
     Ok(())
 }
 
-/// Validates storage descriptor alignment and range; buffer lifetime remains caller-owned.
-pub(crate) fn validate_storage_descriptor(
-    buffer: vk::Buffer,
-    offset: u64,
-    range: u64,
-    limits: &vk::PhysicalDeviceLimits,
-) -> SoundResult<()> {
-    if buffer == vk::Buffer::null()
-        || !offset.is_multiple_of(limits.min_storage_buffer_offset_alignment.max(1))
-        || range == 0
-        || (range != vk::WHOLE_SIZE
-            && (range > limits.max_storage_buffer_range as u64
-                || offset.checked_add(range).is_none()))
-    {
-        return Err(SoundError::invalid_argument(
-            "Invalid storage buffer descriptor handle, alignment or range",
-        ));
-    }
-    Ok(())
-}
-
 /// Finds the shader stages covering an aligned push-constant write in its entirety.
 pub(crate) fn push_constant_stages(
     ranges: &[vk::PushConstantRange],

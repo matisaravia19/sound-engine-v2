@@ -13,8 +13,8 @@ mod pipeline;
 mod submit;
 mod sync;
 
-pub use dispatch::{DescriptorWrite, DispatchSpec};
-pub use pipeline::{ComputePipelineSpec, DescriptorBindingSpec, PushConstantSpec};
+pub use dispatch::DispatchSpec;
+pub use pipeline::{ComputePipelineSpec, PushConstantSpec};
 pub use sync::{BufferBarrierSpec, MemoryBarrierSpec};
 
 const COMMAND_BUFFER_POOL_SIZE: u32 = 12;

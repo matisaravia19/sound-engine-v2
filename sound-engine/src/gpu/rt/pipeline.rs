@@ -55,15 +55,13 @@ pub enum RtShaderGroupSpec {
     },
 }
 
-/// Descriptor binding kinds supported by RT pipelines.
+/// Single-element descriptor binding kinds supported by RT pipelines.
 #[derive(Debug, Clone, Copy)]
 pub enum RtDescriptorBindingSpec {
     /// Acceleration-structure descriptor binding.
     AccelerationStructure {
         /// Descriptor binding number in the set.
         binding: u32,
-        /// Number of descriptors in the binding.
-        descriptor_count: u32,
         /// Shader stages allowed to access the binding.
         stage_flags: vk::ShaderStageFlags,
     },
@@ -71,8 +69,6 @@ pub enum RtDescriptorBindingSpec {
     StorageBuffer {
         /// Descriptor binding number in the set.
         binding: u32,
-        /// Number of descriptors in the binding.
-        descriptor_count: u32,
         /// Shader stages allowed to access the binding.
         stage_flags: vk::ShaderStageFlags,
     },
@@ -103,7 +99,6 @@ impl RtDescriptorBindingSpec {
     pub fn acceleration_structure(binding: u32) -> Self {
         Self::AccelerationStructure {
             binding,
-            descriptor_count: 1,
             stage_flags: default_rt_stage_flags(),
         }
     }
@@ -112,7 +107,6 @@ impl RtDescriptorBindingSpec {
     pub fn storage_buffer(binding: u32) -> Self {
         Self::StorageBuffer {
             binding,
-            descriptor_count: 1,
             stage_flags: default_rt_stage_flags(),
         }
     }
@@ -322,21 +316,19 @@ fn build_vk_descriptor_bindings(
         .map(|spec| match *spec {
             RtDescriptorBindingSpec::AccelerationStructure {
                 binding,
-                descriptor_count,
                 stage_flags,
             } => vk::DescriptorSetLayoutBinding::default()
                 .binding(binding)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(descriptor_count)
+                .descriptor_count(1)
                 .stage_flags(stage_flags),
             RtDescriptorBindingSpec::StorageBuffer {
                 binding,
-                descriptor_count,
                 stage_flags,
             } => vk::DescriptorSetLayoutBinding::default()
                 .binding(binding)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(descriptor_count)
+                .descriptor_count(1)
                 .stage_flags(stage_flags),
         })
         .collect()

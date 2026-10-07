@@ -5,10 +5,10 @@ pub use stream::ConvolutionStream;
 use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
+use crate::gpu::StorageBufferWrite;
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
-    BufferBarrierSpec, ComputePipelineSpec, DescriptorBindingSpec, DescriptorWrite, DispatchSpec,
-    PipelineId, PushConstantSpec,
+    BufferBarrierSpec, ComputePipelineSpec, DispatchSpec, PipelineId, PushConstantSpec,
 };
 use crate::gpu::memory::BufferHandle;
 use crate::gpu::shader::ShaderStage;
@@ -514,9 +514,9 @@ impl FftConvolver {
         let count = self.fft_size as u32;
         let dispatch_spec = DispatchSpec {
             pipeline_id: self.multiply_pipeline_id,
-            descriptor_writes: vec![
-                DescriptorWrite::storage_buffer(0, self.signal_buffer.buffer),
-                DescriptorWrite::storage_buffer(1, ir_buffer.buffer),
+            storage_buffers: vec![
+                StorageBufferWrite::new(0, self.signal_buffer.buffer),
+                StorageBufferWrite::new(1, ir_buffer.buffer),
             ],
             push_constants: count.to_ne_bytes().to_vec(),
             push_constant_offset: 0,
@@ -616,10 +616,7 @@ impl FftConvolver {
 
         let pipeline_spec = ComputePipelineSpec {
             shader_id: multiply_shader_id,
-            descriptor_bindings: vec![
-                DescriptorBindingSpec::storage_buffer(0), // Signal FFT buffer
-                DescriptorBindingSpec::storage_buffer(1), // IR spectrum buffer
-            ],
+            storage_buffer_bindings: vec![0, 1],
             push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<u32>() as u32)], // Element count
         };
 

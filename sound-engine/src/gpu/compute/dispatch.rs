@@ -1,45 +1,19 @@
 use super::*;
 use crate::core::error::ErrorCode;
+use crate::gpu::StorageBufferWrite;
 
 /// One compute dispatch recorded into a command buffer.
 pub struct DispatchSpec {
     /// Pipeline to bind before dispatch.
     pub pipeline_id: PipelineId,
-    /// Descriptor writes used for this dispatch.
-    pub descriptor_writes: Vec<DescriptorWrite>,
+    /// Storage-buffer bindings initialized for this dispatch.
+    pub storage_buffers: Vec<StorageBufferWrite>,
     /// Raw push-constant bytes to upload before dispatch.
     pub push_constants: Vec<u8>,
     /// Offset where `push_constants` are written.
     pub push_constant_offset: u32,
     /// Workgroup counts passed to `vkCmdDispatch`.
     pub groups: [u32; 3],
-}
-
-/// Descriptor write supported by compute dispatches.
-pub enum DescriptorWrite {
-    /// Storage buffer write for one descriptor binding.
-    StorageBuffer {
-        /// Descriptor binding number to update.
-        binding: u32,
-        /// Vulkan buffer handle to bind.
-        buffer: vk::Buffer,
-        /// Byte offset into the buffer.
-        offset: vk::DeviceSize,
-        /// Byte range exposed to the shader.
-        range: vk::DeviceSize,
-    },
-}
-
-impl DescriptorWrite {
-    /// Creates a storage-buffer write covering the whole buffer.
-    pub fn storage_buffer(binding: u32, buffer: vk::Buffer) -> Self {
-        Self::StorageBuffer {
-            binding,
-            buffer,
-            offset: 0,
-            range: vk::WHOLE_SIZE,
-        }
-    }
 }
 
 impl ComputeContext {
@@ -85,21 +59,10 @@ impl ComputeContext {
             spec.push_constant_offset,
             spec.push_constants.len(),
         )?;
-        let mut writes = Vec::with_capacity(spec.descriptor_writes.len());
-        for write in &spec.descriptor_writes {
-            let DescriptorWrite::StorageBuffer {
-                binding,
-                buffer,
-                offset,
-                range,
-            } = *write;
-            crate::gpu::resource::validate_storage_descriptor(
-                buffer,
-                offset,
-                range,
-                &self.device_context.limits,
-            )?;
-            writes.push((binding, vk::DescriptorType::STORAGE_BUFFER));
+        let mut writes = Vec::with_capacity(spec.storage_buffers.len());
+        for write in &spec.storage_buffers {
+            write.validate(&self.device_context.limits)?;
+            writes.push((write.binding, vk::DescriptorType::STORAGE_BUFFER));
         }
         crate::gpu::resource::validate_descriptor_writes(&pipeline.descriptor_bindings, &writes)?;
 
@@ -155,25 +118,10 @@ impl ComputeContext {
     }
 }
 fn build_buffer_infos(spec: &DispatchSpec) -> Vec<vk::DescriptorBufferInfo> {
-    let mut buffer_infos = Vec::new();
-    for write in &spec.descriptor_writes {
-        match write {
-            DescriptorWrite::StorageBuffer {
-                buffer,
-                offset,
-                range,
-                ..
-            } => {
-                buffer_infos.push(
-                    vk::DescriptorBufferInfo::default()
-                        .buffer(*buffer)
-                        .offset(*offset)
-                        .range(*range),
-                );
-            }
-        }
-    }
-    buffer_infos
+    spec.storage_buffers
+        .iter()
+        .map(StorageBufferWrite::buffer_info)
+        .collect()
 }
 
 fn build_descriptor_writes<'a>(
@@ -181,22 +129,15 @@ fn build_descriptor_writes<'a>(
     descriptor_set: vk::DescriptorSet,
     buffer_infos: &'a [vk::DescriptorBufferInfo],
 ) -> Vec<vk::WriteDescriptorSet<'a>> {
-    let mut writes = Vec::new();
-    for (idx, write) in spec.descriptor_writes.iter().enumerate() {
-        match write {
-            DescriptorWrite::StorageBuffer {
-                binding,
-                ..
-            } => {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(descriptor_set)
-                        .dst_binding(*binding)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(std::slice::from_ref(&buffer_infos[idx])),
-                );
-            }
-        }
-    }
-    writes
+    spec.storage_buffers
+        .iter()
+        .zip(buffer_infos)
+        .map(|(write, buffer_info)| {
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(write.binding)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(buffer_info))
+        })
+        .collect()
 }

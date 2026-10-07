@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
+use crate::gpu::StorageBufferWrite;
 
 /// One ray tracing dispatch recorded into a command buffer.
 pub struct RtTraceSpec {
@@ -24,17 +25,8 @@ pub enum RtDescriptorWrite {
         /// TLAS to bind at `binding`.
         tlas_id: TlasId,
     },
-    /// Writes a storage-buffer descriptor.
-    StorageBuffer {
-        /// Descriptor binding number to update.
-        binding: u32,
-        /// Vulkan buffer handle to bind.
-        buffer: vk::Buffer,
-        /// Byte offset into the buffer.
-        offset: vk::DeviceSize,
-        /// Byte range exposed to the shader.
-        range: vk::DeviceSize,
-    },
+    /// Writes one borrowed storage-buffer descriptor.
+    StorageBuffer(StorageBufferWrite),
 }
 
 impl RtDescriptorWrite {
@@ -48,12 +40,7 @@ impl RtDescriptorWrite {
 
     /// Creates a storage-buffer descriptor write covering the whole buffer.
     pub fn storage_buffer(binding: u32, buffer: vk::Buffer) -> Self {
-        Self::StorageBuffer {
-            binding,
-            buffer,
-            offset: 0,
-            range: vk::WHOLE_SIZE,
-        }
+        Self::StorageBuffer(StorageBufferWrite::new(binding, buffer))
     }
 }
 
@@ -114,19 +101,9 @@ impl RtContext {
                     binding,
                     ..
                 } => writes.push((binding, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)),
-                RtDescriptorWrite::StorageBuffer {
-                    binding,
-                    buffer,
-                    offset,
-                    range,
-                } => {
-                    crate::gpu::resource::validate_storage_descriptor(
-                        buffer,
-                        offset,
-                        range,
-                        &self.device_context.limits,
-                    )?;
-                    writes.push((binding, vk::DescriptorType::STORAGE_BUFFER));
+                RtDescriptorWrite::StorageBuffer(write) => {
+                    write.validate(&self.device_context.limits)?;
+                    writes.push((write.binding, vk::DescriptorType::STORAGE_BUFFER));
                 }
             }
         }
@@ -215,19 +192,11 @@ impl RtContext {
                             .update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]);
                     }
                 }
-                RtDescriptorWrite::StorageBuffer {
-                    binding,
-                    buffer,
-                    offset,
-                    range,
-                } => {
-                    let buffer_info = vk::DescriptorBufferInfo::default()
-                        .buffer(buffer)
-                        .offset(offset)
-                        .range(range);
+                RtDescriptorWrite::StorageBuffer(write) => {
+                    let buffer_info = write.buffer_info();
                     let descriptor_write = vk::WriteDescriptorSet::default()
                         .dst_set(descriptor_set)
-                        .dst_binding(binding)
+                        .dst_binding(write.binding)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(std::slice::from_ref(&buffer_info));
                     unsafe {

@@ -1,9 +1,65 @@
-//! Descriptor pool ownership shared by compute and ray tracing pipelines.
+//! Storage-buffer bindings and descriptor-pool ownership shared by GPU pipelines.
 
 use super::backend::VkDeviceContext;
-use crate::core::error::SoundResult;
+use crate::core::error::{SoundError, SoundResult};
 use ash::vk;
 use std::sync::Arc;
+
+/// One storage-buffer descriptor written before a compute or ray dispatch.
+///
+/// This is a borrowed raw handle: the caller retains and synchronizes the buffer
+/// through command completion. The binding exposes either the whole buffer or
+/// an explicitly aligned byte range.
+#[derive(Debug, Clone, Copy)]
+pub struct StorageBufferWrite {
+    /// Descriptor binding number to update.
+    pub binding: u32,
+    /// Vulkan buffer handle borrowed for the dispatch.
+    pub buffer: vk::Buffer,
+    /// Byte offset into the buffer.
+    pub offset: vk::DeviceSize,
+    /// Byte range exposed to the shader, or `vk::WHOLE_SIZE`.
+    pub range: vk::DeviceSize,
+}
+
+impl StorageBufferWrite {
+    /// Binds the whole buffer at the given descriptor index.
+    pub fn new(binding: u32, buffer: vk::Buffer) -> Self {
+        Self {
+            binding,
+            buffer,
+            offset: 0,
+            range: vk::WHOLE_SIZE,
+        }
+    }
+
+    /// Checks handle presence, range arithmetic, and the device's alignment limits.
+    /// Allocation bounds and resource lifetime remain the dispatch caller's responsibility.
+    pub(super) fn validate(&self, limits: &vk::PhysicalDeviceLimits) -> SoundResult<()> {
+        if self.buffer == vk::Buffer::null()
+            || !self
+                .offset
+                .is_multiple_of(limits.min_storage_buffer_offset_alignment.max(1))
+            || self.range == 0
+            || (self.range != vk::WHOLE_SIZE
+                && (self.range > limits.max_storage_buffer_range as u64
+                    || self.offset.checked_add(self.range).is_none()))
+        {
+            return Err(SoundError::invalid_argument(
+                "Invalid storage buffer descriptor handle, alignment or range",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Builds the Vulkan view borrowed by a descriptor write.
+    pub(super) fn buffer_info(&self) -> vk::DescriptorBufferInfo {
+        vk::DescriptorBufferInfo::default()
+            .buffer(self.buffer)
+            .offset(self.offset)
+            .range(self.range)
+    }
+}
 
 /// Number of sets reserved when a pipeline exhausts its existing pools.
 pub(super) const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
