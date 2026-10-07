@@ -10,23 +10,6 @@ const BLOCK_CONFIG: AuralizationConfig = AuralizationConfig {
 };
 
 #[test]
-fn fft_dimensions_reject_zero_and_overflow_before_allocating() {
-    let mut sound = SOUND_CONFIG;
-    let mut config = BLOCK_CONFIG;
-    assert_eq!(validated_fft_size(sound, config).unwrap(), 2048);
-    config.block_size = 0;
-    assert!(validated_fft_size(sound, config).is_err());
-    config.block_size = usize::MAX;
-    assert!(validated_fft_size(sound, config).is_err());
-    config.block_size = 1024;
-    sound.ir_num_samples = 0;
-    assert!(validated_fft_size(sound, config).is_err());
-    sound.ir_num_samples = 1024;
-    sound.sample_rate = 0;
-    assert!(validated_fft_size(sound, config).is_err());
-}
-
-#[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
     let gpu = Arc::new(VkBackend::new().unwrap());

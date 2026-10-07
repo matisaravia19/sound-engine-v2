@@ -84,6 +84,7 @@ pub(super) struct RenderMetrics {
 impl EngineCore {
     /// Creates a direct scalar engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
+        config.validate()?;
         let gpu = Arc::new(VkBackend::new()?);
         let acoustics = AcousticsEngine::new(
             gpu.as_ref(),

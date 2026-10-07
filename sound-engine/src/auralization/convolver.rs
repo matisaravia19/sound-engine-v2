@@ -55,7 +55,7 @@ impl FftConvolver {
         sound: SoundConfig,
         config: AuralizationConfig,
     ) -> SoundResult<Self> {
-        let fft_size = validated_fft_size(sound, config)?;
+        let fft_size = config.fft_size(sound)?;
         let tail_size = fft_size - config.block_size;
         let gpu = GpuConvolution::new(gpu, fft_size)?;
 
@@ -354,22 +354,6 @@ impl FftConvolver {
             }
         }
     }
-}
-
-fn validated_fft_size(sound: SoundConfig, config: AuralizationConfig) -> SoundResult<usize> {
-    if config.block_size == 0 || sound.ir_num_samples == 0 || sound.sample_rate == 0 {
-        return Err(SoundError::invalid_argument(
-            "FFT block size, IR length and sample rate must be non-zero",
-        ));
-    }
-    config
-        .block_size
-        .checked_add(sound.ir_num_samples as usize - 1)
-        .and_then(usize::checked_next_power_of_two)
-        // The multiply shader uses a 32-bit element count; allocations must also
-        // fit Rust's addressable slice size before any GPU work is initialized.
-        .filter(|size| *size <= u32::MAX as usize && *size <= isize::MAX as usize / 8)
-        .ok_or_else(|| SoundError::invalid_argument("FFT size exceeds addressable capacity"))
 }
 
 fn validate_ir_length(sample_count: usize, capacity: usize) -> SoundResult<()> {

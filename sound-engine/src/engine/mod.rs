@@ -42,6 +42,7 @@ enum EngineMode {
 
 impl SoundEngine {
     /// Creates the scalar acoustic engine with an empty scene and sound bank.
+    /// Invalid settings are rejected before Vulkan initialization.
     pub fn new(config: EngineConfig) -> SoundResult<Self> {
         Ok(Self {
             mode: Some(EngineMode::Direct(Box::new(EngineCore::new(config)?))),

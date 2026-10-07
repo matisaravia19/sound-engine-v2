@@ -1,6 +1,6 @@
 use super::spatial::ValidatedAcousticQuery;
 use crate::acoustics::{AcousticQuery, GpuIrSnapshot};
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::SoundResult;
 use crate::scene::SceneVersion;
 use glam::Vec3;
 use std::collections::VecDeque;
@@ -22,18 +22,7 @@ pub(super) struct IrCache {
 impl IrCache {
     /// Creates an empty IR cache with the provided reuse policy.
     pub(super) fn new(config: IrCacheConfig) -> SoundResult<Self> {
-        if !config.reuse_distance_meters.is_finite() || config.reuse_distance_meters < 0.0 {
-            return Err(SoundError::invalid_argument(
-                "IR reuse distance must be finite and nonnegative",
-            ));
-        }
-        if !config.listener_orientation_dot_threshold.is_finite()
-            || !(-1.0..=1.0).contains(&config.listener_orientation_dot_threshold)
-        {
-            return Err(SoundError::invalid_argument(
-                "IR orientation threshold must be finite and in [-1, 1]",
-            ));
-        }
+        config.validate()?;
         Ok(Self {
             config,
             entries: VecDeque::new(),
