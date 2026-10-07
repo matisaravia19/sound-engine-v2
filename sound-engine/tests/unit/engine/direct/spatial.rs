@@ -1,9 +1,10 @@
 //! Hardware regression for coherent spatial updates across rendered blocks.
 
 use super::*;
-use crate::acoustics::IrSample;
+use crate::acoustics::{IrSample, IrSnapshot};
+use crate::auralization::SoundAsset;
 use crate::core::config::*;
-use crate::scene::{DiffractionEdge, Material, MeshAsset, SceneObject};
+use crate::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneObject};
 use glam::{Mat4, Vec3, vec3};
 
 fn preflight_config() -> EngineConfig {

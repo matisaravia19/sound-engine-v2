@@ -113,7 +113,7 @@ class BenchmarkRunTests(unittest.TestCase):
             "vkfft-rs/tests/native/vulkan_memory_tests.cpp",
             "acoustic-fixtures/tests/unit/text.rs",
             "sandbox/tests/unit/app/config.rs",
-            "sound-engine/tests/unit/engine/direct.rs",
+            "sound-engine/tests/unit/engine/direct/spatial.rs",
             "sound-engine/scripts/tests/test_benchmark_runner.py",
         ):
             with self.subTest(name=name):
