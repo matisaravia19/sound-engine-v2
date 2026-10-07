@@ -67,7 +67,9 @@ Run benchmarks with `cargo run --release -p sound-engine --example NAME`.
 | Scene-update and convolution costs | `runtime_costs` |
 | Offline BTM mathematical reference | `btm_realtime_benchmark` |
 
-`support/geometry.rs` and `support/bell_box.rs` define benchmark fixtures.
+The workspace crate `acoustic-fixtures` owns the planar, Bell Labs, and BRAS
+scene builders, plus validated scene/position readers shared with the sandbox.
+It is a development dependency of the engine; normal engine builds exclude it.
 `support/timing.rs` supplies latency quantiles, `support/provenance.rs` records
 source revisions, and `acoustic_method/reference.rs` contains independent
 mathematical references. None of these helpers enters the runtime library.

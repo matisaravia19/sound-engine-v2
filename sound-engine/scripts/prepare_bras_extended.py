@@ -51,7 +51,7 @@ class Fixture:
     def edge(self, a, b, bisector, angle=2 * np.pi):
         d = np.array(bisector, dtype=float)
         d /= np.linalg.norm(d)
-        values = [*a, *b, *d, angle, 1.25, 0.85]
+        values = [*a, *b, *d, angle, 1.25]
         self.lines.append("edge " + " ".join(f"{v:.9g}" for v in values))
         self.edges.append(values)
 

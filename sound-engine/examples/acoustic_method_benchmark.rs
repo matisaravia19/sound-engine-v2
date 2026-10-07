@@ -6,12 +6,11 @@
 
 #[path = "support/timing.rs"]
 mod timing;
+use acoustic_fixtures::geometry;
 use timing::{milliseconds, percentile as percentile_duration};
 
-use glam::{Vec3, vec3};
-#[path = "support/geometry.rs"]
-mod geometry;
 use geometry::*;
+use glam::{Vec3, vec3};
 #[path = "support/provenance.rs"]
 mod provenance;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, IrSample, IrSnapshot};

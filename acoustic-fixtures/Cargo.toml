@@ -1,0 +1,9 @@
+[package]
+name = "acoustic-fixtures"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+glam = "0.33.1"
+sound-engine = { path = "../sound-engine" }

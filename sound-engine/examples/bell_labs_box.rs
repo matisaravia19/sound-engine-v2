@@ -1,14 +1,11 @@
 //! Reproducible CGA02 geometry and ray-traced early IR exports.
 //! Run with --help for parameters. No measured waveforms are synthesized here.
-#[path = "support/bell_box.rs"]
-mod bell_box;
-#[path = "support/geometry.rs"]
-mod geometry;
 #[path = "support/provenance.rs"]
 mod provenance;
 #[path = "support/timing.rs"]
 mod timing;
 
+use acoustic_fixtures::bell_box;
 use glam::Vec3;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
 use sound_engine::core::config::*;
@@ -140,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acoustic_fixtures::geometry;
 
     // Backend setup shares process-wide Vulkan state; serialize GPU fixtures.
     static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

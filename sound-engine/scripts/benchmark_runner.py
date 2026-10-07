@@ -67,6 +67,7 @@ def source_hashes():
     """Fingerprint engine sources, tests, build inputs, and benchmark scripts."""
     files = []
     for directory in (
+        "acoustic-fixtures/src",
         "sound-engine/src",
         "sound-engine/examples",
         "sound-engine/tests",
@@ -80,6 +81,7 @@ def source_hashes():
         for name in (
             "Cargo.toml",
             "Cargo.lock",
+            "acoustic-fixtures/Cargo.toml",
             "sound-engine/Cargo.toml",
             "sound-engine/build.rs",
             "vkfft-rs/Cargo.toml",

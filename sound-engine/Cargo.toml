@@ -18,3 +18,6 @@ playback = ["dep:cpal"]
 [[example]]
 name = "sound_engine_runtime_mode"
 required-features = ["playback"]
+
+[dev-dependencies]
+acoustic-fixtures = { path = "../acoustic-fixtures" }

@@ -1,28 +1,14 @@
 //! Interactive scene catalog. Measurement files remain optional runtime assets.
 
-mod bell_box;
-mod bras;
 mod diffraction;
-mod geometry;
 
-use glam::{Mat4, Vec3, vec3};
-use sound_engine::scene::{
-    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
-};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use acoustic_fixtures::{bell_box, bras, geometry, read_positions, read_scene};
+use glam::{Vec3, vec3};
+use sound_engine::scene::{SceneDescription, SceneManager};
+use std::path::{Path, PathBuf};
 
-/// Source and receiver coordinates in engine axes, copied from a benchmark pair.
-pub(crate) struct Pair {
-    /// Benchmark case identifier displayed in the sandbox.
-    pub name: String,
-    /// Source position in meters.
-    pub source: Vec3,
-    /// Receiver position in meters.
-    pub listener: Vec3,
-}
+/// Measured or built-in coordinates displayed by the sandbox.
+pub(crate) use acoustic_fixtures::PositionPair as Pair;
 
 /// Catalog entry; geometry is read only when the user selects it.
 pub(crate) struct Entry {
@@ -154,7 +140,10 @@ impl Entry {
             }]
         };
         let (mut description, pairs) = if let Some((scene, positions)) = &self.files {
-            (read_fixture(scene)?, read_pairs(positions)?)
+            (
+                read_scene(scene).map_err(|error| error.to_string())?,
+                read_positions(positions).map_err(|error| error.to_string())?,
+            )
         } else {
             match self.id.as_str() {
                 "free-field" => (
@@ -205,8 +194,17 @@ impl Entry {
                     pair("Panel", bell_box::BAFFLE_SOURCE, bell_box::BAFFLE_LISTENER),
                 ),
                 "RS5" | "RS6" => (
-                    bras::benchmark_scene(&self.id, 0.2, true),
-                    read_pairs(self.positions.as_ref().ok_or("Missing positions path")?)?,
+                    bras::scene(
+                        if self.id == "RS5" {
+                            bras::Setup::Partition
+                        } else {
+                            bras::Setup::Block
+                        },
+                        0.2,
+                        true,
+                    ),
+                    read_positions(self.positions.as_ref().ok_or("Missing positions path")?)
+                        .map_err(|error| error.to_string())?,
                 ),
                 _ => return Err(format!("Unknown benchmark scene: {}", self.id)),
             }
@@ -257,118 +255,6 @@ impl Entry {
             triangles,
             inferred_edges,
         })
-    }
-}
-
-fn read_pairs(path: &Path) -> Result<Vec<Pair>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut pairs = Vec::new();
-    for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
-        let f: Vec<_> = line.split(',').collect();
-        if f.len() != 7 {
-            return Err(format!("Invalid position row in {}", path.display()));
-        }
-        let p: Vec<f32> = f[1..]
-            .iter()
-            .map(|x| x.parse::<f32>())
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?;
-        if !p.iter().all(|x| x.is_finite()) {
-            return Err("Non-finite position".into());
-        }
-        pairs.push(Pair {
-            name: f[0].to_owned(),
-            source: vec3(p[0], p[1], p[2]),
-            listener: vec3(p[3], p[4], p[5]),
-        });
-    }
-    if pairs.is_empty() {
-        return Err(format!("No positions in {}", path.display()));
-    }
-    Ok(pairs)
-}
-
-fn read_fixture(path: &Path) -> Result<SceneDescription, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut scene = geometry::empty_scene();
-    let mut vertices: BTreeMap<u32, Vec<Vec3>> = BTreeMap::new();
-    for line in text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-    {
-        let f: Vec<_> = line.split_whitespace().collect();
-        let p: Vec<f32> = f[1..]
-            .iter()
-            .map(|x| x.parse::<f32>())
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?;
-        if !p.iter().all(|v| v.is_finite()) {
-            return Err("Non-finite scene value".into());
-        }
-        match f[0] {
-            "material" if p.len() == 3 => {
-                scene.materials.push(Material {
-                    id: material_id(p[0])?,
-                    absorption: p[1],
-                    scattering: p[2],
-                    roughness: 0.0,
-                });
-            }
-            "tri" if p.len() == 10 => {
-                vertices
-                    .entry(material_id(p[0])?)
-                    .or_default()
-                    .extend(p[1..].chunks_exact(3).map(|v| vec3(v[0], v[1], v[2])));
-            }
-            "edge" if p.len() == 11 || p.len() == 12 => {
-                // Older fixtures include an energy scale as the last column.
-                // Keep disabled edges absent; positive scales no longer alter pressure.
-                if p.len() == 12 {
-                    if !(0.0..=1.0).contains(&p[11]) {
-                        return Err(format!("Invalid legacy edge scale: {line}"));
-                    }
-
-                    if p[11] == 0.0 {
-                        continue;
-                    }
-                }
-
-                scene.diffraction_edges.push(DiffractionEdge {
-                    id: scene.diffraction_edges.len() as u32 + 1,
-                    start: vec3(p[0], p[1], p[2]),
-                    end: vec3(p[3], p[4], p[5]),
-                    bisector_dir: vec3(p[6], p[7], p[8]),
-                    edge_angle_radians: p[9],
-                    diffraction_radius: p[10],
-                });
-            }
-            _ => return Err(format!("Invalid scene row: {line}")),
-        }
-    }
-    for (id, v) in vertices {
-        scene.meshes.push(MeshAsset {
-            id,
-            vertices: v,
-            indices: Vec::new(),
-            opaque: true,
-        });
-        scene.objects.push(SceneObject {
-            id,
-            mesh_id: id,
-            material_id: id,
-            transform: Mat4::IDENTITY,
-            active: true,
-        });
-    }
-    Ok(scene)
-}
-
-fn material_id(value: f32) -> Result<u32, String> {
-    if value >= 1.0 && value < u32::MAX as f32 && value.fract() == 0.0 {
-        Ok(value as u32)
-    } else {
-        Err("Invalid material identifier".into())
     }
 }
 

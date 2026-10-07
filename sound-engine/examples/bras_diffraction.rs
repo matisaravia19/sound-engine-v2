@@ -1,20 +1,17 @@
 //! Measured BRAS RS5/RS6 geometry: every exported propagation IR comes from rays.
 //! Preparation and calibration: scripts/bras_reference.py; citations: references.md.
-#[path = "support/geometry.rs"]
-mod geometry;
 #[path = "support/provenance.rs"]
 mod provenance;
 #[path = "support/timing.rs"]
 mod timing;
 
-use glam::{Mat4, Vec3, vec3};
+use acoustic_fixtures::{bras, read_positions};
+use glam::Vec3;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
 use sound_engine::core::config::*;
 use sound_engine::core::debug::export_ir;
 use sound_engine::gpu::backend::VkBackend;
-use sound_engine::scene::{
-    DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
-};
+use sound_engine::scene::SceneManager;
 use std::{
     fs,
     io::{BufWriter, Write},
@@ -75,7 +72,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !motion_height.is_finite() || motion_height < 0.0 {
         return Err("motion height must be finite and nonnegative".into());
     }
-    let positions = fs::read_to_string(input.join(format!("{scene_name}/positions.csv")))?;
+    let setup = if scene_name == "RS5" {
+        bras::Setup::Partition
+    } else {
+        bras::Setup::Block
+    };
+    let positions = read_positions(input.join(format!("{scene_name}/positions.csv")))?;
     fs::create_dir_all(&output)?;
 
     let mut runs = BufWriter::new(fs::File::create(
@@ -96,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let revision = provenance::revision();
     for seed in 7..end_seed {
         let mut scene = SceneManager::new();
-        let description = benchmark_scene(&scene_name, radius, diffraction);
+        let description = bras::scene(setup, radius, diffraction);
         scene.load(description)?;
         let config = EngineConfig {
             sound: SoundConfig {
@@ -119,25 +121,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
-        for (index, line) in positions.lines().skip(1).enumerate() {
-            let fields: Vec<_> = line.split(',').collect();
-            if fields.len() != 7 {
-                return Err("positions.csv must have seven columns".into());
-            }
+        for (index, pair) in positions.iter().enumerate() {
             if selected_case
                 .as_deref()
-                .is_some_and(|name| name != fields[0])
+                .is_some_and(|name| name != pair.name)
             {
                 continue;
             }
-            let p: Vec<f32> = fields[1..]
-                .iter()
-                .map(|s| s.parse())
-                .collect::<Result<_, _>>()?;
             let mut query = AcousticQuery {
                 query_id: index as u32,
-                source_position: vec3(p[0], p[1], p[2]),
-                listener_position: vec3(p[3], p[4], p[5]),
+                source_position: pair.source,
+                listener_position: pair.listener,
                 listener_forward: -Vec3::X,
                 listener_up: Vec3::Y,
                 source_amplitude: 1.0,
@@ -177,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(
                     raw_times,
                     "{},{seed},{index},{y},{trace},{synthesis},{total}",
-                    fields[0]
+                    pair.name
                 )?;
             }
             // Accuracy exports always use the published measurement coordinates.
@@ -190,13 +184,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             times.sort_by(f64::total_cmp);
             export_ir(
                 last_ir.as_ref().unwrap(),
-                output.join(format!("{}-seed{seed}.csv", fields[0])),
+                output.join(format!("{}-seed{seed}.csv", pair.name)),
             )?;
 
             writeln!(
                 runs,
                 "{},{seed},{rays},{bounces},{radius},{diffraction},44100,{cold_ms},{},{},{},{},{repeats},{warmups},{revision},{reverse}",
-                fields[0],
+                pair.name,
                 timing::percentile(&times, 0.5),
                 timing::percentile(&times, 0.95),
                 timing::percentile(&times, 0.99),
@@ -208,166 +202,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runs.flush()?;
     raw_times.flush()?;
     Ok(())
-}
-
-fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> SceneDescription {
-    // BRAS uses Z up. Positions.csv explicitly maps (X,Y,Z) to engine (X,Z,Y).
-    let mut scene =
-        geometry::scene_from_walls(vec![geometry::quad_y(0.0, -20.0, 20.0, -20.0, 20.0)], 0.0);
-    let (walls, edges) = if name == "RS5" {
-        // Thin-screen approximation of the 25 mm partition, at its mid-plane.
-        // Height and span come from RS5_RIR.png; no RIR was used to adjust them.
-        let (x, height, z0, z1) = (5.4995, 2.066, 2.985 - 4.75 / 2.0, 2.985 + 4.75 / 2.0);
-        (
-            vec![geometry::quad_x(x, 0.0, height, z0, z1)],
-            vec![
-                edge(
-                    1,
-                    vec3(x, height, z0),
-                    vec3(x, height, z1),
-                    Vec3::Y,
-                    std::f32::consts::TAU,
-                    radius,
-                ),
-                edge(
-                    2,
-                    vec3(x, 0.0, z0),
-                    vec3(x, height, z0),
-                    -Vec3::Z,
-                    std::f32::consts::TAU,
-                    radius,
-                ),
-                edge(
-                    3,
-                    vec3(x, 0.0, z1),
-                    vec3(x, height, z1),
-                    Vec3::Z,
-                    std::f32::consts::TAU,
-                    radius,
-                ),
-            ],
-        )
-    } else {
-        let (x0, x1, height, z0, z1) = (5.5 - 0.36, 5.5 + 0.36, 0.72, 2.985 - 2.07, 2.985 + 2.07);
-        let n = std::f32::consts::FRAC_1_SQRT_2;
-        let angle = 1.5 * std::f32::consts::PI;
-        // The hollow-block assembly is represented by its measured outer envelope.
-        (
-            vec![
-                geometry::quad_x(x0, 0.0, height, z0, z1),
-                geometry::quad_x(x1, 0.0, height, z0, z1),
-                geometry::quad_y(height, x0, x1, z0, z1),
-                geometry::quad_z(z0, x0, x1, 0.0, height),
-                geometry::quad_z(z1, x0, x1, 0.0, height),
-            ],
-            vec![
-                edge(
-                    1,
-                    vec3(x0, height, z0),
-                    vec3(x0, height, z1),
-                    vec3(-n, n, 0.0),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    2,
-                    vec3(x1, height, z0),
-                    vec3(x1, height, z1),
-                    vec3(n, n, 0.0),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    3,
-                    vec3(x0, 0.0, z0),
-                    vec3(x0, height, z0),
-                    vec3(-n, 0.0, -n),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    4,
-                    vec3(x1, 0.0, z0),
-                    vec3(x1, height, z0),
-                    vec3(n, 0.0, -n),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    5,
-                    vec3(x0, 0.0, z1),
-                    vec3(x0, height, z1),
-                    vec3(-n, 0.0, n),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    6,
-                    vec3(x1, 0.0, z1),
-                    vec3(x1, height, z1),
-                    vec3(n, 0.0, n),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    7,
-                    vec3(x0, height, z0),
-                    vec3(x1, height, z0),
-                    vec3(0.0, n, -n),
-                    angle,
-                    radius,
-                ),
-                edge(
-                    8,
-                    vec3(x0, height, z1),
-                    vec3(x1, height, z1),
-                    vec3(0.0, n, n),
-                    angle,
-                    radius,
-                ),
-            ],
-        )
-    };
-    scene.meshes.push(MeshAsset {
-        id: 2,
-        vertices: walls.into_iter().flatten().collect(),
-        indices: Vec::new(),
-        opaque: true,
-    });
-    // Rigid boundary is explicit pending use of the supplied MDF material data.
-    scene.materials.push(Material {
-        id: 2,
-        absorption: 0.0,
-        scattering: 0.0,
-        roughness: 0.0,
-    });
-    scene.objects.push(SceneObject {
-        id: 2,
-        mesh_id: 2,
-        material_id: 2,
-        transform: Mat4::IDENTITY,
-        active: true,
-    });
-    if diffraction {
-        scene.diffraction_edges = edges;
-    }
-    scene
-}
-
-fn edge(
-    id: u32,
-    start: Vec3,
-    end: Vec3,
-    bisector_dir: Vec3,
-    angle: f32,
-    radius: f32,
-) -> DiffractionEdge {
-    DiffractionEdge {
-        id,
-        start,
-        end,
-        bisector_dir,
-        edge_angle_radians: angle,
-        diffraction_radius: radius,
-    }
 }

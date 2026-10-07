@@ -103,6 +103,8 @@ Every remaining standalone Rust example is listed here. These are executable cli
 | B9 | [runtime_costs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/runtime_costs.rs) | Scene synchronization, acoustic query, IR preparation and convolution costs. |
 | B10 | [btm_realtime_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/btm_realtime_benchmark.rs) | Offline BTM mathematical diffraction reference and its computation cost. Despite its name, this is not the engine's realtime diffraction implementation. |
 
+The sandbox and benchmarks share [acoustic-fixtures](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/acoustic-fixtures/src/lib.rs): canonical planar, Bell Labs and BRAS geometry plus validated `.scene` and position-table readers. Fixture tooling is a development dependency, separate from normal engine builds. Benchmark provenance includes the crate's source and manifest.
+
 B7–B9 overlap in performance-measurement purpose and remain retained. D3/D4 were removed because their purpose is covered by regression tests and the engine examples. B1/B10 retain independent physics references that are useful if diffraction validation remains important.
 
 ## Research and diagnostic workflows
