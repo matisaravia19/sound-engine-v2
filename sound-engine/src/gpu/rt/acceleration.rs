@@ -1,8 +1,9 @@
 use glam::{Mat4, Vec3};
 
-use super::scene::rt_aabb_stride;
+use super::scene::AABB_STRIDE;
 use super::*;
 use crate::core::error::{SoundError, SoundResult};
+use crate::core::geometry::validate_instance_transform;
 use std::mem::size_of;
 
 /// Stable handle to a bottom-level acceleration structure.
@@ -118,7 +119,7 @@ impl RtContext {
     /// build, and use supported build flags valid for AABB geometry.
     pub unsafe fn build_aabb_blas(&self, spec: AabbBlasBuildSpec<'_>) -> SoundResult<BlasId> {
         self.memory.validate_owner(&spec.aabbs.aabb_buffer)?;
-        if spec.aabbs.primitive_count as u64 * rt_aabb_stride() > spec.aabbs.aabb_buffer.size {
+        if spec.aabbs.primitive_count as u64 * AABB_STRIDE > spec.aabbs.aabb_buffer.size {
             return Err(SoundError::invalid_argument(
                 "AABB count exceeds input buffer bounds",
             ));
@@ -133,7 +134,7 @@ impl RtContext {
             .data(vk::DeviceOrHostAddressConstKHR {
                 device_address: self.memory.buffer_device_address(&spec.aabbs.aabb_buffer),
             })
-            .stride(rt_aabb_stride());
+            .stride(AABB_STRIDE);
 
         let mut geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::AABBS)

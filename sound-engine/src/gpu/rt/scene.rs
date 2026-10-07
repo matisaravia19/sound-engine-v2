@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::error::{SoundError, SoundResult};
+use crate::core::geometry::validate_triangle_mesh;
 use glam::{Mat4, Vec3};
 use std::mem::size_of;
 
@@ -64,8 +65,8 @@ pub struct RtInstanceSpec {
 
 /// Packed Vulkan AABB build input; six contiguous floats with no implicit padding.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RtAabbPrimitive {
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RtAabbPrimitive {
     min_x: f32,
     min_y: f32,
     min_z: f32,
@@ -74,8 +75,8 @@ pub(crate) struct RtAabbPrimitive {
     max_z: f32,
 }
 
-unsafe impl bytemuck::Zeroable for RtAabbPrimitive {}
-unsafe impl bytemuck::Pod for RtAabbPrimitive {}
+/// Byte stride of the packed Vulkan AABB build input.
+pub(super) const AABB_STRIDE: vk::DeviceSize = size_of::<RtAabbPrimitive>() as vk::DeviceSize;
 
 impl RtContext {
     /// Uploads triangle mesh data into device-addressable GPU buffers.
@@ -83,11 +84,6 @@ impl RtContext {
     /// The returned buffers are suitable as BLAS build inputs.
     pub fn upload_mesh(&self, spec: RtMeshSpec<'_>) -> SoundResult<RtMeshBuffers> {
         validate_triangle_mesh(spec.vertices, spec.indices)?;
-        if spec.vertices.is_empty() {
-            return Err(SoundError::invalid_argument(
-                "RT mesh must contain at least one vertex",
-            ));
-        }
 
         let vertex_buffer = self.memory.create_device_address_buffer(
             std::mem::size_of_val(spec.vertices) as vk::DeviceSize,
@@ -97,12 +93,6 @@ impl RtContext {
         self.memory.upload_typed(&vertex_buffer, spec.vertices)?;
 
         let index_buffer = if let Some(indices) = spec.indices {
-            if indices.is_empty() {
-                return Err(SoundError::invalid_argument(
-                    "RT mesh index slice must not be empty",
-                ));
-            }
-
             let buffer = self.memory.create_device_address_buffer(
                 std::mem::size_of_val(indices) as vk::DeviceSize,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
@@ -175,54 +165,3 @@ impl RtContext {
         })
     }
 }
-
-/// Byte stride of the packed Vulkan AABB build input.
-pub(crate) fn rt_aabb_stride() -> vk::DeviceSize {
-    size_of::<RtAabbPrimitive>() as vk::DeviceSize
-}
-
-/// Validates triangle input before GPU traversal can dereference device addresses.
-pub(crate) fn validate_triangle_mesh(
-    vertices: &[Vec3],
-    indices: Option<&[u32]>,
-) -> SoundResult<()> {
-    if vertices.is_empty()
-        || vertices.len() > u32::MAX as usize / 3
-        || vertices.iter().any(|vertex| !vertex.is_finite())
-    {
-        return Err(SoundError::invalid_argument(
-            "Mesh vertices must be finite and fit 32-bit shader indexing",
-        ));
-    }
-    let count = indices.map_or(vertices.len(), |values| values.len());
-    if count == 0 || !count.is_multiple_of(3) || count > u32::MAX as usize {
-        return Err(SoundError::invalid_argument(
-            "Mesh must contain complete triangle triples within the 32-bit index range",
-        ));
-    }
-    if indices.is_some_and(|values| values.iter().any(|index| *index as usize >= vertices.len())) {
-        return Err(SoundError::invalid_argument(
-            "Mesh index references a vertex outside the vertex buffer",
-        ));
-    }
-    Ok(())
-}
-
-/// Rejects transforms that cannot be represented by a finite, invertible Vulkan 3x4 matrix.
-pub(crate) fn validate_instance_transform(transform: Mat4) -> SoundResult<()> {
-    let determinant = glam::Mat3::from_mat4(transform).determinant();
-    if !transform.is_finite()
-        || !determinant.is_finite()
-        || determinant == 0.0
-        || transform.row(3) != glam::Vec4::W
-    {
-        return Err(SoundError::invalid_argument(
-            "Instance transform must be finite, affine and invertible",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-#[path = "../../../tests/unit/gpu/rt/scene.rs"]
-mod tests;

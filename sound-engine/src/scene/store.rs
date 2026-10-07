@@ -327,7 +327,7 @@ impl SceneStore {
                 id,
                 transform,
             } => {
-                crate::gpu::rt::validate_instance_transform(transform)?;
+                crate::core::geometry::validate_instance_transform(transform)?;
                 self.object_mut(id)?.transform = transform;
             }
             SceneUpdate::SetActive {
@@ -360,29 +360,10 @@ impl SceneStore {
 }
 
 fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
-    crate::gpu::rt::validate_triangle_mesh(
+    crate::core::geometry::validate_triangle_mesh(
         &mesh.vertices,
         (!mesh.indices.is_empty()).then_some(mesh.indices.as_slice()),
-    )?;
-    if mesh.vertices.is_empty() {
-        return Err(SoundError::invalid_argument(format!(
-            "Mesh {} has no vertices",
-            mesh.id
-        )));
-    }
-    if mesh.indices.is_empty() && mesh.vertices.len() < 3 {
-        return Err(SoundError::invalid_argument(format!(
-            "Mesh {} has less than one triangle",
-            mesh.id
-        )));
-    }
-    if !mesh.indices.is_empty() && mesh.indices.len() < 3 {
-        return Err(SoundError::invalid_argument(format!(
-            "Mesh {} has less than one indexed triangle",
-            mesh.id
-        )));
-    }
-    Ok(())
+    )
 }
 
 fn validate_material(material: &Material) -> SoundResult<()> {
@@ -402,7 +383,7 @@ fn validate_material(material: &Material) -> SoundResult<()> {
 }
 
 fn validate_object_refs(store: &SceneStore, object: &SceneObject) -> SoundResult<()> {
-    crate::gpu::rt::validate_instance_transform(object.transform)?;
+    crate::core::geometry::validate_instance_transform(object.transform)?;
     if !store.meshes.contains_key(&object.mesh_id) {
         return Err(SoundError::not_found(format!(
             "Mesh {} does not exist",

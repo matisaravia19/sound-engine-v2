@@ -24,7 +24,6 @@ pub use pipeline::{
     RtShaderStageSpec,
 };
 pub use scene::{RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
-pub(crate) use scene::{validate_instance_transform, validate_triangle_mesh};
 
 /// Owns Vulkan ray tracing resources for the backend.
 ///

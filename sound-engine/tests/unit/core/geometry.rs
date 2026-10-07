@@ -3,6 +3,9 @@ use super::*;
 #[test]
 fn triangle_validation_rejects_out_of_bounds_indices_and_partial_triangles() {
     let vertices = [Vec3::ZERO, Vec3::X, Vec3::Y];
+    assert!(validate_triangle_mesh(&vertices, None).is_ok());
+    assert!(validate_triangle_mesh(&[], None).is_err());
+    assert!(validate_triangle_mesh(&vertices, Some(&[])).is_err());
     assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, 2])).is_ok());
     assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, 3])).is_err());
     assert!(validate_triangle_mesh(&vertices, Some(&[0, 1, u32::MAX])).is_err());
