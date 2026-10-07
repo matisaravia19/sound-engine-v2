@@ -70,7 +70,7 @@ fn benchmark_voice_count(
         right: 0.75,
     };
     let ir_start = Instant::now();
-    engine.register_impulse_response(1, &ir)?;
+    let prepared_ir = engine.prepare_impulse_response(&ir)?;
     let ir_registration = ir_start.elapsed();
 
     let total_blocks = WARM_BLOCKS + MEASURED_BLOCKS + 2;
@@ -80,7 +80,7 @@ fn benchmark_voice_count(
         .collect();
     let sound_id = engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, sine)?)?;
     for _ in 0..voice_count {
-        engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
+        engine.play_sound(PlaySoundRequest::new(sound_id, prepared_ir.clone()))?;
     }
 
     let mut output = vec![0.0; BLOCK_SIZE * OutputChannels::Stereo.count()];

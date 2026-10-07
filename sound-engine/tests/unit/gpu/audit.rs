@@ -131,15 +131,20 @@ fn exercise_engine_lifecycle(gpu: &Arc<VkBackend>) {
         let snapshot = acoustic
             .build_impulse_response_gpu(gpu, PointSource::new(Vec3::X), ListenerPose::default())
             .unwrap();
-        audio
-            .register_impulse_response_from_gpu_ir(1, &snapshot)
-            .unwrap();
+        let impulse_response = audio.prepare_impulse_response_from_gpu(&snapshot).unwrap();
         match voice {
-            Some(id) => audio.update_voice_impulse_response(id, 1).unwrap(),
-            None => voice = Some(audio.play_sound(PlaySoundRequest::new(sound, 1)).unwrap()),
+            Some(id) => audio
+                .update_voice_impulse_response(id, impulse_response)
+                .unwrap(),
+            None => {
+                voice = Some(
+                    audio
+                        .play_sound(PlaySoundRequest::new(sound, impulse_response))
+                        .unwrap(),
+                )
+            }
         }
-        // Voices retain their filters after registry removal and through swaps.
-        audio.forget_impulse_response(1);
+        // The voice owns the prepared filter through rendering and later swaps.
         for _ in 0..4 {
             audio.render_block(&mut output).unwrap();
             assert!(output.iter().all(|value| value.is_finite()));

@@ -110,14 +110,14 @@ fn run_length(ir_length: usize) -> SoundResult<String> {
         })
         .collect::<Vec<_>>();
     let registration_start = Instant::now();
-    engine.register_impulse_response(1, &stereo_impulse)?;
+    let prepared_ir = engine.prepare_impulse_response(&stereo_impulse)?;
     let ir_registration = registration_start.elapsed();
 
     let total_blocks = WARM_BLOCKS + MEASURED_BLOCKS;
     let input = deterministic_signal(total_blocks * BLOCK_SIZE);
     let sound_id =
         engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
-    engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
+    engine.play_sound(PlaySoundRequest::new(sound_id, prepared_ir.clone()))?;
 
     let mut direct = DirectFir::new(impulse);
     let mut direct_block = vec![0.0; BLOCK_SIZE];

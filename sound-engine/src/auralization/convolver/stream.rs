@@ -63,6 +63,12 @@ impl ConvolutionStream {
         output_samples: usize,
         transition_frames: usize,
     ) {
+        // Reaffirming the incoming filter cancels a queued replacement without
+        // restarting the active ramp or duplicating an unchanged filter.
+        if Arc::ptr_eq(&self.current.impulse_response, &impulse_response) {
+            self.pending_impulse_response = None;
+            return;
+        }
         if self.ir_transition.is_some() {
             self.pending_impulse_response = Some(impulse_response);
         } else {
@@ -114,7 +120,7 @@ impl IrTransition {
 }
 
 impl FilterState {
-    /// Allocates zeroed overlap and staging buffers for a registered IR.
+    /// Allocates zeroed overlap and staging buffers for a prepared IR.
     pub(super) fn new(
         impulse_response: Arc<ImpulseResponse>,
         tail_size: usize,

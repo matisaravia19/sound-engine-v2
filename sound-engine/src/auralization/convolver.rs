@@ -62,12 +62,14 @@ pub struct FftConvolver {
 
 /// Uploaded frequency-domain impulse response produced by the convolver.
 ///
-/// The wrapper owns the GPU storage buffer for the transformed IR. Registries
-/// should store it behind `Arc` so active voices can keep using an IR after its
-/// application-facing id is removed.
+/// The wrapper owns the transformed GPU buffer and its sample-rate contract.
+/// Shared ownership lets streams retain a filter after the application or its
+/// preparing convolver releases it.
 pub struct ImpulseResponse {
     /// GPU storage buffer containing the FFT-transformed stereo IR.
     buffer: BufferHandle,
+    /// Sample rate used to interpret the original time-domain samples.
+    sample_rate: u32,
 }
 
 impl Drop for FftConvolver {
@@ -143,6 +145,7 @@ impl FftConvolver {
 
         Ok(Arc::new(ImpulseResponse {
             buffer,
+            sample_rate: self.sound.sample_rate,
         }))
     }
 
@@ -191,6 +194,7 @@ impl FftConvolver {
 
         Ok(Arc::new(ImpulseResponse {
             buffer,
+            sample_rate: self.sound.sample_rate,
         }))
     }
 
@@ -232,9 +236,11 @@ impl FftConvolver {
 
     fn validate_impulse_response(&self, impulse_response: &ImpulseResponse) -> SoundResult<()> {
         self.gpu.memory().validate_owner(&impulse_response.buffer)?;
-        if impulse_response.buffer.size != self.signal_buffer.size {
+        if impulse_response.buffer.size != self.signal_buffer.size
+            || impulse_response.sample_rate != self.sound.sample_rate
+        {
             return Err(SoundError::invalid_argument(
-                "Impulse response dimensions must match this convolver",
+                "Impulse response FFT size and sample rate must match this convolver",
             ));
         }
         Ok(())

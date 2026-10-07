@@ -112,7 +112,6 @@ fn audit_spatial_preflight_rejects_invalid_sounds_without_gpu_resources() {
         .insert(SoundAsset::from_mono_samples(44_100, vec![0.1; 64]).unwrap())
         .unwrap();
     let baseline = core.gpu.memory().live_allocation_stats().unwrap();
-    let next_ir = core.next_impulse_response_id;
     let next_source = core.next_sound_source_id;
     for (sound, code) in [
         (u64::MAX, crate::core::error::ErrorCode::NotFound),
@@ -127,10 +126,6 @@ fn audit_spatial_preflight_rejects_invalid_sounds_without_gpu_resources() {
             }
             .unwrap_err();
             assert_eq!(error.code(), code);
-            assert_eq!(
-                core.next_impulse_response_id, next_ir,
-                "failed play prepared an IR"
-            );
             assert_eq!(
                 core.next_sound_source_id, next_source,
                 "failed play consumed a source ID"
@@ -172,8 +167,6 @@ fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
             ))
             .unwrap();
             let old_ir = core.spatial_voices[&voice].acoustic_ir_buffer.clone();
-            let old_ir_id = core.spatial_voices[&voice].impulse_response_id;
-            let next_ir = core.next_impulse_response_id;
             let updates = core.spatial_updates;
             let cursor = core.last_spatial_voice;
             let baseline = core.gpu.memory().live_allocation_stats().unwrap();
@@ -194,8 +187,6 @@ fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
                 &old_ir,
                 &core.spatial_voices[&voice].acoustic_ir_buffer
             ));
-            assert_eq!(core.spatial_voices[&voice].impulse_response_id, old_ir_id);
-            assert_eq!(core.next_impulse_response_id, next_ir);
             assert_eq!(core.spatial_updates, updates);
             assert_eq!(core.last_spatial_voice, cursor);
             assert_eq!(core.gpu.memory().live_allocation_stats().unwrap(), baseline);
@@ -208,7 +199,10 @@ fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
             }
             assert!(valid.iter().all(|sample| sample.is_finite()));
             assert!(core.spatial_voices[&voice].refresh_requested_at.is_none());
-            assert_ne!(core.spatial_voices[&voice].impulse_response_id, old_ir_id);
+            assert!(!Arc::ptr_eq(
+                &core.spatial_voices[&voice].acoustic_ir_buffer,
+                &old_ir
+            ));
         }
     }
     core.stop_voice(voice);
@@ -227,8 +221,6 @@ fn returning_to_cached_pose_completes_refresh_without_replacing_the_voice_filter
         .unwrap();
     let original_pose = core.listener;
     let original_buffer = core.spatial_voices[&voice].acoustic_ir_buffer.clone();
-    let original_ir = core.spatial_voices[&voice].impulse_response_id;
-    let next_ir = core.next_impulse_response_id;
     let mut output = vec![0.0; 128];
 
     for realtime in [false, true] {
@@ -245,12 +237,10 @@ fn returning_to_cached_pose_completes_refresh_without_replacing_the_voice_filter
             core.render_block(&mut output).unwrap();
         }
         assert!(core.spatial_voices[&voice].refresh_requested_at.is_none());
-        assert_eq!(core.spatial_voices[&voice].impulse_response_id, original_ir);
         assert!(Arc::ptr_eq(
             &core.spatial_voices[&voice].acoustic_ir_buffer,
             &original_buffer
         ));
-        assert_eq!(core.next_impulse_response_id, next_ir);
         assert_eq!(core.spatial_updates, 0);
         assert!(output.iter().all(|sample| sample.is_finite()));
     }
@@ -419,8 +409,8 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
 
     let other = core.play_sound_from_source(asset, source_id, 1.0).unwrap();
     let previous = [
-        core.spatial_voices[&voice].impulse_response_id,
-        core.spatial_voices[&other].impulse_response_id,
+        core.spatial_voices[&voice].acoustic_ir_buffer.clone(),
+        core.spatial_voices[&other].acoustic_ir_buffer.clone(),
     ];
 
     for step in 0..2 {
@@ -430,8 +420,14 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
         assert!(output.iter().all(|value| value.is_finite()));
     }
 
-    assert_ne!(core.spatial_voices[&voice].impulse_response_id, previous[0]);
-    assert_ne!(core.spatial_voices[&other].impulse_response_id, previous[1]);
+    assert!(!Arc::ptr_eq(
+        &core.spatial_voices[&voice].acoustic_ir_buffer,
+        &previous[0]
+    ));
+    assert!(!Arc::ptr_eq(
+        &core.spatial_voices[&other].acoustic_ir_buffer,
+        &previous[1]
+    ));
     core.stop_voice(other);
 
     let mut blocked = scene;

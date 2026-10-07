@@ -5,7 +5,9 @@
 //! `2*cos(omega*12)` in magnitude and cancels at 1 kHz.
 
 use sound_engine::acoustics::IrSample;
-use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
+use sound_engine::auralization::{
+    AuralizationEngine, PlaySoundRequest, SoundAsset, convolver::ImpulseResponse,
+};
 use sound_engine::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
@@ -45,24 +47,28 @@ fn sine_convolution_matches_analytic_response() -> SoundResult<()> {
         left: 1.0,
         right: 1.0,
     };
-    engine.register_impulse_response(1, &ir)?;
+    let prepared_ir = engine.prepare_impulse_response(&ir)?;
 
     println!("frequency_hz,expected_gain,measured_gain,relative_l2,steady_rms");
     for &frequency in FREQUENCIES_HZ {
-        validate_frequency(&mut engine, frequency)?;
+        validate_frequency(&mut engine, prepared_ir.clone(), frequency)?;
     }
 
     Ok(())
 }
 
-fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundResult<()> {
+fn validate_frequency(
+    engine: &mut AuralizationEngine,
+    impulse_response: Arc<ImpulseResponse>,
+    frequency: f32,
+) -> SoundResult<()> {
     let sample_count = BLOCK_COUNT * BLOCK_SIZE;
     let input = (0..sample_count)
         .map(|index| (TAU * frequency * index as f32 / SAMPLE_RATE as f32).sin())
         .collect::<Vec<_>>();
     let sound_id =
         engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, input.clone())?)?;
-    let voice_id = engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
+    let voice_id = engine.play_sound(PlaySoundRequest::new(sound_id, impulse_response))?;
     let mut measured = Vec::with_capacity(sample_count);
     let mut output = vec![0.0; BLOCK_SIZE * 2];
     for _ in 0..BLOCK_COUNT {

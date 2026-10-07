@@ -1,5 +1,4 @@
 use crate::acoustics::{GpuIrSnapshot, IrSample};
-use crate::auralization::ImpulseResponseId;
 use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
 use crate::auralization::convolver::{ConvolutionStream, FftConvolver, ImpulseResponse};
 use crate::core::config::{AuralizationConfig, SoundConfig};
@@ -13,23 +12,23 @@ use std::sync::Arc;
 /// Identifier for a currently playing voice.
 pub type VoiceId = u64;
 
-/// Request used to start a dry sound through a registered impulse response.
-#[derive(Debug, Clone, Copy)]
+/// Request used to start a dry sound through a prepared impulse response.
+#[derive(Clone)]
 pub struct PlaySoundRequest {
     /// Dry asset to render.
     pub sound_id: SoundId,
-    /// Impulse response that spatializes the sound.
-    pub impulse_response_id: ImpulseResponseId,
+    /// Prepared filter shared with the voice for its entire playback lifetime.
+    pub impulse_response: Arc<ImpulseResponse>,
     /// Linear dry gain applied before convolution.
     pub gain: f32,
 }
 
 impl PlaySoundRequest {
     /// Creates a play request with unit gain.
-    pub fn new(sound_id: SoundId, impulse_response_id: ImpulseResponseId) -> Self {
+    pub fn new(sound_id: SoundId, impulse_response: Arc<ImpulseResponse>) -> Self {
         Self {
             sound_id,
-            impulse_response_id,
+            impulse_response,
             gain: 1.0,
         }
     }
@@ -43,14 +42,13 @@ impl PlaySoundRequest {
 pub struct AuralizationEngine {
     sound: SoundConfig,
     sound_bank: SoundBank,
-    impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
     active_voices: HashMap<VoiceId, ActiveVoice>,
     next_voice_id: VoiceId,
     dry_block: Vec<f32>,
     wet_block: Vec<f32>,
     finished_voices: Vec<VoiceId>,
-    // Drop the registries and voices that own GPU buffers before the convolver,
-    // whose backend Arc keeps the Vulkan device alive through teardown.
+    // Drop voices before the convolver, whose backend Arc retains the device
+    // through teardown of its plans, scratch buffers, and pipelines.
     convolver: FftConvolver,
 }
 
@@ -80,7 +78,6 @@ impl AuralizationEngine {
         Ok(Self {
             sound,
             sound_bank: SoundBank::new(),
-            impulse_responses: HashMap::new(),
             active_voices: HashMap::new(),
             next_voice_id: 1,
             dry_block: vec![0.0; block_size],
@@ -148,36 +145,24 @@ impl AuralizationEngine {
         Ok(asset)
     }
 
-    /// Registers an impulse response for later playback.
-    pub fn register_impulse_response(
-        &mut self,
-        id: ImpulseResponseId,
-        samples: &[IrSample],
-    ) -> SoundResult<()> {
-        let impulse_response = self.convolver.create_impulse_response(samples)?;
-        self.impulse_responses.insert(id, impulse_response);
-        Ok(())
-    }
-
-    /// Registers a GPU-resident time-domain impulse response for later playback.
-    pub fn register_impulse_response_from_gpu_ir(
-        &mut self,
-        id: ImpulseResponseId,
-        snapshot: &GpuIrSnapshot,
-    ) -> SoundResult<()> {
-        let impulse_response = self
-            .convolver
-            .create_impulse_response_from_gpu_ir(snapshot)?;
-        self.impulse_responses.insert(id, impulse_response);
-        Ok(())
-    }
-
-    /// Removes an impulse response from the engine registry.
+    /// Uploads and transforms CPU samples into a shareable playback filter.
     ///
-    /// Existing voices keep shared ownership of the uploaded GPU buffer and can
-    /// continue rendering with the old IR until they finish or are stopped.
-    pub fn forget_impulse_response(&mut self, id: ImpulseResponseId) {
-        self.impulse_responses.remove(&id);
+    /// The returned owner keeps its GPU storage alive independently of this engine.
+    pub fn prepare_impulse_response(
+        &mut self,
+        samples: &[IrSample],
+    ) -> SoundResult<Arc<ImpulseResponse>> {
+        self.convolver.create_impulse_response(samples)
+    }
+
+    /// Copies and transforms a GPU time-domain IR into a shareable playback filter.
+    ///
+    /// Voices retain the result; callers may drop their own reference after playing it.
+    pub fn prepare_impulse_response_from_gpu(
+        &mut self,
+        snapshot: &GpuIrSnapshot,
+    ) -> SoundResult<Arc<ImpulseResponse>> {
+        self.convolver.create_impulse_response_from_gpu_ir(snapshot)
     }
 
     /// Replaces the impulse response used by an active voice.
@@ -187,18 +172,8 @@ impl AuralizationEngine {
     pub fn update_voice_impulse_response(
         &mut self,
         voice_id: VoiceId,
-        impulse_response_id: ImpulseResponseId,
+        impulse_response: Arc<ImpulseResponse>,
     ) -> SoundResult<()> {
-        let impulse_response = self
-            .impulse_responses
-            .get(&impulse_response_id)
-            .ok_or_else(|| {
-                SoundError::not_found(format!(
-                    "Unknown impulse response id {}",
-                    impulse_response_id
-                ))
-            })?
-            .clone();
         let voice = self
             .active_voices
             .get_mut(&voice_id)
@@ -208,22 +183,16 @@ impl AuralizationEngine {
             .update_impulse_response(&mut voice.convolution, impulse_response)
     }
 
-    /// Starts playing a sound through a registered impulse response.
+    /// Starts playing a sound through a compatible prepared impulse response.
+    ///
+    /// The filter must share this engine's backend, FFT size, and sample rate.
     pub fn play_sound(&mut self, request: PlaySoundRequest) -> SoundResult<VoiceId> {
         if !request.gain.is_finite() {
             return Err(SoundError::invalid_argument("sound gain must be finite"));
         }
         let asset = self.playable_sound(request.sound_id)?.clone();
 
-        let impulse_response = self
-            .impulse_responses
-            .get(&request.impulse_response_id)
-            .ok_or_else(|| {
-                SoundError::not_found(format!(
-                    "Unknown impulse response id {}",
-                    request.impulse_response_id
-                ))
-            })?;
+        let convolution = self.convolver.create_stream(request.impulse_response)?;
         let voice_id = crate::core::id::allocate_id(&mut self.next_voice_id, "Voice")?;
         self.active_voices.insert(
             voice_id,
@@ -231,7 +200,7 @@ impl AuralizationEngine {
                 asset,
                 cursor: 0,
                 gain: request.gain,
-                convolution: self.convolver.create_stream(impulse_response.clone())?,
+                convolution,
             },
         );
 

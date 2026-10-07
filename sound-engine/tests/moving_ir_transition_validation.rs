@@ -42,25 +42,25 @@ fn overlapping_ir_updates_preserve_continuity() -> SoundResult<()> {
         left: 1.0,
         right: 0.0,
     };
-    for id in 1..=3 {
-        engine.register_impulse_response(id, &ir)?;
-    }
+    let original = engine.prepare_impulse_response(&ir)?;
+    let replacement = engine.prepare_impulse_response(&ir)?;
+    let coalesced = engine.prepare_impulse_response(&ir)?;
 
     let samples = (0..BLOCK_SIZE * (WARM_BLOCKS + VALIDATION_BLOCKS + 2))
         .map(sine_sample)
         .collect();
     let sound_id = engine.insert_sound(SoundAsset::from_mono_samples(SAMPLE_RATE, samples)?)?;
-    let voice_id = engine.play_sound(PlaySoundRequest::new(sound_id, 1))?;
+    let voice_id = engine.play_sound(PlaySoundRequest::new(sound_id, original))?;
     let mut output = vec![0.0; BLOCK_SIZE];
     for _ in 0..WARM_BLOCKS {
         engine.render_block(&mut output)?;
     }
 
-    engine.update_voice_impulse_response(voice_id, 2)?;
+    engine.update_voice_impulse_response(voice_id, replacement)?;
     let mut maximum_relative_l2 = 0.0_f64;
     for block in 0..VALIDATION_BLOCKS {
         if block == 2 {
-            engine.update_voice_impulse_response(voice_id, 3)?;
+            engine.update_voice_impulse_response(voice_id, coalesced.clone())?;
         }
         engine.render_block(&mut output)?;
         let output_start = (WARM_BLOCKS + block) * BLOCK_SIZE;

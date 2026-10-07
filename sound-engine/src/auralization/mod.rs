@@ -6,6 +6,3 @@ mod engine;
 
 pub use assets::{SoundAsset, SoundBank, SoundId};
 pub use engine::{AuralizationEngine, PlaySoundRequest, VoiceId};
-
-/// Identifier for an impulse response registered in the convolver.
-pub type ImpulseResponseId = u64;

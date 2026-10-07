@@ -4,9 +4,7 @@ use super::{
     ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request,
 };
 use crate::acoustics::{AcousticsEngine, GpuIrSnapshot, IrSnapshot, validate_source};
-use crate::auralization::{
-    AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId,
-};
+use crate::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset, SoundId, VoiceId};
 use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -29,16 +27,14 @@ pub(super) struct EngineCore {
     /// Round-robin cursor prevents a moving voice from starving other dirty voices.
     #[cfg(any(feature = "playback", test))]
     last_spatial_voice: VoiceId,
-    /// Number of complete spatial IR replacements published to active voices.
+    /// Number of prepared spatial IR updates assigned to active voices.
     spatial_updates: u64,
-    /// Age of the last replaced IR's endpoint request at crossfade registration.
+    /// Age of the latest endpoint request when its prepared filter is assigned.
     spatial_update_age_ms: f64,
     /// Listener pose used by spatial play requests that do not supply one directly.
     listener: ListenerPose,
     /// Monotonic id assigned to tracked sound sources.
     next_sound_source_id: SoundSourceId,
-    /// Monotonic id assigned to impulse responses registered with the auralizer.
-    next_impulse_response_id: ImpulseResponseId,
     /// Shared Vulkan backend kept after every dependent GPU resource.
     ///
     /// Rust drops fields in declaration order, so this owner must remain last.
@@ -58,15 +54,13 @@ enum VoiceSource {
 struct SpatialVoice {
     /// Source used when refreshing the voice IR.
     source: VoiceSource,
-    /// Currently registered IR id assigned to the voice.
-    impulse_response_id: ImpulseResponseId,
-    /// Time-domain acoustic buffer whose transformed IR is currently registered.
+    /// Time-domain acoustic buffer whose filter was most recently assigned to the voice.
     ///
     /// Shared ownership keeps pointer identity stable even if the acoustic LRU
     /// evicts the entry while this voice remains active.
     acoustic_ir_buffer: Arc<BufferHandle>,
     /// Latest accepted endpoint/scene change awaiting an IR refresh.
-    /// `None` means the registered response is current.
+    /// `None` means the latest response has been prepared for the voice.
     refresh_requested_at: Option<std::time::Instant>,
 }
 
@@ -113,7 +107,6 @@ impl EngineCore {
             spatial_update_age_ms: 0.0,
             listener: ListenerPose::default(),
             next_sound_source_id: 1,
-            next_impulse_response_id: 1,
             gpu,
         })
     }
@@ -242,24 +235,18 @@ impl EngineCore {
         self.auralization.playable_sound(sound_id)?;
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
         let acoustic_ir_buffer = snapshot.buffer().clone();
-        let impulse_response_id = self.register_gpu_impulse_response(&snapshot)?;
-        let voice_id = match self.auralization.play_sound(PlaySoundRequest {
+        let impulse_response = self
+            .auralization
+            .prepare_impulse_response_from_gpu(&snapshot)?;
+        let voice_id = self.auralization.play_sound(PlaySoundRequest {
             sound_id,
-            impulse_response_id,
+            impulse_response,
             gain: volume,
-        }) {
-            Ok(voice_id) => voice_id,
-            Err(error) => {
-                self.auralization
-                    .forget_impulse_response(impulse_response_id);
-                return Err(error);
-            }
-        };
+        })?;
         self.spatial_voices.insert(
             voice_id,
             SpatialVoice {
                 source: voice_source,
-                impulse_response_id,
                 acoustic_ir_buffer,
                 refresh_requested_at: None,
             },
@@ -280,7 +267,7 @@ impl EngineCore {
     /// Stops an active voice if it exists.
     pub(super) fn stop_voice(&mut self, voice_id: VoiceId) {
         self.auralization.stop_voice(voice_id);
-        self.remove_spatial_voice(voice_id);
+        self.spatial_voices.remove(&voice_id);
     }
 
     /// Renders one interleaved block through the auralizer.
@@ -373,17 +360,6 @@ impl EngineCore {
             .build_impulse_response_gpu(self.gpu.as_ref(), source, listener)
     }
 
-    /// Registers a GPU-resident IR snapshot for use by the auralizer and returns its id.
-    fn register_gpu_impulse_response(
-        &mut self,
-        snapshot: &GpuIrSnapshot,
-    ) -> SoundResult<ImpulseResponseId> {
-        let impulse_response_id = self.next_ir_id()?;
-        self.auralization
-            .register_impulse_response_from_gpu_ir(impulse_response_id, snapshot)?;
-        Ok(impulse_response_id)
-    }
-
     /// Resolves a voice's fixed source or the latest state of its tracked source.
     fn resolve_source(&self, source: VoiceSource) -> SoundResult<PointSource> {
         match source {
@@ -428,7 +404,7 @@ impl EngineCore {
     /// Refreshes one tracked voice and returns trace/preparation times in milliseconds.
     fn refresh_spatial_voice(&mut self, voice_id: VoiceId) -> SoundResult<(f64, f64)> {
         if !self.auralization.has_voice(voice_id) {
-            self.remove_spatial_voice(voice_id);
+            self.spatial_voices.remove(&voice_id);
             return Ok((0.0, 0.0));
         }
         let voice = &self.spatial_voices[&voice_id];
@@ -462,53 +438,26 @@ impl EngineCore {
             voice.refresh_requested_at = None;
             return Ok(());
         }
-        let next_ir_id = self.register_gpu_impulse_response(snapshot)?;
-        if let Err(error) = self
+        let impulse_response = self
             .auralization
-            .update_voice_impulse_response(voice_id, next_ir_id)
-        {
-            self.auralization.forget_impulse_response(next_ir_id);
-            return Err(error);
-        }
+            .prepare_impulse_response_from_gpu(snapshot)?;
+        self.auralization
+            .update_voice_impulse_response(voice_id, impulse_response)?;
         let voice = self
             .spatial_voices
             .get_mut(&voice_id)
             .expect("Spatial voice remains owned during synchronous refresh");
-        let previous = std::mem::replace(&mut voice.impulse_response_id, next_ir_id);
         voice.acoustic_ir_buffer = next_buffer;
         voice.refresh_requested_at = None;
-        self.auralization.forget_impulse_response(previous);
         self.spatial_updates += 1;
         self.spatial_update_age_ms = requested_at.elapsed().as_secs_f64() * 1000.0;
         Ok(())
     }
 
-    /// Removes tracking state for voices that the auralizer has already finished.
+    /// Releases spatial metadata as soon as the auralizer finishes its voice.
     fn cleanup_finished_spatial_voices(&mut self) {
-        let finished_voice_ids: Vec<_> = self
-            .spatial_voices
-            .keys()
-            .copied()
-            .filter(|voice_id| !self.auralization.has_voice(*voice_id))
-            .collect();
-
-        for voice_id in finished_voice_ids {
-            self.remove_spatial_voice(voice_id);
-        }
-    }
-
-    /// Releases a voice's spatial state and its IR registry entry.
-    fn remove_spatial_voice(&mut self, voice_id: VoiceId) {
-        let Some(voice) = self.spatial_voices.remove(&voice_id) else {
-            return;
-        };
-        self.auralization
-            .forget_impulse_response(voice.impulse_response_id);
-    }
-
-    /// Returns a fresh auralization impulse-response id.
-    fn next_ir_id(&mut self) -> SoundResult<ImpulseResponseId> {
-        crate::core::id::allocate_id(&mut self.next_impulse_response_id, "Impulse response")
+        self.spatial_voices
+            .retain(|voice_id, _| self.auralization.has_voice(*voice_id));
     }
 }
 

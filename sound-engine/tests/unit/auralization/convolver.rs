@@ -186,6 +186,7 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
     drop(malformed_stream);
     let undersized_ir = Arc::new(ImpulseResponse {
         buffer: gpu.memory().create_storage_buffer(8).unwrap(),
+        sample_rate: SOUND_CONFIG.sample_rate,
     });
     assert!(convolver.create_stream(undersized_ir.clone()).is_err());
     let mut stream = convolver.create_stream(ir.clone()).unwrap();
