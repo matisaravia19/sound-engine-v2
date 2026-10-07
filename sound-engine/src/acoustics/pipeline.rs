@@ -7,14 +7,13 @@ use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
-    BlasBuildSpec, BlasId, OwnedBlas, OwnedRtPipeline, OwnedTlas, RtDescriptorBindingSpec,
-    RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec, RtPipelineSpec,
-    RtPushConstantSpec, RtShaderGroupSpec, RtTraceSpec, TlasBuildSpec, TlasId,
+    BlasId, OwnedRtPipeline, OwnedTlas, RtDescriptorBindingSpec, RtDescriptorWrite, RtInstanceSpec,
+    RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec, RtTraceSpec, TlasBuildSpec, TlasId,
 };
 use crate::gpu::shader::ShaderStage;
 use crate::scene::{GpuSceneResources, SceneManager};
 use ash::vk;
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +22,6 @@ const SHADER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/acoustics/sha
 const SPEED_OF_SOUND_METERS_PER_SECOND: f32 = 343.0;
 const DIFFRACTION_GEOMETRY_MASK: u8 = 0x02;
 const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
-const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
 const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
 /// Listener-originated acoustic path tracer that deposits pressure paths directly into a GPU IR.
@@ -36,9 +34,6 @@ pub struct AcousticPipeline {
     listener_pipeline: OwnedRtPipeline,
     // One query TLAS for the latest geometry; its registry record retains every BLAS.
     query_tlas: Option<CachedQueryTlas>,
-    /// Triangle storage kept alive for the mask-zero empty-scene sentinel BLAS.
-    _empty_scene_mesh: RtMeshBuffers,
-    empty_scene_blas: OwnedBlas,
 }
 
 /// Stable AS IDs distinguish separate scene managers even at the same scene version.
@@ -74,11 +69,10 @@ unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 impl AcousticPipeline {
     /// Rejects a foreign backend even when a caller can satisfy its query from a cache.
     pub(crate) fn validate_backend(&self, gpu: &VkBackend) -> SoundResult<()> {
-        gpu.memory()
-            .validate_owner(&self._empty_scene_mesh.vertex_buffer)
+        self.listener_pipeline.validate_context(gpu.rt())
     }
 
-    /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
+    /// Creates the listener-originated RT pipeline; geometry is built on the first query.
     pub fn new(gpu: &VkBackend, config: AcousticPipelineConfig) -> SoundResult<Self> {
         config.validate()?;
 
@@ -153,30 +147,10 @@ impl AcousticPipeline {
             max_ray_recursion_depth: 1,
         })?;
         let listener_pipeline = gpu.rt_context().own_pipeline(listener_pipeline);
-        // RtContext currently rejects an empty TLAS. This masked triangle keeps
-        // direct-path queries valid without participating in traversal.
-        let empty_scene_mesh = gpu.rt().upload_mesh(RtMeshSpec {
-            vertices: &[
-                Vec3::new(-0.001, -0.001, 0.0),
-                Vec3::new(0.001, -0.001, 0.0),
-                Vec3::new(0.0, 0.001, 0.0),
-            ],
-            indices: None,
-            opaque: true,
-        })?;
-        // upload_mesh validates the immutable triangle and supplies AS input usage.
-        let empty_scene_blas = unsafe {
-            gpu.rt().build_blas(BlasBuildSpec {
-                mesh: &empty_scene_mesh,
-                flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-            })?
-        };
         Ok(Self {
             config,
             listener_pipeline,
             query_tlas: None,
-            _empty_scene_mesh: empty_scene_mesh,
-            empty_scene_blas: gpu.rt_context().own_blas(empty_scene_blas),
         })
     }
 
@@ -360,18 +334,6 @@ impl AcousticPipeline {
                 sbt_record_offset: DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET,
             });
         }
-        if instances.is_empty() {
-            // The RT wrapper requires a non-empty TLAS. A zero mask makes this
-            // sentinel unreachable while preserving direct empty-scene queries.
-            instances.push(RtInstanceSpec {
-                blas_id: self.empty_scene_blas.id,
-                transform: Mat4::IDENTITY,
-                custom_index: 0,
-                mask: 0,
-                sbt_record_offset: SURFACE_CONTINUATION_HIT_GROUP_OFFSET,
-            });
-        }
-
         gpu.rt().build_tlas(TlasBuildSpec {
             instances: &instances,
             flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,

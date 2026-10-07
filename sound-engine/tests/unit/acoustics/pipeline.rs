@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{ListenerPose, PointSource};
+use glam::Vec3;
 
 fn test_config() -> AcousticPipelineConfig {
     AcousticPipelineConfig {
@@ -34,6 +35,7 @@ fn test_query() -> AcousticQuery {
 fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
     let gpu = VkBackend::new().unwrap();
     let mut pipeline = AcousticPipeline::new(&gpu, test_config()).unwrap();
+    assert_eq!(gpu.rt().resource_counts(), (0, 0));
     let mut scene = SceneManager::new();
     let device = Arc::downgrade(&gpu.device_context());
     let mut previous_tlas = None;
@@ -45,7 +47,7 @@ fn audit_repeated_queries_reuse_tlas_and_snapshot_retains_device() {
                 .all(|sample| sample.left.is_finite() && sample.right.is_finite())
         );
         assert!(ir.energy > 0.0);
-        assert_eq!(gpu.rt().resource_counts(), (1, 1));
+        assert_eq!(gpu.rt().resource_counts(), (0, 1));
         let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
         assert!(previous_tlas.is_none_or(|previous| previous == id));
         previous_tlas = Some(id);
@@ -127,7 +129,7 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
                 .energy
                 > 0.0
         );
-        assert_eq!(gpu.rt().resource_counts(), (3, 3));
+        assert_eq!(gpu.rt().resource_counts(), (2, 3));
     }
     pipeline
         .build_ir(&gpu, &mut obstructed, test_query())
@@ -205,7 +207,7 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
         let id = pipeline.query_tlas.as_ref().unwrap().tlas.id;
         assert!(previous.is_none_or(|previous| previous != id));
         previous = Some(id);
-        assert_eq!(gpu.rt().resource_counts(), (2, 1));
+        assert_eq!(gpu.rt().resource_counts(), (1, 1));
     }
     drop(edges);
     drop(pipeline);

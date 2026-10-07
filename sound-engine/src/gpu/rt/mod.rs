@@ -1,3 +1,4 @@
+use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::ComputeContext;
 use crate::gpu::descriptor::DescriptorPools;
@@ -94,6 +95,18 @@ pub(crate) struct OwnedRtPipeline {
     /// Pipeline ID referenced by traces from this owner.
     pub(crate) id: RtPipelineId,
     context: Arc<RtContext>,
+}
+
+impl OwnedRtPipeline {
+    /// Rejects use through a different RT registry, whose numeric IDs can overlap.
+    pub(crate) fn validate_context(&self, context: &RtContext) -> SoundResult<()> {
+        if !std::ptr::eq(self.context.as_ref(), context) {
+            return Err(SoundError::invalid_argument(
+                "RT pipeline belongs to a different context",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for OwnedRtPipeline {

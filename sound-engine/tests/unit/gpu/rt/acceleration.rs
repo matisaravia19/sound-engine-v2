@@ -2,6 +2,30 @@ use super::*;
 use glam::{Mat4, Vec3};
 
 #[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn empty_tlas_builds_without_placeholder_blas_and_releases_storage() {
+    let gpu = crate::gpu::backend::VkBackend::new().unwrap();
+    for _ in 0..3 {
+        let id = gpu
+            .rt()
+            .build_tlas(TlasBuildSpec {
+                instances: &[],
+                flags: vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            })
+            .unwrap();
+        assert_eq!(gpu.rt().resource_counts(), (0, 1));
+        assert!(
+            gpu.rt().tlas.lock().unwrap()[&id]
+                ._referenced_blas
+                .is_empty()
+        );
+        // This test owns the TLAS and has never submitted a trace referencing it.
+        unsafe { gpu.rt().destroy_tlas(id) }.unwrap();
+        assert_eq!(gpu.rt().resource_counts(), (0, 0));
+    }
+}
+
+#[test]
 fn build_flags_reject_unknown_features_and_conflicting_preferences() {
     use vk::BuildAccelerationStructureFlagsKHR as Flags;
     for flags in [

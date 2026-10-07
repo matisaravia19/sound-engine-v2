@@ -32,7 +32,7 @@ pub struct AabbBlasBuildSpec<'a> {
 
 /// Parameters for building a TLAS from BLAS instances.
 pub struct TlasBuildSpec<'a> {
-    /// Instances to include in the TLAS.
+    /// Instances to include; an empty slice builds a valid TLAS with no geometry.
     pub instances: &'a [RtInstanceSpec],
     /// Vulkan build flags, such as `PREFER_FAST_TRACE`.
     pub flags: vk::BuildAccelerationStructureFlagsKHR,
@@ -153,6 +153,7 @@ impl RtContext {
     /// The instance buffer is uploaded as host-visible device-address data and
     /// the build completes before the returned `TlasId` can be used for tracing.
     /// Referenced BLAS storage is retained through construction and the TLAS lifetime.
+    /// Empty instance lists need no placeholder BLAS and produce only ray misses.
     pub fn build_tlas(&self, spec: TlasBuildSpec<'_>) -> SoundResult<TlasId> {
         if spec.instances.len() as u64
             > self
@@ -166,23 +167,23 @@ impl RtContext {
                 "TLAS instance count exceeds device limits",
             ));
         }
-        if spec.instances.is_empty() {
-            return Err(SoundError::invalid_argument(
-                "RT TLAS must contain at least one instance",
-            ));
-        }
 
         // Acquire strong references under the registry lock so a concurrent scene
         // replacement cannot invalidate an address during construction or tracing.
         let (instances, referenced_blas) = self.resolve_instances(spec.instances)?;
 
-        // Vulkan consumes TLAS instances through a device address.
+        // Vulkan requires a valid instance-data address even for primitiveCount=0
+        // (VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03813). Reserve one slot
+        // for that address; the zero-count build consumes no instance data.
+        let instance_bytes = acceleration_instances_as_bytes(&instances);
         let instance_buffer = self.memory.create_host_device_address_buffer(
-            std::mem::size_of_val(instances.as_slice()) as vk::DeviceSize,
+            instance_bytes
+                .len()
+                .max(size_of::<vk::AccelerationStructureInstanceKHR>())
+                as vk::DeviceSize,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         )?;
-        instance_buffer
-            .write_mapped_bytes(acceleration_instances_as_bytes(instances.as_slice()))?;
+        instance_buffer.write_mapped_bytes(instance_bytes)?;
         let instance_address = instance_buffer.device_address();
 
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::default()
@@ -314,8 +315,10 @@ impl RtContext {
                 "Invalid acceleration-structure scratch alignment {scratch_alignment}"
             )));
         }
+        // Keep the aligned address inside the allocation even for zero scratch.
         let scratch_allocation_size = size_info
             .build_scratch_size
+            .max(1)
             .checked_add(scratch_alignment - 1)
             .ok_or_else(|| {
                 SoundError::resource_allocation_failed("RT scratch buffer size overflow")

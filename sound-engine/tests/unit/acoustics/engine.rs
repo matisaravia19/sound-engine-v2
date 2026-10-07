@@ -12,11 +12,11 @@ fn audit_cache_hits_reject_a_foreign_backend() {
     let first = engine
         .build_impulse_response_gpu(&gpu, source, listener)
         .unwrap();
-    assert!(
-        engine
-            .build_impulse_response_gpu(&foreign, source, listener)
-            .is_err()
-    );
+    let error = engine
+        .build_impulse_response_gpu(&foreign, source, listener)
+        .err()
+        .expect("A foreign RT context must not reuse this pipeline's cached response");
+    assert_eq!(error.code(), crate::core::error::ErrorCode::InvalidArgument);
     let reused = engine
         .build_impulse_response_gpu(&gpu, source, listener)
         .unwrap();
