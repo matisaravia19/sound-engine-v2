@@ -1,3 +1,4 @@
+mod gpu;
 mod stream;
 
 pub use stream::ConvolutionStream;
@@ -5,22 +6,11 @@ pub use stream::ConvolutionStream;
 use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
-use crate::gpu::StorageBufferWrite;
 use crate::gpu::backend::VkBackend;
-use crate::gpu::compute::{
-    BufferBarrierSpec, ComputePipelineSpec, DispatchSpec, PipelineId, PushConstantSpec,
-};
 use crate::gpu::memory::BufferHandle;
-use crate::gpu::shader::ShaderStage;
-use ash::vk;
+use gpu::GpuConvolution;
 use std::sync::Arc;
 use stream::FilterState;
-use vkfft_rs::plan::{DeviceHandles, FFTPlan, FFTPlanBuilder};
-
-const MULTIPLY_SHADER_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/auralization/shaders/multiply.comp.glsl"
-);
 
 /// Number of input blocks used to ramp between live impulse responses.
 const IR_TRANSITION_BLOCKS: usize = 4;
@@ -38,26 +28,12 @@ pub struct FftConvolver {
     sound: SoundConfig,
     /// Number of input frames consumed in one convolution block.
     block_size: usize,
-    /// Shared FFT plan for transforming mono input signals to frequency-domain.
-    signal_plan: FFTPlan,
-    /// Reusable GPU storage buffer for signal FFT input and output.
-    signal_buffer: BufferHandle,
-    /// Reusable forward plan for transforming newly supplied impulse responses.
-    ir_plan: FFTPlan,
-    /// Retained after both plans because VkFFT borrows it for initialization uploads.
-    _initialization_fence: crate::gpu::resource::OwnedFence,
-    /// Scratch buffer bound to `ir_plan`; transformed spectra are copied out.
-    ir_staging_buffer: BufferHandle,
-    /// Compiled compute pipeline for complex-domain frequency multiplication.
-    multiply_pipeline_id: PipelineId,
     /// FFT size: next power of two of (block_size + ir_samples - 1).
     fft_size: usize,
     /// Overlap tail length: fft_size - block_size samples preserved between blocks.
     tail_size: usize,
-    /// Shared backend kept alive until all plans and buffers above are dropped.
-    ///
-    /// Rust drops fields in declaration order, so this owner must remain last.
-    gpu: Arc<VkBackend>,
+    /// Owns Vulkan resources and serializes use of reusable FFT scratch storage.
+    gpu: GpuConvolution,
 }
 
 /// Uploaded frequency-domain impulse response produced by the convolver.
@@ -72,16 +48,6 @@ pub struct ImpulseResponse {
     sample_rate: u32,
 }
 
-impl Drop for FftConvolver {
-    fn drop(&mut self) {
-        // Convolver submissions are synchronous; releasing a convolver must not
-        // retain its private multiply pipeline in a shared backend indefinitely.
-        self.gpu
-            .compute()
-            .release_pipeline(self.multiply_pipeline_id);
-    }
-}
-
 impl FftConvolver {
     /// Creates reusable signal/IR FFT plans and the complex multiply pipeline.
     pub fn new(
@@ -91,34 +57,11 @@ impl FftConvolver {
     ) -> SoundResult<Self> {
         let fft_size = validated_fft_size(sound, config)?;
         let tail_size = fft_size - config.block_size;
-        let initialization_fence = crate::gpu::resource::OwnedFence::new(gpu.device_context())?;
-
-        let (signal_plan, signal_buffer) = Self::build_fft_plan(
-            gpu.as_ref(),
-            fft_size as u64,
-            true,
-            initialization_fence.handle,
-        )?;
-        // VkFFT plan construction is expensive (~165 ms on the benchmark GPU).
-        // Bind one reusable scratch buffer at engine setup instead of creating a
-        // new plan synchronously every time a moving voice receives a new IR.
-        let (ir_plan, ir_staging_buffer) = Self::build_fft_plan(
-            gpu.as_ref(),
-            fft_size as u64,
-            false,
-            initialization_fence.handle,
-        )?;
-        let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
+        let gpu = GpuConvolution::new(gpu, fft_size)?;
 
         Ok(Self {
             sound,
             block_size: config.block_size,
-            signal_plan,
-            signal_buffer,
-            ir_plan,
-            _initialization_fence: initialization_fence,
-            ir_staging_buffer,
-            multiply_pipeline_id,
             fft_size,
             tail_size,
             gpu,
@@ -132,16 +75,7 @@ impl FftConvolver {
     ) -> SoundResult<Arc<ImpulseResponse>> {
         validate_ir_length(samples.len(), self.ir_capacity())?;
 
-        let buffer = self
-            .gpu
-            .memory()
-            .create_storage_buffer(self.ir_staging_buffer.size)?;
-
-        self.gpu.memory().clear_buffer(&self.ir_staging_buffer)?;
-        self.gpu
-            .memory()
-            .upload_typed(&self.ir_staging_buffer, samples)?;
-        self.transform_staged_ir_into(&buffer)?;
+        let buffer = self.gpu.prepare_ir(samples)?;
 
         Ok(Arc::new(ImpulseResponse {
             buffer,
@@ -159,38 +93,7 @@ impl FftConvolver {
 
         let buffer = self
             .gpu
-            .memory()
-            .create_storage_buffer(self.ir_staging_buffer.size)?;
-        let copy_bytes =
-            u64::from(snapshot.sample_count()) * std::mem::size_of::<IrSample>() as u64;
-
-        self.gpu
-            .compute()
-            .submit_compute_and_wait(|command_buffer| unsafe {
-                // Initialize the padding and copy the IR prefix together. The fill
-                // overlaps the copy, so order those transfer writes explicitly.
-                self.gpu
-                    .memory()
-                    .record_clear_buffer(command_buffer, &self.ir_staging_buffer)?;
-                self.gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::transfer_write_to_transfer_write(
-                        self.ir_staging_buffer.buffer,
-                    ),
-                );
-                self.gpu.memory().record_copy_buffer(
-                    command_buffer,
-                    source_buffer,
-                    &self.ir_staging_buffer,
-                    copy_bytes,
-                    Some(
-                        BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
-                            self.ir_staging_buffer.buffer,
-                        ),
-                    ),
-                )
-            })?;
-        self.transform_staged_ir_into(&buffer)?;
+            .prepare_gpu_ir(source_buffer, snapshot.sample_count())?;
 
         Ok(Arc::new(ImpulseResponse {
             buffer,
@@ -235,12 +138,10 @@ impl FftConvolver {
     }
 
     fn validate_impulse_response(&self, impulse_response: &ImpulseResponse) -> SoundResult<()> {
-        self.gpu.memory().validate_owner(&impulse_response.buffer)?;
-        if impulse_response.buffer.size != self.signal_buffer.size
-            || impulse_response.sample_rate != self.sound.sample_rate
-        {
+        self.gpu.validate_spectrum(&impulse_response.buffer)?;
+        if impulse_response.sample_rate != self.sound.sample_rate {
             return Err(SoundError::invalid_argument(
-                "Impulse response FFT size and sample rate must match this convolver",
+                "Impulse response sample rate must match this convolver",
             ));
         }
         Ok(())
@@ -263,36 +164,6 @@ impl FftConvolver {
         // Linear convolution needs N + M - 1 samples; the remaining FFT bins
         // must stay zero so the last input samples cannot wrap into the head.
         self.fft_size - self.block_size + 1
-    }
-
-    /// Transforms the scratch time-domain IR and copies its reusable spectrum.
-    fn transform_staged_ir_into(&self, destination: &BufferHandle) -> SoundResult<()> {
-        self.gpu
-            .compute()
-            .submit_compute_and_wait(|command_buffer| unsafe {
-                // The queue lock serializes recording; this owner retains plans and buffers through the wait.
-                self.ir_plan
-                    .append(command_buffer)
-                    .map_err(|e| SoundError::external(format!("IR forward launch failed: {e}")))?;
-                // Make FFT writes available to the copy in this same submission.
-                self.gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::compute_shader_write_to_transfer_read(
-                        self.ir_staging_buffer.buffer,
-                    ),
-                );
-                self.gpu.memory().record_copy_buffer(
-                    command_buffer,
-                    &self.ir_staging_buffer,
-                    destination,
-                    self.ir_staging_buffer.size,
-                    Some(
-                        BufferBarrierSpec::transfer_write_to_compute_shader_read_write(
-                            destination.buffer,
-                        ),
-                    ),
-                )
-            })
     }
 
     /// Processes one mono input block using this stream's filter and overlap history.
@@ -384,7 +255,7 @@ impl FftConvolver {
 
     /// Processes one block through a single IR and overlap state.
     fn process_state_block(
-        &self,
+        &mut self,
         convolution: &mut FilterState,
         input_block: &[f32],
         output_block: &mut [f32],
@@ -395,7 +266,16 @@ impl FftConvolver {
             "convolution stream has already started flushing its tail and cannot process more input blocks"
         );
 
-        self.convolve(convolution, input_block)?;
+        // Packing mono as the real component preserves both ears when multiplied
+        // by a complex IR whose real/imaginary components encode left/right.
+        convolution.complex_cpu_buffer.fill([0.0, 0.0]);
+        for (frame, &sample) in convolution.complex_cpu_buffer.iter_mut().zip(input_block) {
+            *frame = [sample, 0.0];
+        }
+        self.gpu.convolve(
+            &mut convolution.complex_cpu_buffer,
+            &convolution.impulse_response.buffer,
+        )?;
         self.overlap_add(&mut convolution.complex_cpu_buffer, &mut convolution.tail);
         self.copy_samples(
             &convolution.complex_cpu_buffer[..self.block_size],
@@ -445,98 +325,6 @@ impl FftConvolver {
         Ok(())
     }
 
-    /// Performs FFT, frequency-domain multiply with IR spectrum, and inverse FFT for one block.
-    ///
-    /// Updates the stream's CPU complex buffer in-place with the convolved result.
-    fn convolve(&self, convolution: &mut FilterState, input_block: &[f32]) -> SoundResult<()> {
-        // Pack real mono input as complex for the FFT, zeroing the imaginary part.
-        // This allows us to use the same FFT pipeline for stereo IR (packed as left + i*right).
-        convolution.complex_cpu_buffer.fill([0.0, 0.0]);
-        for (i, &sample) in input_block.iter().enumerate() {
-            convolution.complex_cpu_buffer[i] = [sample, 0.0];
-        }
-
-        self.upload_signal(&convolution.complex_cpu_buffer)?;
-
-        // Single submission preserves GPU command ordering: forward FFT -> multiply -> inverse FFT.
-        self.gpu
-            .compute()
-            .submit_compute_and_wait(|command_buffer| unsafe {
-                // Plans and their buffers remain owned until this synchronous submission completes.
-                self.signal_plan.append(command_buffer).map_err(|e| {
-                    SoundError::external(format!("Signal forward launch failed: {e}"))
-                })?;
-                self.gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(
-                        self.signal_buffer.buffer,
-                    ),
-                );
-
-                self.append_multiply(command_buffer, &convolution.impulse_response.buffer)
-                    .map_err(|e| SoundError::external(format!("Multiply dispatch failed: {e}")))?;
-                self.gpu.compute().record_buffer_barrier(
-                    command_buffer,
-                    &BufferBarrierSpec::compute_shader_write_to_compute_shader_read_write(
-                        self.signal_buffer.buffer,
-                    ),
-                );
-
-                self.signal_plan
-                    .append_inverse(command_buffer)
-                    .map_err(|e| {
-                        SoundError::external(format!("Signal inverse launch failed: {e}"))
-                    })?;
-
-                Ok(())
-            })?;
-
-        self.gpu.memory().download_typed(
-            &self.signal_buffer,
-            self.fft_size,
-            &mut convolution.complex_cpu_buffer,
-        )
-    }
-
-    /// Uploads a complex signal block to the GPU, overwriting the previous contents.
-    fn upload_signal(&self, signal: &[[f32; 2]]) -> SoundResult<()> {
-        // The CPU staging block already includes the zero-padded FFT tail and
-        // overwrites the complete allocation, so a preceding GPU fill is redundant.
-        debug_assert_eq!(
-            std::mem::size_of_val(signal) as u64,
-            self.signal_buffer.size
-        );
-        self.gpu.memory().upload_typed(&self.signal_buffer, signal)
-    }
-
-    /// Records a complex frequency-domain multiply dispatch.
-    ///
-    /// Multiplies the signal by the IR spectrum in place across all FFT bins.
-    fn append_multiply(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        ir_buffer: &BufferHandle,
-    ) -> SoundResult<()> {
-        let count = self.fft_size as u32;
-        let dispatch_spec = DispatchSpec {
-            pipeline_id: self.multiply_pipeline_id,
-            storage_buffers: vec![
-                StorageBufferWrite::new(0, self.signal_buffer.buffer),
-                StorageBufferWrite::new(1, ir_buffer.buffer),
-            ],
-            push_constants: count.to_ne_bytes().to_vec(),
-            push_constant_offset: 0,
-            groups: [count.div_ceil(256), 1, 1],
-        };
-
-        // Private caller records on this backend and retains both spectra through the wait.
-        unsafe {
-            self.gpu
-                .compute()
-                .record_dispatch(command_buffer, &dispatch_spec)
-        }
-    }
-
     /// Applies overlap-add to combine FFT output with carried tail for seamless convolution.
     ///
     /// Adds the previous block's tail into the output head, then extracts and saves
@@ -565,68 +353,6 @@ impl FftConvolver {
                 output[..frames.len() * 2].copy_from_slice(bytemuck::cast_slice(frames));
             }
         }
-    }
-
-    /// Constructs an FFT plan and allocates GPU storage for one FFT transformation.
-    ///
-    /// Safety: The raw Vulkan handles passed to VkFFT are borrowed from the GPU backend
-    /// and remain valid for the lifetime of the returned FFTPlan. The plan does not take
-    /// ownership. Set `normalize` true to divide FFT output by fft_size (for signal FFT).
-    fn build_fft_plan(
-        gpu: &VkBackend,
-        fft_size: u64,
-        normalize: bool,
-        fence: vk::Fence,
-    ) -> SoundResult<(FFTPlan, BufferHandle)> {
-        gpu.compute().with_queue(|queue, command_pool| {
-            // VkFFT consumes raw Vulkan handles but does not take ownership.
-            // Handles remain valid for the lifetime of the plan and the GPU backend.
-            let handles = DeviceHandles {
-                physical_device: gpu.device().physical_device,
-                device: gpu.device().device.handle(),
-                queue,
-                command_pool,
-                fence,
-            };
-
-            // Allocate storage for complex-domain FFT: fft_size complex numbers = fft_size * 2 f32 values.
-            let buffer = gpu
-                .memory()
-                .create_storage_buffer(fft_size * 2 * std::mem::size_of::<f32>() as u64)?;
-
-            let builder = FFTPlanBuilder::new(&handles)
-                .with_length(fft_size)
-                .with_buffer(buffer.buffer, buffer.size);
-            let builder = if normalize {
-                builder.with_normalization()
-            } else {
-                builder
-            };
-            // with_queue serializes VkFFT's initialization submissions and pool access.
-            let plan = unsafe { builder.build() }
-                .map_err(|e| SoundError::external(format!("FFT plan build failed: {e}")))?;
-
-            Ok((plan, buffer))
-        })
-    }
-
-    /// Compiles the frequency-domain multiply compute pipeline.
-    ///
-    /// The pipeline performs element-wise complex multiplication:
-    /// (a + i*b) * (c + i*d) = (ac - bd) + i(ad + bc).
-    /// Descriptor 0: signal FFT buffer (read-write), Descriptor 1: IR spectrum buffer (read-only).
-    fn create_multiply_pipeline(gpu: &VkBackend) -> SoundResult<PipelineId> {
-        let multiply_shader_id = gpu
-            .shaders()
-            .load_glsl_file(ShaderStage::Compute, MULTIPLY_SHADER_PATH)?;
-
-        let pipeline_spec = ComputePipelineSpec {
-            shader_id: multiply_shader_id,
-            storage_buffer_bindings: vec![0, 1],
-            push_constant_ranges: vec![PushConstantSpec::new(0, std::mem::size_of::<u32>() as u32)], // Element count
-        };
-
-        gpu.compute().create_pipeline(pipeline_spec)
     }
 }
 
