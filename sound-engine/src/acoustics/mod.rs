@@ -6,7 +6,7 @@ mod ir;
 mod pipeline;
 mod spatial;
 
-pub use cache::{IrCache, IrCacheConfig};
+pub use cache::IrCacheConfig;
 pub use config::AcousticPipelineConfig;
 pub use engine::AcousticsEngine;
 pub use export::export_ir;

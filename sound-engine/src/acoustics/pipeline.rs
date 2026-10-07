@@ -2,7 +2,7 @@ use crate::acoustics::{
     AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrSample, IrSnapshot,
 };
 use crate::core::config::OutputChannels;
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
@@ -187,7 +187,7 @@ impl AcousticPipeline {
         query: AcousticQuery,
     ) -> SoundResult<IrSnapshot> {
         let gpu_ir = self.build_ir_gpu(gpu, scene, query)?;
-        self.download_gpu_ir(gpu, &gpu_ir)
+        gpu_ir.download(gpu)
     }
 
     /// Builds one GPU-resident time-domain pressure IR.
@@ -211,7 +211,7 @@ impl AcousticPipeline {
         let tlas_id = self.query_tlas(gpu, gpu_scene)?;
         let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
         let storage_count = self.config.sound.ir_num_samples;
-        let bytes = ir_buffer_size(storage_count) as u64;
+        let bytes = u64::from(storage_count) * size_of::<IrSample>() as u64;
         let ir_buffer = Arc::new(gpu.memory().create_storage_buffer(bytes)?);
 
         let allocation_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -303,47 +303,13 @@ impl AcousticPipeline {
             );
         }
 
-        Ok(GpuIrSnapshot {
-            buffer: Some(ir_buffer),
-            byte_size: ir_buffer_size(storage_count),
-            sample_rate: self.config.sound.sample_rate,
-            sample_count: storage_count,
-            energy: None,
-            scene_version: gpu_scene.version(),
-            query_id: query.query_id,
-        })
-    }
-
-    /// Downloads a GPU-resident pressure IR into a CPU snapshot.
-    pub fn download_gpu_ir(
-        &self,
-        gpu: &VkBackend,
-        snapshot: &GpuIrSnapshot,
-    ) -> SoundResult<IrSnapshot> {
-        let ir_buffer = snapshot
-            .buffer
-            .as_ref()
-            .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))?;
-        if snapshot.sample_count as u64 * size_of::<IrSample>() as u64 > ir_buffer.size {
-            return Err(SoundError::invalid_argument(
-                "IR sample count exceeds its GPU buffer",
-            ));
-        }
-        let mut samples = vec![IrSample::zero(); snapshot.sample_count as usize];
-        gpu.memory()
-            .download_typed::<IrSample>(ir_buffer, samples.len(), &mut samples)?;
-        let energy = samples
-            .iter()
-            .map(|sample| sample.left * sample.left + sample.right * sample.right)
-            .sum();
-
-        Ok(IrSnapshot {
-            sample_rate: snapshot.sample_rate,
-            samples,
-            energy,
-            scene_version: snapshot.scene_version,
-            query_id: snapshot.query_id,
-        })
+        GpuIrSnapshot::new(
+            ir_buffer,
+            self.config.sound.sample_rate,
+            storage_count,
+            gpu_scene.version(),
+            query,
+        )
     }
 
     fn query_tlas(&mut self, gpu: &VkBackend, scene: &GpuSceneResources) -> SoundResult<TlasId> {
@@ -412,10 +378,6 @@ fn load_shader(
 
 fn shader_path(file: &str) -> PathBuf {
     PathBuf::from(SHADER_DIR).join(file)
-}
-
-fn ir_buffer_size(sample_count: u32) -> usize {
-    sample_count as usize * size_of::<IrSample>()
 }
 
 fn output_channels_to_shader(output_channels: OutputChannels) -> u32 {

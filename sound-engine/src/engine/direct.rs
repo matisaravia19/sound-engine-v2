@@ -241,11 +241,7 @@ impl EngineCore {
         let source = self.resolve_source(voice_source)?;
         self.auralization.playable_sound(sound_id)?;
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
-        let acoustic_ir_buffer = snapshot
-            .buffer
-            .as_ref()
-            .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
-            .clone();
+        let acoustic_ir_buffer = snapshot.buffer().clone();
         let impulse_response_id = self.register_gpu_impulse_response(&snapshot)?;
         let voice_id = match self.auralization.play_sound(PlaySoundRequest {
             sound_id,
@@ -457,11 +453,7 @@ impl EngineCore {
         requested_at: std::time::Instant,
         snapshot: &GpuIrSnapshot,
     ) -> SoundResult<()> {
-        let next_buffer = snapshot
-            .buffer
-            .as_ref()
-            .ok_or_else(|| SoundError::invalid_state("acoustic GPU IR has no buffer"))?
-            .clone();
+        let next_buffer = snapshot.buffer().clone();
         let voice = self
             .spatial_voices
             .get_mut(&voice_id)

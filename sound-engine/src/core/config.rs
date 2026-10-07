@@ -83,13 +83,13 @@ pub struct AcousticsConfig {
 /// Runtime policy for acoustic impulse-response reuse.
 #[derive(Debug, Clone, Copy)]
 pub struct IrCacheConfig {
-    /// Maximum source/listener movement that may reuse an IR.
+    /// Maximum source/listener movement in meters; finite and nonnegative.
     pub reuse_distance_meters: f32,
-    /// Dot-product tolerance applied to both listener orientation axes during reuse.
+    /// Minimum dot product for both listener orientation axes; finite and in [-1, 1].
     pub listener_orientation_dot_threshold: f32,
-    /// Maximum cached IR snapshots retained per engine instance.
+    /// Maximum cached IR snapshots per engine; zero disables reuse.
     pub max_entries: usize,
-    /// Maximum GPU memory used by cached acoustic IR buffers.
+    /// Maximum GPU bytes retained by the cache; zero disables reuse.
     pub max_gpu_cache_bytes: usize,
 }
 

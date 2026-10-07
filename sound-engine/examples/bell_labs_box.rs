@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 times.push(start.elapsed().as_secs_f64() * 1000.0);
             }
             let start = Instant::now();
-            let snapshot = pipeline.download_gpu_ir(&gpu, &ir)?;
+            let snapshot = ir.download(&gpu)?;
             let readback_ms = start.elapsed().as_secs_f64() * 1000.0;
             export_ir(&snapshot, output.join(format!("{name}-seed{seed}.csv")))?;
             times.sort_by(f64::total_cmp);

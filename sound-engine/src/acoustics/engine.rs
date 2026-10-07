@@ -1,5 +1,6 @@
+use super::cache::IrCache;
 use crate::acoustics::{
-    AcousticPipeline, AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrCache, IrSnapshot,
+    AcousticPipeline, AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrSnapshot,
     ListenerPose, PointSource,
 };
 use crate::core::config::IrCacheConfig;
@@ -28,10 +29,11 @@ impl AcousticsEngine {
         config: AcousticPipelineConfig,
         cache: IrCacheConfig,
     ) -> SoundResult<Self> {
+        let cache = IrCache::new(cache)?;
         Ok(Self {
             scene: SceneManager::new(),
             pipeline: AcousticPipeline::new(gpu, config)?,
-            cache: IrCache::new(cache),
+            cache,
         })
     }
 
@@ -60,7 +62,7 @@ impl AcousticsEngine {
         listener: ListenerPose,
     ) -> SoundResult<IrSnapshot> {
         let snapshot = self.build_impulse_response_gpu(gpu, source, listener)?;
-        self.pipeline.download_gpu_ir(gpu, &snapshot)
+        snapshot.download(gpu)
     }
 
     /// Builds or reuses a GPU-resident acoustic impulse response for a source/listener pair.
@@ -85,7 +87,7 @@ impl AcousticsEngine {
         // Building an IR can update scene-side acceleration data, so the scene
         // manager remains mutable even though the acoustic query is read-only.
         let snapshot = self.pipeline.build_ir_gpu(gpu, &mut self.scene, query)?;
-        self.cache.insert_ir(scene_version, query, snapshot.clone());
+        self.cache.insert_ir(snapshot.clone());
         Ok(snapshot)
     }
 }

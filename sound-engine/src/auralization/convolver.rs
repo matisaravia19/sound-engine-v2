@@ -158,11 +158,8 @@ impl FftConvolver {
             .gpu
             .memory()
             .create_storage_buffer(self.ir_staging_buffer.size)?;
-        let copy_bytes = snapshot
-            .sample_count
-            .checked_mul(std::mem::size_of::<IrSample>() as u32)
-            .ok_or_else(|| SoundError::invalid_argument("GPU IR copy byte size overflow"))?
-            as u64;
+        let copy_bytes =
+            u64::from(snapshot.sample_count()) * std::mem::size_of::<IrSample>() as u64;
 
         self.gpu
             .compute()
@@ -663,17 +660,14 @@ fn validate_gpu_ir_snapshot(
     sample_rate: u32,
 ) -> SoundResult<&BufferHandle> {
     crate::validate!(
-        snapshot.sample_rate == sample_rate,
+        snapshot.sample_rate() == sample_rate,
         ErrorCode::InvalidArgument,
         "GPU impulse response sample rate {} must match convolver sample rate {}",
-        snapshot.sample_rate,
+        snapshot.sample_rate(),
         sample_rate
     );
-    validate_ir_length(snapshot.sample_count as usize, capacity)?;
-    snapshot
-        .buffer
-        .as_deref()
-        .ok_or_else(|| SoundError::invalid_argument("GPU IR snapshot has no buffer"))
+    validate_ir_length(snapshot.sample_count() as usize, capacity)?;
+    Ok(snapshot.buffer())
 }
 
 #[cfg(test)]

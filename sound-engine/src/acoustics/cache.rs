@@ -1,4 +1,5 @@
 use crate::acoustics::{AcousticQuery, GpuIrSnapshot};
+use crate::core::error::{SoundError, SoundResult};
 use crate::scene::SceneVersion;
 use std::collections::VecDeque;
 
@@ -9,30 +10,37 @@ pub use crate::core::config::IrCacheConfig;
 ///
 /// Entries retain reference-counted GPU buffers; eviction releases only the
 /// cache's ownership and requires neither readback nor a hit-level snapshot.
-pub struct IrCache {
+pub(super) struct IrCache {
     config: IrCacheConfig,
     // Oldest to most recently used; lookup and eviction share one ordering.
-    entries: VecDeque<IrCacheEntry>,
-    gpu_bytes: usize,
-}
-
-struct IrCacheEntry {
-    query: AcousticQuery,
-    snapshot: GpuIrSnapshot,
+    entries: VecDeque<GpuIrSnapshot>,
+    gpu_bytes: u64,
 }
 
 impl IrCache {
     /// Creates an empty IR cache with the provided reuse policy.
-    pub fn new(config: IrCacheConfig) -> Self {
-        Self {
+    pub(super) fn new(config: IrCacheConfig) -> SoundResult<Self> {
+        if !config.reuse_distance_meters.is_finite() || config.reuse_distance_meters < 0.0 {
+            return Err(SoundError::invalid_argument(
+                "IR reuse distance must be finite and nonnegative",
+            ));
+        }
+        if !config.listener_orientation_dot_threshold.is_finite()
+            || !(-1.0..=1.0).contains(&config.listener_orientation_dot_threshold)
+        {
+            return Err(SoundError::invalid_argument(
+                "IR orientation threshold must be finite and in [-1, 1]",
+            ));
+        }
+        Ok(Self {
             config,
             entries: VecDeque::new(),
             gpu_bytes: 0,
-        }
+        })
     }
 
     /// Returns a reusable GPU IR when the full acoustic query remains within tolerance.
-    pub fn get_ir(
+    pub(super) fn get_ir(
         &mut self,
         scene_version: SceneVersion,
         query: AcousticQuery,
@@ -47,88 +55,58 @@ impl IrCache {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.snapshot.scene_version == scene_version)
+            .filter(|(_, entry)| entry.scene_version() == scene_version)
             .filter_map(|(index, entry)| {
-                self.reuse_score(entry.query, query)
+                self.reuse_score(entry.query(), query)
                     .map(|score| (index, score))
             })
             .min_by(|(_, left), (_, right)| left.total_cmp(right))
             .map(|(index, _)| index)?;
-        let entry = self.entries.remove(index)?;
-        let snapshot = entry.snapshot.clone();
-        self.entries.push_back(entry);
+        let snapshot = self.entries.remove(index)?;
+        self.entries.push_back(snapshot.clone());
         Some(snapshot)
     }
 
-    /// Inserts or replaces the exact source/listener state; inconsistent snapshot
-    /// scene/query metadata is rejected without changing the cache.
-    pub fn insert_ir(
-        &mut self,
-        scene_version: SceneVersion,
-        query: AcousticQuery,
-        mut snapshot: GpuIrSnapshot,
-    ) {
-        if !self.is_enabled()
-            || snapshot.scene_version != scene_version
-            || snapshot.query_id != query.query_id
-        {
+    /// Retains a response using its immutable scene/query provenance as the key.
+    /// Responses larger than the entire budget leave the existing cache unchanged.
+    pub(super) fn insert_ir(&mut self, snapshot: GpuIrSnapshot) {
+        let bytes = snapshot.byte_size();
+        let budget = self.config.max_gpu_cache_bytes as u64;
+        if !self.is_enabled() || bytes > budget {
             return;
         }
-        if let Some(buffer) = &snapshot.buffer {
-            // Public snapshot metadata must not undercount the retained allocation.
-            snapshot.byte_size = usize::try_from(buffer.size).unwrap_or(usize::MAX);
-        }
 
-        // Replace the exact query before accounting for its new allocation.
         self.entries.retain(|entry| {
-            if entry.snapshot.scene_version == scene_version && entry.query == query {
-                self.gpu_bytes = self.gpu_bytes.saturating_sub(entry.snapshot.byte_size);
+            if entry.scene_version() == snapshot.scene_version()
+                && entry.query() == snapshot.query()
+            {
+                self.gpu_bytes -= entry.byte_size();
                 false
             } else {
                 true
             }
         });
-        self.gpu_bytes = self.gpu_bytes.saturating_add(snapshot.byte_size);
-        self.entries.push_back(IrCacheEntry {
-            query,
-            snapshot,
-        });
-        while self.len() > self.config.max_entries
-            || self.gpu_bytes > self.config.max_gpu_cache_bytes
-        {
-            let Some(oldest) = self.entries.pop_front() else {
-                break;
-            };
-            self.gpu_bytes = self.gpu_bytes.saturating_sub(oldest.snapshot.byte_size);
+        // Evict before insertion so accounting stays within the budget even
+        // when adding the next allocation would overflow the byte counter.
+        while self.entries.len() >= self.config.max_entries || self.gpu_bytes > budget - bytes {
+            let oldest = self
+                .entries
+                .pop_front()
+                .expect("Only nonempty caches can exceed their limits");
+            self.gpu_bytes -= oldest.byte_size();
         }
+        self.gpu_bytes += bytes;
+        self.entries.push_back(snapshot);
     }
 
     /// Drops all cached snapshots.
-    pub fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.gpu_bytes = 0;
     }
 
-    /// Returns the number of retained IR snapshots.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Returns whether no IR snapshots are retained.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Returns GPU bytes currently retained by the cache.
-    pub fn gpu_bytes(&self) -> usize {
-        self.gpu_bytes
-    }
-
     fn is_enabled(&self) -> bool {
-        self.config.max_entries > 0
-            && self.config.reuse_distance_meters.is_finite()
-            && self.config.reuse_distance_meters >= 0.0
-            && self.config.max_gpu_cache_bytes > 0
+        self.config.max_entries > 0 && self.config.max_gpu_cache_bytes > 0
     }
 
     fn reuse_score(&self, cached: AcousticQuery, requested: AcousticQuery) -> Option<f32> {

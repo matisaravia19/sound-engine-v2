@@ -107,17 +107,16 @@ fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
             .unwrap(),
     );
     gpu.memory().upload_typed(&buffer, &taps).unwrap();
-    let snapshot = GpuIrSnapshot {
-        buffer: Some(buffer),
-        byte_size: std::mem::size_of_val(&taps),
-        sample_rate: 48_000,
-        sample_count: taps.len() as u32,
-        energy: None,
-        scene_version: 1,
-        query_id: 0,
-    };
-    let mut wrong_rate = snapshot.clone();
-    wrong_rate.sample_rate = 44_100;
+    let snapshot =
+        GpuIrSnapshot::new(buffer, 48_000, taps.len() as u32, 1, snapshot_query()).unwrap();
+    let wrong_rate = GpuIrSnapshot::new(
+        snapshot.buffer().clone(),
+        44_100,
+        taps.len() as u32,
+        1,
+        snapshot_query(),
+    )
+    .unwrap();
     assert!(
         convolver
             .create_impulse_response_from_gpu_ir(&wrong_rate)
@@ -214,36 +213,14 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
 }
 
 #[test]
-fn gpu_ir_validation_rejects_missing_buffer() {
-    let snapshot = gpu_ir_snapshot(1);
-
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
-        .err()
-        .unwrap();
-
-    assert_eq!(error.code(), ErrorCode::InvalidArgument);
-}
-
-#[test]
-fn gpu_ir_validation_rejects_empty_ir() {
-    let snapshot = gpu_ir_snapshot(0);
-
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
-        .err()
-        .unwrap();
-
-    assert_eq!(error.code(), ErrorCode::InvalidArgument);
-}
-
-#[test]
-fn gpu_ir_validation_rejects_ir_larger_than_linear_capacity() {
-    let snapshot = gpu_ir_snapshot(16);
-
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
-        .err()
-        .unwrap();
-
-    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+fn ir_length_rejects_empty_or_oversized_responses() {
+    for count in [0, 16] {
+        assert_eq!(
+            validate_ir_length(count, 8).unwrap_err().code(),
+            ErrorCode::InvalidArgument
+        );
+    }
+    assert!(validate_ir_length(8, 8).is_ok());
 }
 
 #[test]
@@ -266,15 +243,8 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
     assert!(convolver.create_impulse_response(&oversized).is_err());
     let buffer = Arc::new(gpu.memory().create_storage_buffer(48).unwrap());
     gpu.memory().upload_typed(&buffer, &oversized).unwrap();
-    let mut snapshot = GpuIrSnapshot {
-        buffer: Some(buffer.clone()),
-        byte_size: 48,
-        sample_rate: sound.sample_rate,
-        sample_count: 6,
-        energy: None,
-        scene_version: 1,
-        query_id: 0,
-    };
+    let mut snapshot =
+        GpuIrSnapshot::new(buffer.clone(), sound.sample_rate, 6, 1, snapshot_query()).unwrap();
     assert!(
         convolver
             .create_impulse_response_from_gpu_ir(&snapshot)
@@ -284,8 +254,7 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
     let mut taps = [IrSample::new(0.0, 0.0); 5];
     taps[4] = IrSample::new(1.0, 0.5);
     gpu.memory().upload_typed(&buffer, &taps).unwrap();
-    snapshot.sample_count = 5;
-    snapshot.byte_size = 40;
+    snapshot = GpuIrSnapshot::new(buffer, sound.sample_rate, 5, 1, snapshot_query()).unwrap();
     for from_gpu in [false, true] {
         let ir = if from_gpu {
             convolver
@@ -316,14 +285,10 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
     }
 }
 
-fn gpu_ir_snapshot(sample_count: u32) -> GpuIrSnapshot {
-    GpuIrSnapshot {
-        buffer: None,
-        byte_size: sample_count as usize * std::mem::size_of::<IrSample>(),
-        sample_rate: 48_000,
-        sample_count,
-        energy: None,
-        scene_version: 1,
+fn snapshot_query() -> crate::acoustics::AcousticQuery {
+    crate::acoustics::AcousticQuery {
         query_id: 0,
+        source: crate::PointSource::new(glam::Vec3::X),
+        listener: crate::ListenerPose::default(),
     }
 }

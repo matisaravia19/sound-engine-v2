@@ -291,7 +291,7 @@ fn trace_case(
     let gpu_ir = pipeline.build_ir_gpu(gpu, &mut scene, query)?;
     let cold_gpu = cold_start.elapsed();
     let readback_start = Instant::now();
-    let mut ir = pipeline.download_gpu_ir(gpu, &gpu_ir)?;
+    let mut ir = gpu_ir.download(gpu)?;
     let mut readback_times = vec![readback_start.elapsed()];
 
     let mut warm_times = Vec::with_capacity(options.warm_repeats);
@@ -300,7 +300,7 @@ fn trace_case(
         let gpu_ir = pipeline.build_ir_gpu(gpu, &mut scene, query)?;
         warm_times.push(start.elapsed());
         let readback_start = Instant::now();
-        ir = pipeline.download_gpu_ir(gpu, &gpu_ir)?;
+        ir = gpu_ir.download(gpu)?;
         readback_times.push(readback_start.elapsed());
     }
 

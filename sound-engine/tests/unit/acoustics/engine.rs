@@ -29,18 +29,17 @@ fn audit_cache_hits_reject_a_foreign_backend() {
     .unwrap();
     let source = PointSource::new(Vec3::X);
     let listener = ListenerPose::default();
-    engine
+    let first = engine
         .build_impulse_response_gpu(&gpu, source, listener)
         .unwrap();
-    assert_eq!(engine.cache.len(), 1);
     assert!(
         engine
             .build_impulse_response_gpu(&foreign, source, listener)
             .is_err()
     );
-    assert!(
-        engine
-            .build_impulse_response_gpu(&gpu, source, listener)
-            .is_ok()
-    );
+    let reused = engine
+        .build_impulse_response_gpu(&gpu, source, listener)
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(first.buffer(), reused.buffer()));
+    assert!(first.download(&foreign).is_err());
 }
