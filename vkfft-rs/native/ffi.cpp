@@ -9,9 +9,9 @@
 #define pfUINT uint64_t
 #define pfINT int64_t
 #define pfLD long double
-#include "vulkan_memory.hpp"
-#include "vulkan_init.hpp"
-#include "vulkan_compiler.hpp"
+#include "vulkan/memory.hpp"
+#include "vulkan/init.hpp"
+#include "vulkan/compiler.hpp"
 #include "ffi_guard.hpp"
 
 #include "vkFFT.h"

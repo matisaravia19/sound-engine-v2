@@ -1,5 +1,5 @@
 // CPU-only input-boundary tests; large logical extents never reach a GPU allocator.
-#include "scheduler_extents.hpp"
+#include "scheduler/extents.hpp"
 
 namespace codegen_fake {
 

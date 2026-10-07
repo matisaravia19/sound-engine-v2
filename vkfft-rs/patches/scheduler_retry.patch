@@ -4,7 +4,7 @@
  #include "vkFFT/vkFFT_AppManagement/vkFFT_DeleteApp.h"
  #include "vkFFT/vkFFT_PlanManagement/vkFFT_Plans/vkFFT_Plan_FFT.h"
  #include "vkFFT/vkFFT_PlanManagement/vkFFT_Plans/vkFFT_Plan_R2C.h"
-+#include "scheduler_retry.hpp"
++#include "scheduler/retry.hpp"
  static inline VkFFTResult initializeBluesteinAutoPadding(VkFFTApplication* app) {
  	VkFFTResult resFFT = VKFFT_SUCCESS;
  	if (!app->configuration.useCustomBluesteinPaddingPattern) {

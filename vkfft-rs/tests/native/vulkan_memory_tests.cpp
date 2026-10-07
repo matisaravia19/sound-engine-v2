@@ -156,7 +156,7 @@ VkResult reset(VkDevice, uint32_t, const VkFence*) {
 #define vkQueueSubmit fake::submit
 #define vkWaitForFences fake::wait
 #define vkResetFences fake::reset
-#include "vulkan_memory.hpp"
+#include "vulkan/memory.hpp"
 
 // Return a source line on failure; ordinary assert is disabled in release builds.
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)

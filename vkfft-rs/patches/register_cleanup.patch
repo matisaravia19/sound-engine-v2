@@ -4,7 +4,7 @@
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
-+#include "codegen_registers.hpp"
++#include "codegen/registers.hpp"
  
  static inline void appendRegisterInitialization(VkFFTSpecializationConstantsLayout* sc, int type) {
  

@@ -4,7 +4,7 @@
  #ifndef VKFFT_SCHEDULER_H
  #define VKFFT_SCHEDULER_H
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
-+#include "scheduler_stages.hpp"
++#include "scheduler/stages.hpp"
  static inline VkFFTResult VkFFTGetRegistersPerThreadQuad(VkFFTApplication* app, int fft_length, int extraSharedMemoryForPow2, pfUINT max_rhs, int useRader, int* loc_multipliers, int* registers_per_thread_per_radix, int* registers_per_thread, int* min_registers_per_thread, int* isGoodSequence) {
  	for (int i = 0; i < 33; i++) {
  		registers_per_thread_per_radix[i] = 0;

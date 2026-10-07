@@ -2,7 +2,7 @@
 #ifndef VKFFT_RS_CODEGEN_STAGE_LAYOUT_HPP
 #define VKFFT_RS_CODEGEN_STAGE_LAYOUT_HPP
 
-#include "codegen_storage.hpp"
+#include "codegen/storage.hpp"
 
 namespace vkfft_codegen {
 

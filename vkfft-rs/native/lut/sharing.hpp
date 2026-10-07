@@ -2,7 +2,7 @@
 #ifndef VKFFT_RS_LUT_SHARING_HPP
 #define VKFFT_RS_LUT_SHARING_HPP
 
-#include "lut_layout.hpp"
+#include "lut/layout.hpp"
 
 namespace vkfft_lut {
 namespace {

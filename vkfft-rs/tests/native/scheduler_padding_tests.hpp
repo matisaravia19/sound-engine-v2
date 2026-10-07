@@ -1,5 +1,5 @@
 // Independent candidate references and full scheduler checks; no GPU buffers are allocated.
-#include "scheduler_padding.hpp"
+#include "scheduler/padding.hpp"
 
 namespace codegen_fake {
 

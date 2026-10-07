@@ -1,5 +1,5 @@
 // CPU-only arithmetic regressions; even very large factors allocate no FFT buffers.
-#include "scheduler_arithmetic.hpp"
+#include "scheduler/arithmetic.hpp"
 
 namespace codegen_fake {
 

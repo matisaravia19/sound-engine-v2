@@ -1,5 +1,5 @@
 // CPU-only stage generation: fixtures own all parameters and tracked allocations.
-#include "codegen_storage.hpp"
+#include "codegen/storage.hpp"
 
 namespace codegen_fake {
 

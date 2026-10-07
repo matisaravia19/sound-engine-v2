@@ -1,5 +1,5 @@
 // Host-only regressions for retry ownership; the large natural fallback allocates no GPU buffers.
-#include "scheduler_retry.hpp"
+#include "scheduler/retry.hpp"
 
 namespace codegen_fake {
 

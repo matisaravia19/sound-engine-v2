@@ -2,7 +2,7 @@
 #ifndef VKFFT_RS_CODEGEN_PERMUTATION_HPP
 #define VKFFT_RS_CODEGEN_PERMUTATION_HPP
 
-#include "codegen_names.hpp"
+#include "codegen/names.hpp"
 
 // values owns capacity containers for the call. stride selects a sub-sequence;
 // only names/values move, preserving every nested container array's address.

@@ -2,7 +2,7 @@
 #ifndef VKFFT_RS_VULKAN_INIT_HPP
 #define VKFFT_RS_VULKAN_INIT_HPP
 
-#include "vulkan_memory.hpp"
+#include "vulkan/memory.hpp"
 
 static inline void deleteVkFFT(VkFFTApplication* app);
 

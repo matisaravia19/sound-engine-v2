@@ -73,6 +73,7 @@ def source_hashes():
         "sound-engine/examples",
         "sound-engine/tests",
         "vkfft-rs/src",
+        "vkfft-rs/native",
         "vkfft-rs/tests",
         "vkfft-rs/patches",
         "vkfft-rs/lib/vkfft/vkFFT",

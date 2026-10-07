@@ -4,8 +4,8 @@
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
-+#include "codegen_stage_policy.hpp"
- #include "codegen_stage_layout.hpp"
++#include "codegen/stage_policy.hpp"
+ #include "codegen/stage_layout.hpp"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_KernelUtils.h"
 @@ -531,13 +532,9 @@

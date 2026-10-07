@@ -60,7 +60,7 @@ static inline VkFFTResult VkFFTAppend(VkFFTApplication*, int, VkFFTLaunchParams*
 #define VKFFT_DELETEAPP_H
 #define malloc recursive_fake::allocate
 #define free recursive_fake::release
-#include "vulkan_init.hpp"
+#include "vulkan/init.hpp"
 #define VkFFT_TransferDataFromCPU recursive_fake::upload
 #define VkFFT_TransferDataToCPU recursive_fake::readback
 #include "vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_RecursiveFFTGenerators.h"

@@ -93,6 +93,11 @@ class BenchmarkRunTests(unittest.TestCase):
         write_json(self.output / "provenance.json", {"source_sha256": source_hashes()})
         for name in (
             "vkfft-rs/build_support.rs",
+            "vkfft-rs/native/ffi.cpp",
+            "vkfft-rs/native/codegen/names.hpp",
+            "vkfft-rs/native/scheduler/limits.hpp",
+            "vkfft-rs/native/lut/storage.hpp",
+            "vkfft-rs/native/vulkan/memory.hpp",
             "vkfft-rs/patches/compiler_cleanup.patch",
             "vkfft-rs/lib/vkfft/vkFFT/vkFFT.h",
             "vkfft-rs/tests/native/vulkan_memory_tests.cpp",

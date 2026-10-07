@@ -3,9 +3,9 @@
 @@ -26,11 +26,13 @@
  #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"
- #include "codegen_stage_policy.hpp"
-+#include "codegen_rader_layout.hpp"
- #include "codegen_storage.hpp"
+ #include "codegen/stage_policy.hpp"
++#include "codegen/rader_layout.hpp"
+ #include "codegen/storage.hpp"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_KernelsLevel0/vkFFT_MemoryManagement/vkFFT_MemoryTransfers/vkFFT_Transfers.h"
  
  static inline void appendFFTRaderStage(VkFFTSpecializationConstantsLayout* sc, PfContainer* stageSize, PfContainer* stageSizeSum, PfContainer* stageAngle, PfContainer* stageRadix, int stageID) {

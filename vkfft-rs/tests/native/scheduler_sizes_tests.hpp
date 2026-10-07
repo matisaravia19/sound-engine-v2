@@ -1,5 +1,5 @@
 // CPU-only scheduler regressions: large logical workloads never allocate transform buffers.
-#include "scheduler_sizes.hpp"
+#include "scheduler/sizes.hpp"
 
 namespace codegen_fake {
 

@@ -171,7 +171,7 @@ void destroy_set_layout(VkDevice, VkDescriptorSetLayout, const VkAllocationCallb
 #define vkFreeMemory compiler_fake::free_memory
 #define vkDestroyDescriptorPool compiler_fake::destroy_pool
 #define vkDestroyDescriptorSetLayout compiler_fake::destroy_set_layout
-#include "vulkan_compiler.hpp"
+#include "vulkan/compiler.hpp"
 #include "ffi_guard.hpp"
 #include "vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_CompileKernel.h"
 #include "vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_DeletePlan.h"

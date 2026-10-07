@@ -3,8 +3,8 @@
 @@ -22,6 +22,7 @@
  #ifndef VKFFT_MANAGELUT_H
  #define VKFFT_MANAGELUT_H
- #include "lut_storage.hpp"
-+#include "lut_layout.hpp"
+ #include "lut/storage.hpp"
++#include "lut/layout.hpp"
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
  #include "vkFFT/vkFFT_PlanManagement/vkFFT_API_handles/vkFFT_ManageMemory.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_MathUtils/vkFFT_MathUtils.h"

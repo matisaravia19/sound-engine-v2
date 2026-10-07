@@ -1,5 +1,5 @@
 // CPU-only resource-limit regressions against the actual scheduler.
-#include "scheduler_limits.hpp"
+#include "scheduler/limits.hpp"
 
 namespace codegen_fake {
 

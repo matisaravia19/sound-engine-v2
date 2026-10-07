@@ -23,7 +23,7 @@
 #ifndef VKFFT_RS_CODEGEN_NAMES_HPP
 #define VKFFT_RS_CODEGEN_NAMES_HPP
 
-#include "codegen_format.hpp"
+#include "codegen/format.hpp"
 #include <cstring>
 #include <utility>
 

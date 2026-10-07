@@ -1,5 +1,5 @@
 // Exercise the actual scheduler without creating devices, shaders or GPU allocations.
-#include "scheduler_stages.hpp"
+#include "scheduler/stages.hpp"
 #include "vkFFT/vkFFT_PlanManagement/vkFFT_HostFunctions/vkFFT_Scheduler.h"
 
 namespace codegen_fake {

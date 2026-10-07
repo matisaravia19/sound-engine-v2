@@ -4,7 +4,7 @@
  #define VKFFT_MATHUTILS_H
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
-+#include "codegen_names.hpp"
++#include "codegen/names.hpp"
  
  static inline void PfPrintReg(VkFFTSpecializationConstantsLayout* sc, PfContainer* inoutID, PfContainer* in);
  //register manipulation functions: mov, add, sub, etc.

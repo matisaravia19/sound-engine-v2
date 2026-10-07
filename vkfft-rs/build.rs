@@ -4,16 +4,7 @@ mod build_support;
 
 fn main() {
     let native_tests = env::var_os("CARGO_FEATURE_NATIVE_TESTS").is_some();
-    for entry in std::fs::read_dir("src").unwrap() {
-        let path = entry.unwrap().path();
-        let is_native = matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("cpp" | "hpp")
-        );
-        if is_native {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-    }
+    println!("cargo:rerun-if-changed=native");
     if native_tests {
         println!("cargo:rerun-if-changed=tests/native");
     }
@@ -201,7 +192,7 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.cpp(true);
-    build.file("src/ffi.cpp");
+    build.file("native/ffi.cpp");
     if native_tests {
         build.files([
             "tests/native/vulkan_memory_tests.cpp",
@@ -213,7 +204,7 @@ fn main() {
 
     build
         .include(&vulkan_include)
-        .include(manifest_dir.join("src"))
+        .include(manifest_dir.join("native"))
         .include(&glslang_include)
         .include(&vkfft_include);
 

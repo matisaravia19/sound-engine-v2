@@ -3,9 +3,9 @@
 @@ -24,6 +24,7 @@
  #include "vkFFT/vkFFT_Structs/vkFFT_Structs.h"
  #include "vkFFT/vkFFT_CodeGen/vkFFT_StringManagement/vkFFT_StringManager.h"
- #include "codegen_names.hpp"
-+#include "codegen_temporary.hpp"
- #include "codegen_permutation.hpp"
+ #include "codegen/names.hpp"
++#include "codegen/temporary.hpp"
+ #include "codegen/permutation.hpp"
  
  static inline void PfPrintReg(VkFFTSpecializationConstantsLayout* sc, PfContainer* inoutID, PfContainer* in);
 @@ -725,11 +726,12 @@
