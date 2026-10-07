@@ -22,8 +22,8 @@ pub(super) struct EngineCore {
     acoustics: AcousticsEngine,
     /// Asset bank, active voices, and convolver used to render output blocks.
     auralization: AuralizationEngine,
-    /// Acoustic sources addressable by public handles or one-shot voices.
-    sound_sources: HashMap<SoundSourceId, SoundSourceRecord>,
+    /// Movable acoustic sources addressable by public handles.
+    sound_sources: HashMap<SoundSourceId, PointSource>,
     /// Spatial metadata for voices that should react to acoustic updates.
     spatial_voices: HashMap<VoiceId, SpatialVoice>,
     /// Round-robin cursor prevents a moving voice from starving other dirty voices.
@@ -45,19 +45,19 @@ pub(super) struct EngineCore {
     gpu: Arc<VkBackend>,
 }
 
-/// Stored source transform and ownership policy.
-#[derive(Debug, Clone, Copy)]
-struct SoundSourceRecord {
-    /// Current source state used for acoustic IR queries.
-    source: PointSource,
-    /// Whether this source should be removed when its owning voice ends.
-    internal: bool,
+/// A voice owns its fixed source or follows an application-managed source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum VoiceSource {
+    /// Fixed source retained only for this voice's lifetime.
+    Fixed(PointSource),
+    /// Movable source that must remain registered while this voice exists.
+    Tracked(SoundSourceId),
 }
 
 /// Acoustic state associated with one active spatial voice.
 struct SpatialVoice {
-    /// Source handle used when refreshing the voice IR.
-    source_id: SoundSourceId,
+    /// Source used when refreshing the voice IR.
+    source: VoiceSource,
     /// Currently registered IR id assigned to the voice.
     impulse_response_id: ImpulseResponseId,
     /// Time-domain acoustic buffer whose transformed IR is currently registered.
@@ -141,10 +141,7 @@ impl EngineCore {
     /// Sets the listener pose used by future IR queries.
     pub(super) fn set_listener_pose(&mut self, listener: ListenerPose) -> SoundResult<()> {
         let listener = crate::acoustics::canonicalize_listener(listener)?;
-        if self.listener.position == listener.position
-            && self.listener.forward == listener.forward
-            && self.listener.up == listener.up
-        {
+        if self.listener == listener {
             return Ok(());
         }
         self.listener = listener;
@@ -158,7 +155,9 @@ impl EngineCore {
         source: PointSource,
     ) -> SoundResult<SoundSourceId> {
         validate_source(source)?;
-        self.insert_sound_source(source, false)
+        let id = crate::core::id::allocate_id(&mut self.next_sound_source_id, "Sound source")?;
+        self.sound_sources.insert(id, source);
+        Ok(id)
     }
 
     /// Updates a tracked sound source and marks bound voices for IR refresh.
@@ -168,11 +167,14 @@ impl EngineCore {
         source: PointSource,
     ) -> SoundResult<()> {
         validate_source(source)?;
-        let record = self
+        let current = self
             .sound_sources
             .get_mut(&id)
             .ok_or_else(|| SoundError::not_found(format!("Sound source {} does not exist", id)))?;
-        record.source = source;
+        if *current == source {
+            return Ok(());
+        }
+        *current = source;
         self.mark_source_voices_dirty(id);
         Ok(())
     }
@@ -182,7 +184,7 @@ impl EngineCore {
         if self
             .spatial_voices
             .values()
-            .any(|voice| voice.source_id == id)
+            .any(|voice| voice.source == VoiceSource::Tracked(id))
         {
             return Err(SoundError::invalid_state(format!(
                 "Sound source {} is still referenced by an active voice",
@@ -209,15 +211,11 @@ impl EngineCore {
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
         validate_source(request.source)?;
-        self.auralization.playable_sound(request.sound_id)?;
-        let source_id = self.insert_sound_source(request.source, true)?;
-        match self.play_sound_from_source(request.sound_id, source_id, request.volume) {
-            Ok(voice_id) => Ok(voice_id),
-            Err(error) => {
-                self.sound_sources.remove(&source_id);
-                Err(error)
-            }
-        }
+        self.start_spatial_voice(
+            request.sound_id,
+            VoiceSource::Fixed(request.source),
+            request.volume,
+        )
     }
 
     /// Builds or reuses an acoustic IR from a tracked source and starts a voice.
@@ -230,7 +228,17 @@ impl EngineCore {
         if !volume.is_finite() {
             return Err(SoundError::invalid_argument("sound volume must be finite"));
         }
-        let source = self.source(source_id)?;
+        self.start_spatial_voice(sound_id, VoiceSource::Tracked(source_id), volume)
+    }
+
+    /// Starts a voice after checking its source and dry asset, before allocating GPU IRs.
+    fn start_spatial_voice(
+        &mut self,
+        sound_id: SoundId,
+        voice_source: VoiceSource,
+        volume: f32,
+    ) -> SoundResult<VoiceId> {
+        let source = self.resolve_source(voice_source)?;
         self.auralization.playable_sound(sound_id)?;
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
         let acoustic_ir_buffer = snapshot
@@ -254,7 +262,7 @@ impl EngineCore {
         self.spatial_voices.insert(
             voice_id,
             SpatialVoice {
-                source_id,
+                source: voice_source,
                 impulse_response_id,
                 acoustic_ir_buffer,
                 refresh_requested_at: None,
@@ -380,29 +388,14 @@ impl EngineCore {
         Ok(impulse_response_id)
     }
 
-    /// Inserts a sound source with the requested ownership policy.
-    fn insert_sound_source(
-        &mut self,
-        source: PointSource,
-        internal: bool,
-    ) -> SoundResult<SoundSourceId> {
-        let id = self.next_source_id()?;
-        self.sound_sources.insert(
-            id,
-            SoundSourceRecord {
-                source,
-                internal,
-            },
-        );
-        Ok(id)
-    }
-
-    /// Returns the current source record for an id.
-    fn source(&self, id: SoundSourceId) -> SoundResult<PointSource> {
-        self.sound_sources
-            .get(&id)
-            .map(|record| record.source)
-            .ok_or_else(|| SoundError::not_found(format!("Sound source {} does not exist", id)))
+    /// Resolves a voice's fixed source or the latest state of its tracked source.
+    fn resolve_source(&self, source: VoiceSource) -> SoundResult<PointSource> {
+        match source {
+            VoiceSource::Fixed(source) => Ok(source),
+            VoiceSource::Tracked(id) => self.sound_sources.get(&id).copied().ok_or_else(|| {
+                SoundError::not_found(format!("Sound source {} does not exist", id))
+            }),
+        }
     }
 
     /// Marks every tracked spatial voice for refresh before the next rendered block.
@@ -417,7 +410,7 @@ impl EngineCore {
     fn mark_source_voices_dirty(&mut self, source_id: SoundSourceId) {
         let requested_at = std::time::Instant::now();
         for voice in self.spatial_voices.values_mut() {
-            if voice.source_id == source_id {
+            if voice.source == VoiceSource::Tracked(source_id) {
                 voice.refresh_requested_at = Some(requested_at);
             }
         }
@@ -446,7 +439,7 @@ impl EngineCore {
         let Some(requested_at) = voice.refresh_requested_at else {
             return Ok((0.0, 0.0));
         };
-        let source = self.source(voice.source_id)?;
+        let source = self.resolve_source(voice.source)?;
         let started = std::time::Instant::now();
         let snapshot = self.gpu_impulse_response_for(source, self.listener)?;
         let trace_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -512,31 +505,13 @@ impl EngineCore {
         }
     }
 
-    /// Removes spatial tracking and any internal source owned only by this voice.
+    /// Releases a voice's spatial state and its IR registry entry.
     fn remove_spatial_voice(&mut self, voice_id: VoiceId) {
         let Some(voice) = self.spatial_voices.remove(&voice_id) else {
             return;
         };
         self.auralization
             .forget_impulse_response(voice.impulse_response_id);
-
-        let should_remove_source = self
-            .sound_sources
-            .get(&voice.source_id)
-            .map(|record| record.internal)
-            .unwrap_or(false)
-            && !self
-                .spatial_voices
-                .values()
-                .any(|other_voice| other_voice.source_id == voice.source_id);
-        if should_remove_source {
-            self.sound_sources.remove(&voice.source_id);
-        }
-    }
-
-    /// Returns a fresh sound source id.
-    fn next_source_id(&mut self) -> SoundResult<SoundSourceId> {
-        crate::core::id::allocate_id(&mut self.next_sound_source_id, "Sound source")
     }
 
     /// Returns a fresh auralization impulse-response id.

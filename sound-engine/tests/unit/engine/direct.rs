@@ -30,6 +30,73 @@ fn preflight_config() -> EngineConfig {
 
 #[test]
 #[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn fixed_and_tracked_sources_have_independent_lifetimes() {
+    let mut core = EngineCore::new(preflight_config()).unwrap();
+    let source = PointSource::new(Vec3::X);
+    let source_id = core.create_sound_source(source).unwrap();
+    let sound = core
+        .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.1; 64]).unwrap())
+        .unwrap();
+    let tracked = core.play_sound_from_source(sound, source_id, 1.0).unwrap();
+
+    // A one-shot owns its source directly, even when tracked handles are exhausted.
+    core.next_sound_source_id = u64::MAX;
+    let fixed = core
+        .play_sound(PlaySpatialSoundRequest::new(sound, source.position))
+        .unwrap();
+    assert_eq!(core.sound_sources.len(), 1);
+    assert_eq!(core.next_sound_source_id, u64::MAX);
+    assert!(core.remove_sound_source(source_id).is_err());
+
+    core.update_sound_source(source_id, source).unwrap();
+    assert!(core.spatial_voices[&tracked].refresh_requested_at.is_none());
+    let moved = PointSource::new(Vec3::Y);
+    core.update_sound_source(source_id, moved).unwrap();
+    assert!(core.spatial_voices[&tracked].refresh_requested_at.is_some());
+    assert!(core.spatial_voices[&fixed].refresh_requested_at.is_none());
+    assert_eq!(
+        core.resolve_source(core.spatial_voices[&fixed].source)
+            .unwrap(),
+        source
+    );
+    assert_eq!(
+        core.resolve_source(core.spatial_voices[&tracked].source)
+            .unwrap(),
+        moved
+    );
+
+    core.set_listener_pose(ListenerPose::new(Vec3::Z, Vec3::Z, Vec3::Y))
+        .unwrap();
+    assert!(core.spatial_voices[&fixed].refresh_requested_at.is_some());
+    let mut output = vec![0.0; 128];
+    core.render_block(&mut output).unwrap();
+    assert!(
+        core.spatial_voices
+            .values()
+            .all(|voice| voice.refresh_requested_at.is_none())
+    );
+    core.stop_voice(fixed);
+    assert_eq!(core.sound_sources.len(), 1);
+
+    for _ in 0..64 {
+        core.render_block(&mut output).unwrap();
+        if !core.has_active_voices() {
+            break;
+        }
+    }
+    assert!(!core.has_active_voices());
+    assert!(core.spatial_voices.is_empty());
+    assert_eq!(
+        core.sound_sources.len(),
+        1,
+        "finishing a voice must retain its tracked source"
+    );
+    core.remove_sound_source(source_id).unwrap();
+    assert!(core.sound_sources.is_empty());
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
 fn audit_spatial_preflight_rejects_invalid_sounds_without_gpu_resources() {
     let mut core = EngineCore::new(preflight_config()).unwrap();
     core.load_scene(box_scene()).unwrap();
