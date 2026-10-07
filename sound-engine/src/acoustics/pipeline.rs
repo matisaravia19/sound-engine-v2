@@ -32,7 +32,7 @@ pub struct AcousticPipeline {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
 struct ListenerTracePushConstants {
     source_position: [f32; 3],
     source_amplitude: f32,
@@ -50,9 +50,6 @@ struct ListenerTracePushConstants {
     head_radius_meters: f32,
     max_ild_db: f32,
 }
-
-unsafe impl bytemuck::Zeroable for ListenerTracePushConstants {}
-unsafe impl bytemuck::Pod for ListenerTracePushConstants {}
 
 impl AcousticPipeline {
     /// Rejects a foreign backend even when a caller can satisfy its query from a cache.

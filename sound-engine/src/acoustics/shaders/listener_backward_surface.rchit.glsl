@@ -1,22 +1,14 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#include "traversal_payloads.glsl"
 
 // Surface closest-hit is intentionally a traversal adapter. It reconstructs
 // the world-space geometric normal and material index needed by ray generation,
 // but performs no acoustic response evaluation and launches no child rays.
-
-struct HitPayload {
-    uint hit_type;
-    float t;
-    uint instance_id;
-    uint primitive_id;
-    vec2 barycentrics;
-    vec3 world_normal;
-    uint data_id;
-};
 
 struct SceneObject {
     uint material_index;
@@ -41,7 +33,6 @@ layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Ind
 };
 
 layout(location = 0) rayPayloadInEXT HitPayload payload;
-hitAttributeEXT vec2 triangle_barycentrics;
 
 vec3 loadVertex(VertexBuffer vertices, uint vertex_index) {
     uint base = vertex_index * 3u;
@@ -58,7 +49,7 @@ void main() {
     // out of the descriptor set and must remain alive with the scene resources.
     SceneObject object = scene_objects.objects[gl_InstanceCustomIndexEXT];
     if (object.vertex_address == 0ul) {
-        payload.hit_type = 0u;
+        payload.hit_type = HIT_NONE;
         return;
     }
 
@@ -88,11 +79,9 @@ void main() {
         normal = -normal;
     }
 
-    payload.hit_type = 1u;
+    payload.hit_type = HIT_SURFACE;
     payload.t = gl_HitTEXT;
-    payload.instance_id = gl_InstanceCustomIndexEXT;
-    payload.primitive_id = gl_PrimitiveID;
-    payload.barycentrics = triangle_barycentrics;
+    payload.edge_coordinates = vec2(0.0);
     payload.world_normal = normal;
     payload.data_id = object.material_index;
 }

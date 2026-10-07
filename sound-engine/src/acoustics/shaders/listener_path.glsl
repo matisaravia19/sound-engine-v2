@@ -172,8 +172,8 @@ bool prepareInteraction(
     DiffractionEdge edge = diffraction_edges.edges[hit.data_id];
     vec3 proxy_position = interaction.position;
     float proxy_leg_length = length(interaction.position - path.vertex);
-    interaction.position = edge.start + hit.barycentrics.y * edge.edge_dir;
-    interaction.distance_to_edge = hit.barycentrics.x;
+    interaction.position = edge.start + hit.edge_coordinates.y * edge.edge_dir;
+    interaction.distance_to_edge = hit.edge_coordinates.x;
 
     if (path.initial_mirror && !relocateInitialMirror(path, interaction.position, proxy_position)) {
         return false;
@@ -302,13 +302,13 @@ bool continuePath(inout ListenerPath path, PathInteraction interaction) {
 // contributions. Every proxy uses the same choice within the shared budget.
 bool sampleDiffractionEvent(inout ListenerPath path, HitPayload hit) {
     DiffractionEdge edge = diffraction_edges.edges[hit.data_id];
-    vec3 edge_position = edge.start + hit.barycentrics.y * edge.edge_dir;
+    vec3 edge_position = edge.start + hit.edge_coordinates.y * edge.edge_dir;
     vec3 incident_leg = edge_position - path.vertex;
     float incident_length = length(incident_leg);
     float capture_weight = diffractionCaptureWeight(
         edge,
         normalizeOrZero(incident_leg),
-        hit.barycentrics.x,
+        hit.edge_coordinates.x,
         path.distance - path.spreading_origin_distance + incident_length
     );
 

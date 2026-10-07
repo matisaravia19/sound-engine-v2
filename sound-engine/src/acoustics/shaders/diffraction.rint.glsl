@@ -1,32 +1,9 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "diffraction_edges.glsl"
 
 const float DIFFRACTION_PLANE_EPSILON = 0.00001;
-
-// Must stay layout-compatible with the closest-hit shader and the CPU
-// GpuDiffractionEdge record. The intersection stage only needs the geometric
-// fields, but it declares the full record because both stages read the same
-// storage buffer.
-struct DiffractionEdge {
-    vec3 start;
-    float diffraction_radius;
-    vec3 end;
-    float _pad_end;
-    vec3 edge_dir;
-    float edge_length;
-    vec3 bisector_dir;
-    float edge_angle_radians;
-    vec3 positive_plane_normal;
-    float _pad0;
-    vec3 positive_shadow_dir;
-    float _pad1;
-    vec3 negative_shadow_dir;
-    float solid_wedge_cos;
-};
-
-layout(std430, set = 0, binding = 4) readonly buffer DiffractionEdgeBuffer {
-    DiffractionEdge edges[];
-} diffraction_edges;
 
 // Passed to closest-hit. x is the virtual plane hit distance to the closest edge
 // point and drives the normalized radial response. y records distance along the
@@ -35,10 +12,6 @@ hitAttributeEXT vec2 diffraction_hit;
 
 void main() {
     DiffractionEdge edge = diffraction_edges.edges[gl_PrimitiveID];
-    // Empty GPU buffers use a zero-radius placeholder, which cannot intersect.
-    if (edge.diffraction_radius <= 0.0) {
-        return;
-    }
 
     // The diffraction primitive is represented as a finite plane strip around
     // the authored edge. The plane is virtual: it detects nearby rays, then
@@ -75,7 +48,7 @@ void main() {
         return;
     }
     float distance_to_edge = length(hit_position - closest);
-    
+
     // The exterior strip ends where its triangular sampling kernel reaches zero.
     if (distance_to_edge >= edge.diffraction_radius) {
         return;

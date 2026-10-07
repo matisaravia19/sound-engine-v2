@@ -44,7 +44,7 @@ The code implements one broadband scalar acoustic model. Material arrays do not 
 
 `.rgen` starts rays; `.rmiss` handles a ray that hits nothing; `.rchit` handles the closest accepted hit; `.rint` intersects procedural geometry; `.comp` runs a compute dispatch. Plain `.glsl` files below are includes, not separately dispatched shaders.
 
-All seven acoustic entry points are loaded and registered by [AcousticPipeline::new](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs:64). Registration does not mean every stage executes in every scene: diffraction stages need edge geometry, and hit stages need a hit. The eighth entry point is loaded by the convolver.
+All seven acoustic entry points are loaded and registered by [AcousticPipeline::new](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs). Registration does not mean every stage executes in every scene: diffraction stages need edge geometry, and hit stages need a hit. The eighth entry point is loaded by the convolver.
 
 | ID | Shader | Role and caller | Connected feature |
 | --- | --- | --- | --- |
@@ -57,12 +57,14 @@ All seven acoustic entry points are loaded and registered by [AcousticPipeline::
 | H7 | [listener_backward_diffraction.rchit.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_backward_diffraction.rchit.glsl) | Returns accepted edge/proxy hit data to the path loop. | E6 |
 | H8 | [multiply.comp.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/shaders/multiply.comp.glsl) | Multiplies input and IR spectra between forward and inverse FFTs. | E14 |
 | H9 | [listener_transport.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_transport.glsl) | Included by H1; contains visibility tracing and assembles transport helpers. | E3–E7 |
-| H10 | [listener_interface.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_interface.glsl) | Included through H9; shared descriptors, payloads, constants, and host/shader layouts. | Acoustic pipeline |
+| H10 | [listener_interface.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_interface.glsl) | Included through H9; ray-generation descriptors, payload locations, constants, and host push-constant layout. | Acoustic pipeline |
 | H11 | [listener_sampling.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_sampling.glsl) | Included through H9; seeded sampling, PDFs, basis construction, numerical helpers. | E4, E6–E7 |
 | H12 | [listener_output.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_output.glsl) | Included through H9; direct response, delay interpolation, mono/stereo/binaural deposition. | E3, E8–E10 |
 | H13 | [listener_surface.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_surface.glsl) | Included through H9; reflection evaluation and continuation. | E4 |
 | H14 | [listener_diffraction.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_diffraction.glsl) | Included through H9; scalar edge response and edge-path handling. | E6 |
 | H15 | [listener_path.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_path.glsl) | Included by H1; path state, interaction scheduling, termination, surface/edge dispatch. | E4, E6–E7 |
+| H16 | [traversal_payloads.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/traversal_payloads.glsl) | Shared hit and visibility payloads used by H1–H5 and H7; hit tags and returned data have one definition. | Acoustic pipeline |
+| H17 | [diffraction_edges.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/diffraction_edges.glsl) | Shared edge storage layout used by H1 and H6, matching the host GPU record. | E6 |
 
 VkFFT generates its FFT kernels internally. They are additional runtime GPU code, but not additional first-party `.glsl` source files. Build output, generated SPIR-V, and vendored VkFFT examples are not separate engine features.
 
