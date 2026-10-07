@@ -4,7 +4,7 @@
 //! wrappers so simulation and auralization code can record work at a higher
 //! level.
 
-/// Vulkan instance, device, and queue ownership.
+/// Vulkan device selection, shared lifetime, and subsystem assembly.
 pub mod backend;
 /// Compute pipelines, command submission, and synchronization.
 pub mod compute;

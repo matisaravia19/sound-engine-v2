@@ -127,7 +127,7 @@ impl ComputeContext {
         })
     }
 
-    fn acquire_command_buffer(&self, queue: &QueueSet) -> SoundResult<vk::CommandBuffer> {
+    fn acquire_command_buffer(&self, queue: &ComputeQueue) -> SoundResult<vk::CommandBuffer> {
         if let Some(buffer) = self
             .available_command_buffers
             .lock()
