@@ -6,9 +6,7 @@
 
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use std::f32::consts::TAU;
@@ -21,12 +19,23 @@ const BLOCK_COUNT: usize = 8;
 const FIRST_DELAY: usize = 128;
 const SECOND_DELAY: usize = 152;
 const FREQUENCIES_HZ: &[f32] = &[125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
+const MAXIMUM_RELATIVE_L2: f32 = 1.0e-4;
 
 #[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn sine_convolution_matches_analytic_response() -> SoundResult<()> {
     let gpu = Arc::new(VkBackend::new()?);
-    let mut engine = AuralizationEngine::new(gpu.clone(), engine_config())?;
+    let mut engine = AuralizationEngine::new(
+        gpu.clone(),
+        SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate: SAMPLE_RATE,
+            ir_num_samples: IR_SAMPLE_COUNT as u32,
+        },
+        AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
+    )?;
     let mut ir = vec![IrSample::zero(); IR_SAMPLE_COUNT];
     ir[FIRST_DELAY] = IrSample {
         left: 1.0,
@@ -58,6 +67,12 @@ fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundR
     let mut output = vec![0.0; BLOCK_SIZE * 2];
     for _ in 0..BLOCK_COUNT {
         engine.render_block(&mut output)?;
+        assert!(
+            output
+                .chunks_exact(2)
+                .all(|frame| (frame[0] - frame[1]).abs() < 1.0e-4),
+            "identical stereo filters diverged at {frequency} Hz"
+        );
         measured.extend(output.chunks_exact(2).map(|frame| frame[0]));
     }
     engine.stop_voice(voice_id);
@@ -79,6 +94,11 @@ fn validate_frequency(engine: &mut AuralizationEngine, frequency: f32) -> SoundR
     println!(
         "{frequency:.3},{expected_gain:.9},{:.9},{relative_l2:.9},{measured_rms:.9}",
         measured_rms / input_rms.max(1.0e-12),
+    );
+    assert!(
+        relative_l2 <= MAXIMUM_RELATIVE_L2,
+        "convolution at {frequency} Hz differs from the delayed-input reference: \
+         relative L2 {relative_l2} exceeds {MAXIMUM_RELATIVE_L2}"
     );
     Ok(())
 }
@@ -111,26 +131,4 @@ fn relative_l2(measured: &[f32], exact: &[f32]) -> f32 {
         .sum::<f32>()
         .sqrt();
     error / reference.max(1.0e-12)
-}
-
-fn engine_config() -> EngineConfig {
-    EngineConfig {
-        sound: SoundConfig {
-            output_channels: OutputChannels::Stereo,
-            sample_rate: SAMPLE_RATE,
-            ir_num_samples: IR_SAMPLE_COUNT as u32,
-        },
-        acoustics: AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 343.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: IrCacheConfig::default(),
-        binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
-    }
 }

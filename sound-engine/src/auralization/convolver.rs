@@ -1,7 +1,7 @@
 use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::auralization::IR_TRANSITION_BLOCKS;
 use crate::auralization::voice::{Voice, VoiceConvolutionState};
-use crate::core::config::{EngineConfig, OutputChannels};
+use crate::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::{
@@ -28,8 +28,10 @@ const MULTIPLY_SHADER_PATH: &str = concat!(
 /// Each block is padded to fit the full IR. Mutable operations reserve exclusive
 /// access to the reusable signal and IR scratch buffers across GPU submissions.
 pub struct FftConvolver {
-    /// Engine configuration containing block size, channel layout, and IR length.
-    config: EngineConfig,
+    /// Audio layout and sample rate shared by dry sounds and impulse responses.
+    sound: SoundConfig,
+    /// Number of input frames consumed in one convolution block.
+    block_size: usize,
     /// Shared FFT plan for transforming mono input signals to frequency-domain.
     signal_plan: FFTPlan,
     /// Reusable GPU storage buffer for signal FFT input and output.
@@ -74,9 +76,13 @@ impl Drop for FftConvolver {
 
 impl FftConvolver {
     /// Creates reusable signal/IR FFT plans and the complex multiply pipeline.
-    pub fn new(gpu: Arc<VkBackend>, config: EngineConfig) -> SoundResult<Self> {
-        let fft_size = validated_fft_size(config)?;
-        let tail_size = fft_size - config.auralization.block_size;
+    pub fn new(
+        gpu: Arc<VkBackend>,
+        sound: SoundConfig,
+        config: AuralizationConfig,
+    ) -> SoundResult<Self> {
+        let fft_size = validated_fft_size(sound, config)?;
+        let tail_size = fft_size - config.block_size;
         let initialization_fence = crate::gpu::resource::OwnedFence::new(gpu.device_context())?;
 
         let (signal_plan, signal_buffer) = Self::build_fft_plan(
@@ -97,7 +103,8 @@ impl FftConvolver {
         let multiply_pipeline_id = Self::create_multiply_pipeline(gpu.as_ref())?;
 
         Ok(Self {
-            config,
+            sound,
+            block_size: config.block_size,
             signal_plan,
             signal_buffer,
             ir_plan,
@@ -139,7 +146,7 @@ impl FftConvolver {
         snapshot: &GpuIrSnapshot,
     ) -> SoundResult<Arc<ImpulseResponse>> {
         let source_buffer =
-            validate_gpu_ir_snapshot(snapshot, self.ir_capacity(), self.config.sound.sample_rate)?;
+            validate_gpu_ir_snapshot(snapshot, self.ir_capacity(), self.sound.sample_rate)?;
 
         let buffer = self
             .gpu
@@ -197,7 +204,7 @@ impl FftConvolver {
     fn ir_capacity(&self) -> usize {
         // Linear convolution needs N + M - 1 samples; the remaining FFT bins
         // must stay zero so the last input samples cannot wrap into the head.
-        self.fft_size - self.config.auralization.block_size + 1
+        self.fft_size - self.block_size + 1
     }
 
     /// Transforms the scratch time-domain IR and copies its reusable spectrum.
@@ -254,13 +261,12 @@ impl FftConvolver {
             blend_ir_transition(
                 output_block,
                 &transition.output_buffer,
-                self.config.sound.output_channels.count(),
+                self.sound.output_channels.count(),
                 transition.processed_frames,
                 transition.total_frames,
             );
-            transition.processed_frames = transition
-                .processed_frames
-                .saturating_add(self.config.auralization.block_size);
+            transition.processed_frames =
+                transition.processed_frames.saturating_add(self.block_size);
             transition.processed_frames >= transition.total_frames
         } else {
             false
@@ -283,13 +289,13 @@ impl FftConvolver {
         voice: &mut Voice,
         output_block: &mut [f32],
     ) -> SoundResult<bool> {
-        let output_channels = self.config.sound.output_channels.count();
+        let output_channels = self.sound.output_channels.count();
         crate::validate!(
-            output_block.len() == self.config.auralization.block_size * output_channels,
+            output_block.len() == self.block_size * output_channels,
             ErrorCode::InvalidArgument,
             "output_block length {} must equal block size {} times channel count {}",
             output_block.len(),
-            self.config.auralization.block_size,
+            self.block_size,
             output_channels,
         );
 
@@ -306,9 +312,8 @@ impl FftConvolver {
                 transition.processed_frames,
                 transition.total_frames,
             );
-            transition.processed_frames = transition
-                .processed_frames
-                .saturating_add(self.config.auralization.block_size);
+            transition.processed_frames =
+                transition.processed_frames.saturating_add(self.block_size);
             transition.processed_frames >= transition.total_frames || !previous_has_tail
         } else {
             false
@@ -333,8 +338,8 @@ impl FftConvolver {
         };
         voice.transition_impulse_response(
             impulse_response,
-            self.config.auralization.block_size * self.config.sound.output_channels.count(),
-            self.config.auralization.block_size * IR_TRANSITION_BLOCKS,
+            self.block_size * self.sound.output_channels.count(),
+            self.block_size * IR_TRANSITION_BLOCKS,
         );
     }
 
@@ -367,7 +372,7 @@ impl FftConvolver {
         self.convolve(convolution, input_block)?;
         self.overlap_add(&mut convolution.complex_cpu_buffer, &mut convolution.tail);
         self.copy_samples(
-            &convolution.complex_cpu_buffer[..self.config.auralization.block_size],
+            &convolution.complex_cpu_buffer[..self.block_size],
             output_block,
         );
         Ok(())
@@ -385,29 +390,27 @@ impl FftConvolver {
         }
 
         let tail_remaining = convolution.tail.len() - convolution.tail_position;
-        let frames_to_copy = self.config.auralization.block_size.min(tail_remaining);
+        let frames_to_copy = self.block_size.min(tail_remaining);
         self.copy_samples(
             &convolution.tail
                 [convolution.tail_position..convolution.tail_position + frames_to_copy],
             output_block,
         );
-        convolution.tail_position = convolution
-            .tail_position
-            .saturating_add(self.config.auralization.block_size);
+        convolution.tail_position = convolution.tail_position.saturating_add(self.block_size);
         true
     }
 
     /// Validates that input and output block sizes match expected channel layout and FFT capacity.
     fn validate_block_lengths(&self, input_block: &[f32], output_block: &[f32]) -> SoundResult<()> {
         crate::validate!(
-            input_block.len() == self.config.auralization.block_size,
+            input_block.len() == self.block_size,
             ErrorCode::InvalidArgument,
             "input_block length {} must equal block size {}",
             input_block.len(),
-            self.config.auralization.block_size
+            self.block_size
         );
 
-        let output_channels = self.config.sound.output_channels.count();
+        let output_channels = self.sound.output_channels.count();
         crate::validate!(
             output_block.len() == input_block.len() * output_channels,
             ErrorCode::InvalidArgument,
@@ -543,14 +546,14 @@ impl FftConvolver {
             frame[1] += previous[1];
         }
 
-        let tail_start = self.config.auralization.block_size;
+        let tail_start = self.block_size;
         let tail_end = tail_start + tail.len();
         tail.copy_from_slice(&output[tail_start..tail_end]);
     }
 
     /// Unpacks time-domain complex frames into the configured channel layout.
     fn copy_samples(&self, frames: &[[f32; 2]], output: &mut [f32]) {
-        match self.config.sound.output_channels {
+        match self.sound.output_channels {
             OutputChannels::Mono => {
                 for (sample, frame) in output[..frames.len()].iter_mut().zip(frames) {
                     *sample = frame[0];
@@ -629,19 +632,15 @@ impl FftConvolver {
     }
 }
 
-fn validated_fft_size(config: EngineConfig) -> SoundResult<usize> {
-    if config.auralization.block_size == 0
-        || config.sound.ir_num_samples == 0
-        || config.sound.sample_rate == 0
-    {
+fn validated_fft_size(sound: SoundConfig, config: AuralizationConfig) -> SoundResult<usize> {
+    if config.block_size == 0 || sound.ir_num_samples == 0 || sound.sample_rate == 0 {
         return Err(SoundError::invalid_argument(
             "FFT block size, IR length and sample rate must be non-zero",
         ));
     }
     config
-        .auralization
         .block_size
-        .checked_add(config.sound.ir_num_samples as usize - 1)
+        .checked_add(sound.ir_num_samples as usize - 1)
         .and_then(usize::checked_next_power_of_two)
         // The multiply shader uses a 32-bit element count; allocations must also
         // fit Rust's addressable slice size before any GPU work is initialized.

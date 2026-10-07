@@ -97,7 +97,8 @@ fn exercise_engine_lifecycle(gpu: &Arc<VkBackend>) {
             }],
         })
         .unwrap();
-    let mut audio = AuralizationEngine::new(gpu.clone(), config).unwrap();
+    let mut audio =
+        AuralizationEngine::new(gpu.clone(), config.sound, config.auralization).unwrap();
     let sound = audio
         .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.01; 1024]).unwrap())
         .unwrap();

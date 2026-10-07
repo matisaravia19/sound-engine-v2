@@ -3,7 +3,7 @@ use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
 use crate::auralization::convolver::{FftConvolver, ImpulseResponse};
 use crate::auralization::voice::{Voice, VoiceState};
 use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
-use crate::core::config::EngineConfig;
+use crate::core::config::{AuralizationConfig, SoundConfig};
 use crate::core::error::ErrorCode;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
@@ -39,7 +39,7 @@ impl PlaySoundRequest {
 /// GPU-backed convolver. It performs no device I/O; callers drive it by
 /// requesting sounds and pulling interleaved output blocks.
 pub struct AuralizationEngine {
-    config: EngineConfig,
+    sound: SoundConfig,
     sound_bank: SoundBank,
     impulse_responses: HashMap<ImpulseResponseId, Arc<ImpulseResponse>>,
     active_voices: HashMap<VoiceId, ActiveVoice>,
@@ -60,14 +60,17 @@ struct ActiveVoice {
 
 impl AuralizationEngine {
     /// Creates an engine with an empty sound bank and convolver.
-    pub fn new(gpu: Arc<VkBackend>, config: EngineConfig) -> SoundResult<Self> {
-        validate_config(config)?;
-        let block_size = config.auralization.block_size;
-        let output_channels = config.sound.output_channels.count();
-        let convolver = FftConvolver::new(gpu, config)?;
+    pub fn new(
+        gpu: Arc<VkBackend>,
+        sound: SoundConfig,
+        config: AuralizationConfig,
+    ) -> SoundResult<Self> {
+        let block_size = config.block_size;
+        let output_channels = sound.output_channels.count();
+        let convolver = FftConvolver::new(gpu, sound, config)?;
 
         Ok(Self {
-            config,
+            sound,
             sound_bank: SoundBank::new(),
             impulse_responses: HashMap::new(),
             active_voices: HashMap::new(),
@@ -81,17 +84,17 @@ impl AuralizationEngine {
 
     /// Returns the engine sample rate used for all loaded assets and IRs.
     pub fn sample_rate(&self) -> u32 {
-        self.config.sound.sample_rate
+        self.sound.sample_rate
     }
 
     /// Returns the number of frames rendered per block.
     pub fn block_size(&self) -> usize {
-        self.config.auralization.block_size
+        self.dry_block.len()
     }
 
     /// Returns the number of interleaved output channels per frame.
     pub fn output_channels(&self) -> usize {
-        self.config.sound.output_channels.count()
+        self.sound.output_channels.count()
     }
 
     /// Returns an immutable view of the sound bank.
@@ -106,17 +109,16 @@ impl AuralizationEngine {
 
     /// Loads a WAV asset into the sound bank at the engine sample rate.
     pub fn load_wav_sound(&mut self, path: impl AsRef<Path>) -> SoundResult<SoundId> {
-        self.sound_bank
-            .load_wav(path, self.config.sound.sample_rate)
+        self.sound_bank.load_wav(path, self.sound.sample_rate)
     }
 
     /// Inserts a mono sound asset into the engine sound bank.
     pub fn insert_sound(&mut self, asset: SoundAsset) -> SoundResult<SoundId> {
-        if asset.sample_rate() != self.config.sound.sample_rate {
+        if asset.sample_rate() != self.sound.sample_rate {
             return Err(SoundError::invalid_argument(format!(
                 "sound asset sample rate {} must match engine sample rate {}",
                 asset.sample_rate(),
-                self.config.sound.sample_rate
+                self.sound.sample_rate
             )));
         }
         self.sound_bank.insert(asset)
@@ -125,7 +127,7 @@ impl AuralizationEngine {
     /// Borrows a valid dry asset so spatial callers can reject it before preparing GPU IRs.
     pub(crate) fn playable_sound(&self, sound_id: SoundId) -> SoundResult<&SoundAsset> {
         let asset = self.sound_bank.get(sound_id)?;
-        if asset.sample_rate() != self.config.sound.sample_rate {
+        if asset.sample_rate() != self.sound.sample_rate {
             return Err(SoundError::invalid_argument(
                 "Sound sample rate must match the engine",
             ));
@@ -194,11 +196,7 @@ impl AuralizationEngine {
             .get_mut(&voice_id)
             .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {}", voice_id)))?;
 
-        let transition_frames = self
-            .config
-            .auralization
-            .block_size
-            .saturating_mul(IR_TRANSITION_BLOCKS);
+        let transition_frames = self.dry_block.len().saturating_mul(IR_TRANSITION_BLOCKS);
         voice.voice.queue_impulse_response_transition(
             impulse_response,
             self.wet_block.len(),
@@ -285,7 +283,7 @@ impl AuralizationEngine {
             self.wet_block.fill(0.0);
             match voice.state {
                 VoiceState::Playing => {
-                    render_asset_block(asset, voice, &mut self.dry_block);
+                    render_asset_samples(asset, &mut voice.cursor, voice.gain, &mut self.dry_block);
                     self.convolver
                         .process_block(voice, &self.dry_block, &mut self.wet_block)?;
                     if voice.cursor >= asset.len() {
@@ -324,23 +322,6 @@ impl AuralizationEngine {
     }
 }
 
-fn validate_config(config: EngineConfig) -> SoundResult<()> {
-    if config.sound.sample_rate == 0 {
-        return Err(SoundError::invalid_argument("sample_rate must be > 0"));
-    }
-    if config.sound.ir_num_samples == 0 {
-        return Err(SoundError::invalid_argument("ir_num_samples must be > 0"));
-    }
-    if config.auralization.block_size == 0 {
-        return Err(SoundError::invalid_argument("block_size must be > 0"));
-    }
-    Ok(())
-}
-
-fn render_asset_block(asset: &SoundAsset, voice: &mut Voice, out_mono: &mut [f32]) {
-    render_asset_samples(asset, &mut voice.cursor, voice.gain, out_mono);
-}
-
 fn render_asset_samples(asset: &SoundAsset, cursor: &mut usize, gain: f32, out_mono: &mut [f32]) {
     out_mono.fill(0.0);
     let available = asset.len().saturating_sub(*cursor);
@@ -366,7 +347,18 @@ mod tests {
     #[ignore = "requires Vulkan; run hardware tests serially"]
     fn audit_voices_retain_assets_and_reject_invalid_registry_state() {
         let gpu = Arc::new(VkBackend::new().unwrap());
-        let mut engine = AuralizationEngine::new(gpu, test_config()).unwrap();
+        let mut engine = AuralizationEngine::new(
+            gpu,
+            SoundConfig {
+                output_channels: crate::core::config::OutputChannels::Stereo,
+                sample_rate: 48_000,
+                ir_num_samples: 128,
+            },
+            AuralizationConfig {
+                block_size: 64,
+            },
+        )
+        .unwrap();
         engine
             .register_impulse_response(1, &[IrSample::new(1.0, 0.5)])
             .unwrap();
@@ -400,16 +392,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_sample_rate() {
-        let mut config = test_config();
-        config.sound.sample_rate = 0;
-
-        let error = validate_config(config).unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::InvalidArgument);
-    }
-
-    #[test]
     fn renders_asset_block_with_gain_and_padding() {
         let asset = SoundAsset::from_mono_samples(48_000, vec![0.5, -0.25]).unwrap();
         let mut cursor = 0;
@@ -419,27 +401,5 @@ mod tests {
 
         assert_eq!(block, vec![1.0, -0.5, 0.0, 0.0]);
         assert_eq!(cursor, 2);
-    }
-
-    fn test_config() -> EngineConfig {
-        EngineConfig {
-            sound: crate::core::config::SoundConfig {
-                output_channels: crate::core::config::OutputChannels::Stereo,
-                sample_rate: 48_000,
-                ir_num_samples: 128,
-            },
-            acoustics: crate::core::config::AcousticsConfig {
-                listener_ray_count: 1,
-                max_bounces: 0,
-                maximum_path_length: 343.0,
-                minimum_throughput: 1.0e-6,
-                sampling_seed: 0,
-            },
-            cache: crate::core::config::IrCacheConfig::default(),
-            binaural: Default::default(),
-            auralization: crate::core::config::AuralizationConfig {
-                block_size: 64,
-            },
-        }
     }
 }

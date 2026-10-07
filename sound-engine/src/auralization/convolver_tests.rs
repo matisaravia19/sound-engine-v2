@@ -1,39 +1,30 @@
 use super::*;
 use crate::gpu::resource::OwnedFence;
 
-fn audit_config() -> EngineConfig {
-    EngineConfig {
-        sound: crate::core::config::SoundConfig {
-            output_channels: OutputChannels::Stereo,
-            sample_rate: 48_000,
-            ir_num_samples: 1024,
-        },
-        acoustics: crate::core::config::AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 100.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: Default::default(),
-        binaural: Default::default(),
-        auralization: crate::core::config::AuralizationConfig {
-            block_size: 1024,
-        },
-    }
-}
+const SOUND_CONFIG: SoundConfig = SoundConfig {
+    output_channels: OutputChannels::Stereo,
+    sample_rate: 48_000,
+    ir_num_samples: 1024,
+};
+const BLOCK_CONFIG: AuralizationConfig = AuralizationConfig {
+    block_size: 1024,
+};
 
 #[test]
 fn fft_dimensions_reject_zero_and_overflow_before_allocating() {
-    let mut config = audit_config();
-    assert_eq!(validated_fft_size(config).unwrap(), 2048);
-    config.auralization.block_size = 0;
-    assert!(validated_fft_size(config).is_err());
-    config.auralization.block_size = usize::MAX;
-    assert!(validated_fft_size(config).is_err());
-    config.auralization.block_size = 1024;
-    config.sound.ir_num_samples = 0;
-    assert!(validated_fft_size(config).is_err());
+    let mut sound = SOUND_CONFIG;
+    let mut config = BLOCK_CONFIG;
+    assert_eq!(validated_fft_size(sound, config).unwrap(), 2048);
+    config.block_size = 0;
+    assert!(validated_fft_size(sound, config).is_err());
+    config.block_size = usize::MAX;
+    assert!(validated_fft_size(sound, config).is_err());
+    config.block_size = 1024;
+    sound.ir_num_samples = 0;
+    assert!(validated_fft_size(sound, config).is_err());
+    sound.ir_num_samples = 1024;
+    sound.sample_rate = 0;
+    assert!(validated_fft_size(sound, config).is_err());
 }
 
 #[test]
@@ -101,7 +92,7 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
     let gpu = Arc::new(VkBackend::new().unwrap());
-    let mut convolver = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
+    let mut convolver = FftConvolver::new(gpu.clone(), SOUND_CONFIG, BLOCK_CONFIG).unwrap();
     let taps = [
         IrSample::new(0.5, -0.25),
         IrSample::new(0.125, 0.75),
@@ -174,7 +165,7 @@ fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
 fn audit_fft_initialization_and_ir_owner_lifetime() {
     let gpu = Arc::new(VkBackend::new().unwrap());
     let device = Arc::downgrade(&gpu.device_context());
-    let mut convolver = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
+    let mut convolver = FftConvolver::new(gpu.clone(), SOUND_CONFIG, BLOCK_CONFIG).unwrap();
     let ir = convolver
         .create_impulse_response(&[IrSample::new(1.0, 0.5)])
         .unwrap();
@@ -214,7 +205,7 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
     drop(convolver);
     assert_eq!(gpu.compute().pipeline_count(), 0);
     for _ in 0..2 {
-        let replacement = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
+        let replacement = FftConvolver::new(gpu.clone(), SOUND_CONFIG, BLOCK_CONFIG).unwrap();
         assert_eq!(gpu.compute().pipeline_count(), 1);
         drop(replacement);
         assert_eq!(gpu.compute().pipeline_count(), 0);
@@ -271,10 +262,14 @@ fn ir_transition_ramps_every_frame_and_reaches_the_incoming_signal() {
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
     let gpu = Arc::new(VkBackend::new().unwrap());
-    let mut config = audit_config();
-    config.auralization.block_size = 4;
-    config.sound.ir_num_samples = 5;
-    let mut convolver = FftConvolver::new(gpu.clone(), config).unwrap();
+    let sound = SoundConfig {
+        ir_num_samples: 5,
+        ..SOUND_CONFIG
+    };
+    let config = AuralizationConfig {
+        block_size: 4,
+    };
+    let mut convolver = FftConvolver::new(gpu.clone(), sound, config).unwrap();
     assert_eq!(convolver.fft_size(), 8);
 
     // Six taps fit in eight FFT bins, but their convolution with four input
@@ -286,7 +281,7 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
     let mut snapshot = GpuIrSnapshot {
         buffer: Some(buffer.clone()),
         byte_size: 48,
-        sample_rate: config.sound.sample_rate,
+        sample_rate: sound.sample_rate,
         sample_count: 6,
         energy: None,
         scene_version: 1,

@@ -2,9 +2,7 @@
 //!
 //! The benchmark uses the production VkFFT convolution path, a 341 ms stereo
 //! impulse response, and a continuous 1 kHz sine asset. Reported tail latency is
-//! compared with the 1024-frame audio deadline at 48 kHz. The same source file
-//! exists on both acoustic comparison branches so transport changes cannot alter
-//! the workload.
+//! compared with the 1024-frame audio deadline at 48 kHz.
 
 #[path = "support/timing.rs"]
 mod timing;
@@ -12,9 +10,7 @@ use timing::{milliseconds, percentile};
 
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use std::f32::consts::TAU;
@@ -49,7 +45,17 @@ fn benchmark_voice_count(
     voice_count: usize,
 ) -> SoundResult<()> {
     let engine_start = Instant::now();
-    let mut engine = AuralizationEngine::new(gpu, engine_config())?;
+    let mut engine = AuralizationEngine::new(
+        gpu,
+        SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate: SAMPLE_RATE,
+            ir_num_samples: IR_SAMPLE_COUNT as u32,
+        },
+        AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
+    )?;
     let engine_setup = engine_start.elapsed();
 
     // Two fractional taps exercise stereo complex packing without making the
@@ -106,26 +112,4 @@ fn benchmark_voice_count(
         milliseconds(p99) / deadline_ms,
     );
     Ok(())
-}
-
-fn engine_config() -> EngineConfig {
-    EngineConfig {
-        sound: SoundConfig {
-            output_channels: OutputChannels::Stereo,
-            sample_rate: SAMPLE_RATE,
-            ir_num_samples: IR_SAMPLE_COUNT as u32,
-        },
-        acoustics: AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 343.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: IrCacheConfig::default(),
-        binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
-    }
 }

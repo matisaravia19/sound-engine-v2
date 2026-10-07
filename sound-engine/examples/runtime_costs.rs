@@ -79,7 +79,7 @@ fn measure_gpu() -> SoundResult<()> {
         },
     };
     let gpu = Arc::new(VkBackend::new()?);
-    let mut convolver = FftConvolver::new(gpu.clone(), config)?;
+    let mut convolver = FftConvolver::new(gpu.clone(), config.sound, config.auralization)?;
     let samples = [IrSample::new(1.0, 0.5)];
     let ir = convolver.create_impulse_response(&samples)?;
     let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());

@@ -7,9 +7,7 @@
 
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use std::f32::consts::TAU;
@@ -28,7 +26,17 @@ const MAXIMUM_RELATIVE_L2: f64 = 1.0e-4;
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn overlapping_ir_updates_preserve_continuity() -> SoundResult<()> {
     let gpu = Arc::new(VkBackend::new()?);
-    let mut engine = AuralizationEngine::new(gpu, config())?;
+    let mut engine = AuralizationEngine::new(
+        gpu,
+        SoundConfig {
+            output_channels: OutputChannels::Mono,
+            sample_rate: SAMPLE_RATE,
+            ir_num_samples: IR_SAMPLES as u32,
+        },
+        AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
+    )?;
     let mut ir = vec![IrSample::zero(); IR_SAMPLES];
     ir[DELAY_SAMPLES] = IrSample {
         left: 1.0,
@@ -59,7 +67,12 @@ fn overlapping_ir_updates_preserve_continuity() -> SoundResult<()> {
         let expected = (0..BLOCK_SIZE)
             .map(|frame| sine_sample(output_start + frame - DELAY_SAMPLES))
             .collect::<Vec<_>>();
-        maximum_relative_l2 = maximum_relative_l2.max(relative_l2(&output, &expected));
+        let error = relative_l2(&output, &expected);
+        assert!(
+            error.is_finite(),
+            "non-finite output after IR update at block {block}"
+        );
+        maximum_relative_l2 = maximum_relative_l2.max(error);
     }
 
     println!("moving IR identical-filter maximum relative L2: {maximum_relative_l2:.9}");
@@ -86,26 +99,4 @@ fn relative_l2(measured: &[f32], expected: &[f32]) -> f64 {
         .map(|sample| (*sample as f64).powi(2))
         .sum::<f64>();
     (error / reference.max(1.0e-24)).sqrt()
-}
-
-fn config() -> EngineConfig {
-    EngineConfig {
-        sound: SoundConfig {
-            output_channels: OutputChannels::Mono,
-            sample_rate: SAMPLE_RATE,
-            ir_num_samples: IR_SAMPLES as u32,
-        },
-        acoustics: AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 343.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: IrCacheConfig::default(),
-        binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
-    }
 }

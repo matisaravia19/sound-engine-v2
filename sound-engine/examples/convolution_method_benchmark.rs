@@ -11,9 +11,7 @@ use timing::{milliseconds, percentile};
 
 use sound_engine::acoustics::IrSample;
 use sound_engine::auralization::{AuralizationEngine, PlaySoundRequest, SoundAsset};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use std::process::Command;
@@ -90,7 +88,17 @@ fn run_length(ir_length: usize) -> SoundResult<String> {
     let gpu_setup = gpu_start.elapsed();
 
     let engine_start = Instant::now();
-    let mut engine = AuralizationEngine::new(gpu, engine_config(ir_length))?;
+    let mut engine = AuralizationEngine::new(
+        gpu,
+        SoundConfig {
+            output_channels: OutputChannels::Stereo,
+            sample_rate: SAMPLE_RATE,
+            ir_num_samples: ir_length as u32,
+        },
+        AuralizationConfig {
+            block_size: BLOCK_SIZE,
+        },
+    )?;
     let engine_setup = engine_start.elapsed();
 
     let impulse = impulse_response(ir_length);
@@ -225,26 +233,4 @@ fn deterministic_signal(length: usize) -> Vec<f32> {
             ((state >> 8) as f32 / 16_777_216.0) * 2.0 - 1.0
         })
         .collect()
-}
-
-fn engine_config(ir_length: usize) -> EngineConfig {
-    EngineConfig {
-        sound: SoundConfig {
-            output_channels: OutputChannels::Stereo,
-            sample_rate: SAMPLE_RATE,
-            ir_num_samples: ir_length as u32,
-        },
-        acoustics: AcousticsConfig {
-            listener_ray_count: 1,
-            max_bounces: 0,
-            maximum_path_length: 343.0,
-            minimum_throughput: 0.0,
-            sampling_seed: 0,
-        },
-        cache: IrCacheConfig::default(),
-        binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: BLOCK_SIZE,
-        },
-    }
 }

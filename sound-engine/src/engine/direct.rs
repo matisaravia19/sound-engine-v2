@@ -102,7 +102,7 @@ impl EngineCore {
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
         let acoustics = AcousticsEngine::new(gpu.as_ref(), config)?;
-        let auralization = AuralizationEngine::new(gpu.clone(), config)?;
+        let auralization = AuralizationEngine::new(gpu.clone(), config.sound, config.auralization)?;
 
         Ok(Self {
             acoustics,
