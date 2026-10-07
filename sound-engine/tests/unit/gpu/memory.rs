@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::error::ErrorCode;
 use crate::gpu::backend::VkBackend;
 
 #[test]
@@ -44,7 +45,7 @@ fn audit_empty_transfers_and_invalid_allocations() {
     let buffer = gpu.memory().create_storage_buffer(5).unwrap();
     assert!(gpu.memory().clear_buffer(&buffer).is_err());
     gpu.memory().upload_bytes(&buffer, &[]).unwrap();
-    gpu.memory().download_bytes(&buffer, 0, &mut []).unwrap();
+    gpu.memory().download_bytes(&buffer, &mut []).unwrap();
     assert!(gpu.memory().upload_bytes(&buffer, &[0; 6]).is_err());
     let aligned = gpu.memory().create_storage_buffer(4).unwrap();
     gpu.compute()
@@ -61,10 +62,50 @@ fn audit_empty_transfers_and_invalid_allocations() {
         })
         .unwrap();
     let mut output = [1_u32];
-    gpu.memory()
-        .download_typed(&aligned, 1, &mut output)
-        .unwrap();
+    gpu.memory().download_typed(&aligned, &mut output).unwrap();
     assert_eq!(output, [0]);
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
+fn readback_fills_only_the_output_slice_and_rejects_oversized_reads() {
+    let gpu = VkBackend::new().unwrap();
+    let input = [0x1122_3344_u32, 0x5566_7788, 0x99aa_bbcc, 0xddee_ff00];
+    let buffer = gpu
+        .memory()
+        .create_storage_buffer(size_of_val(&input) as u64)
+        .unwrap();
+    gpu.memory().upload_typed(&buffer, &input).unwrap();
+
+    let mut output = [u32::MAX; 4];
+    gpu.memory()
+        .download_typed(&buffer, &mut output[1..3])
+        .unwrap();
+    assert_eq!(output, [u32::MAX, input[0], input[1], u32::MAX]);
+
+    let mut oversized_words = [u32::MAX; 5];
+    let error = gpu
+        .memory()
+        .download_typed(&buffer, &mut oversized_words)
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert_eq!(oversized_words, [u32::MAX; 5]);
+
+    let mut oversized_bytes = [u8::MAX; 17];
+    let error = gpu
+        .memory()
+        .download_bytes(&buffer, &mut oversized_bytes)
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert_eq!(oversized_bytes, [u8::MAX; 17]);
+
+    let mut bytes = [u8::MAX; 20];
+    gpu.memory()
+        .download_bytes(&buffer, &mut bytes[2..18])
+        .unwrap();
+    assert_eq!(&bytes[2..18], bytemuck::cast_slice::<u32, u8>(&input));
+    assert_eq!(&bytes[..2], &[u8::MAX; 2]);
+    assert_eq!(&bytes[18..], &[u8::MAX; 2]);
 }
 
 #[test]
@@ -83,9 +124,7 @@ fn staging_growth_and_explicit_release_preserve_transfers() {
         let buffer = gpu.memory().create_storage_buffer(bytes).unwrap();
         gpu.memory().upload_typed(&buffer, &input).unwrap();
         let mut output = vec![0_u32; input.len()];
-        gpu.memory()
-            .download_typed(&buffer, output.len(), &mut output)
-            .unwrap();
+        gpu.memory().download_typed(&buffer, &mut output).unwrap();
         assert_eq!(input, output);
         drop(buffer);
     }

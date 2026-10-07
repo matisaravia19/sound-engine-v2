@@ -23,7 +23,7 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
             .unwrap();
         let mut actual = vec![[0.0_f32; 2]; size];
         gpu.memory()
-            .download_typed(&workspace.buffer, size, &mut actual)
+            .download_typed(&workspace.buffer, &mut actual)
             .unwrap();
         // Check selected bins against an independent double-precision DFT.
         for bin in [0, 1.min(size - 1), size / 2, size - 1] {
@@ -49,7 +49,7 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
             })
             .unwrap();
         gpu.memory()
-            .download_typed(&workspace.buffer, size, &mut actual)
+            .download_typed(&workspace.buffer, &mut actual)
             .unwrap();
         for (actual, expected) in actual.iter().zip(&input) {
             for channel in 0..2 {

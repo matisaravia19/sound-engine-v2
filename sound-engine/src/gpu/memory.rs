@@ -267,29 +267,19 @@ impl GpuAllocator {
         self.upload_bytes(destination, bytemuck::cast_slice(data))
     }
 
-    /// Downloads bytes through the shared staging buffer and waits for completion.
-    pub fn download_bytes(
-        &self,
-        src: &BufferHandle,
-        size: usize,
-        out: &mut [u8],
-    ) -> SoundResult<()> {
-        self.validate_owner(src)?;
-        if size == 0 {
+    /// Fills `output` from the source buffer's prefix and waits for completion.
+    /// The output slice determines the transfer size; pass a subslice for a partial read.
+    pub fn download_bytes(&self, source: &BufferHandle, output: &mut [u8]) -> SoundResult<()> {
+        self.validate_owner(source)?;
+        if output.is_empty() {
             return Ok(());
         }
-        let copy_size = size as u64;
-        if copy_size > src.size {
+        let copy_size = output.len() as vk::DeviceSize;
+        if copy_size > source.size {
             return Err(SoundError::invalid_argument(format!(
                 "Download size {} exceeds source buffer size {}",
-                size, src.size
-            )));
-        }
-
-        if out.len() < size {
-            return Err(SoundError::invalid_argument(format!(
-                "Output slice too small for download: out={}, requested={size}",
-                out.len()
+                output.len(),
+                source.size
             )));
         }
 
@@ -300,40 +290,24 @@ impl GpuAllocator {
 
         self.ensure_staging_capacity(&mut staging_buffer, copy_size)?;
         self.copy_buffer(
-            src,
+            source,
             &staging_buffer,
             copy_size,
             Some(BufferBarrierSpec::transfer_write_to_host_read(
                 staging_buffer.buffer,
             )),
         )?;
-        self.download_from_staging(&staging_buffer, size, out)?;
-
-        Ok(())
+        self.download_from_staging(&staging_buffer, output)
     }
 
-    /// Downloads `count` POD elements into `out`.
+    /// Fills `output` with POD elements from the source buffer's prefix.
+    /// Shares the synchronous staging transfer used by [`Self::download_bytes`].
     pub fn download_typed<T: Pod>(
         &self,
-        src: &BufferHandle,
-        count: usize,
-        out: &mut [T],
+        source: &BufferHandle,
+        output: &mut [T],
     ) -> SoundResult<()> {
-        if count > out.len() {
-            return Err(SoundError::invalid_argument(format!(
-                "download_typed count {} exceeds output len {}",
-                count,
-                out.len()
-            )));
-        }
-
-        let byte_size = count
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| SoundError::invalid_argument("download_typed byte size overflow"))?;
-
-        self.download_bytes(src, byte_size, bytemuck::cast_slice_mut::<T, u8>(out))?;
-
-        Ok(())
+        self.download_bytes(source, bytemuck::cast_slice_mut(output))
     }
 
     fn create_staging_buffer(
@@ -367,8 +341,7 @@ impl GpuAllocator {
     fn download_from_staging(
         &self,
         staging_buffer: &BufferHandle,
-        size: usize,
-        out: &mut [u8],
+        output: &mut [u8],
     ) -> SoundResult<()> {
         let mapped_ptr = self
             .allocator
@@ -380,10 +353,14 @@ impl GpuAllocator {
         }
 
         self.allocator
-            .invalidate_allocation(&staging_buffer.allocation, 0, size as u64)?;
+            .invalidate_allocation(&staging_buffer.allocation, 0, output.len() as u64)?;
 
         unsafe {
-            std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, out.as_mut_ptr(), size);
+            std::ptr::copy_nonoverlapping(
+                mapped_ptr as *const u8,
+                output.as_mut_ptr(),
+                output.len(),
+            );
         }
         Ok(())
     }

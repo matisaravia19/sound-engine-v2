@@ -158,7 +158,7 @@ impl GpuConvolution {
 
         self.gpu
             .memory()
-            .download_typed(&self.signal.buffer, signal.len(), signal)
+            .download_typed(&self.signal.buffer, signal)
     }
 
     fn transform_staged_ir(&mut self) -> SoundResult<BufferHandle> {

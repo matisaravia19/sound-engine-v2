@@ -312,7 +312,7 @@ fn samples(core: &EngineCore, voice: VoiceId) -> Vec<IrSample> {
     let mut result = vec![IrSample::zero(); buffer.size as usize / 8];
     core.gpu
         .memory()
-        .download_typed(buffer, result.len(), &mut result)
+        .download_typed(buffer, &mut result)
         .unwrap();
     result
 }

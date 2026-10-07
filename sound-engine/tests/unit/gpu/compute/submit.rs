@@ -83,9 +83,7 @@ fn submissions_wait_on_their_originating_context_with_overlapping_ids() {
     assert!(first.compute().in_flight.lock().unwrap().is_empty());
     for (gpu, buffer) in [(&first, &first_buffer), (&second, &second_buffer)] {
         let mut output = [u32::MAX; 4];
-        gpu.memory()
-            .download_typed(buffer, output.len(), &mut output)
-            .unwrap();
+        gpu.memory().download_typed(buffer, &mut output).unwrap();
         assert_eq!(output, [0; 4]);
     }
 }

@@ -242,8 +242,6 @@ fn update<'a>(
 fn read_records<T: bytemuck::Pod>(gpu: &VkBackend, buffer: &BufferHandle) -> Vec<T> {
     let count = buffer.size as usize / size_of::<T>();
     let mut records = vec![T::zeroed(); count];
-    gpu.memory()
-        .download_typed(buffer, count, &mut records)
-        .unwrap();
+    gpu.memory().download_typed(buffer, &mut records).unwrap();
     records
 }

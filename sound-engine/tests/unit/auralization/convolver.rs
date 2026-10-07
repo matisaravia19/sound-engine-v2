@@ -108,7 +108,7 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
         .unwrap();
     let mut spectrum = [[0.0_f32; 2]; 8];
     gpu.memory()
-        .download_typed(&ir.buffer, 8, &mut spectrum)
+        .download_typed(&ir.buffer, &mut spectrum)
         .unwrap();
     for value in spectrum {
         assert!((value[0] - 1.0).abs() < 1e-4 && (value[1] - 0.5).abs() < 1e-4);

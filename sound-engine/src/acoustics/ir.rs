@@ -93,8 +93,7 @@ impl GpuIrSnapshot {
     /// `gpu` must own this snapshot's buffer; a foreign backend is rejected.
     pub fn download(&self, gpu: &VkBackend) -> SoundResult<IrSnapshot> {
         let mut samples = vec![IrSample::zero(); self.sample_count as usize];
-        gpu.memory()
-            .download_typed(&self.buffer, samples.len(), &mut samples)?;
+        gpu.memory().download_typed(&self.buffer, &mut samples)?;
         let energy = samples
             .iter()
             .map(|sample| sample.left * sample.left + sample.right * sample.right)
