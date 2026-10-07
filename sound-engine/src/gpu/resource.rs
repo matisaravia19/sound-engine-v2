@@ -28,37 +28,54 @@ impl Drop for OwnedFence {
     }
 }
 
-/// Reclaims partially initialized pipeline objects if any construction step fails.
-pub(crate) struct PipelineBuildGuard {
+/// Owns a pipeline and its single descriptor-set layout from construction through teardown.
+/// Retains the Vulkan device; submitted work must finish before this owner is dropped.
+pub(crate) struct PipelineResources {
     /// Pipeline created so far, or null before successful pipeline creation.
     pub(crate) handle: vk::Pipeline,
-    /// Pipeline layout created so far, or null.
+    /// Pipeline layout used by dispatches and push constants.
     pub(crate) layout: vk::PipelineLayout,
-    /// Descriptor layout created so far, or null.
+    /// Descriptor-set layout used by per-dispatch descriptor allocations.
     pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     device: Arc<VkDeviceContext>,
 }
 
-impl PipelineBuildGuard {
-    /// Starts ownership before the first fallible Vulkan allocation.
-    pub(crate) fn new(device: Arc<VkDeviceContext>) -> Self {
-        Self {
+impl PipelineResources {
+    /// Validates and creates both layouts, releasing partial allocations on failure.
+    /// The caller then installs the created pipeline in `handle` before registration.
+    pub(crate) fn new(
+        device: Arc<VkDeviceContext>,
+        bindings: &[vk::DescriptorSetLayoutBinding<'_>],
+        ranges: &[vk::PushConstantRange],
+    ) -> SoundResult<Self> {
+        validate_pipeline_layout(bindings, ranges, &device.limits)?;
+        let mut resources = Self {
             handle: vk::Pipeline::null(),
             layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             device,
-        }
-    }
-
-    /// Transfers completed objects to the pipeline registry without destroying them.
-    pub(crate) fn disarm(mut self) {
-        self.handle = vk::Pipeline::null();
-        self.layout = vk::PipelineLayout::null();
-        self.descriptor_set_layout = vk::DescriptorSetLayout::null();
+        };
+        let set_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
+        resources.descriptor_set_layout = unsafe {
+            resources
+                .device
+                .device
+                .create_descriptor_set_layout(&set_info, None)?
+        };
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(std::slice::from_ref(&resources.descriptor_set_layout))
+            .push_constant_ranges(ranges);
+        resources.layout = unsafe {
+            resources
+                .device
+                .device
+                .create_pipeline_layout(&layout_info, None)?
+        };
+        Ok(resources)
     }
 }
 
-impl Drop for PipelineBuildGuard {
+impl Drop for PipelineResources {
     fn drop(&mut self) {
         unsafe {
             self.device.device.destroy_pipeline(self.handle, None);
@@ -73,7 +90,7 @@ impl Drop for PipelineBuildGuard {
 }
 
 /// Validates the layout subset supported by the engine before invoking Vulkan.
-pub(crate) fn validate_pipeline_layout(
+fn validate_pipeline_layout(
     bindings: &[vk::DescriptorSetLayoutBinding<'_>],
     ranges: &[vk::PushConstantRange],
     limits: &vk::PhysicalDeviceLimits,

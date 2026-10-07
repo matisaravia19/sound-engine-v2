@@ -120,7 +120,7 @@ fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
             assert_eq!(error.code(), crate::core::error::ErrorCode::InvalidArgument);
             assert!(invalid.iter().all(|&sample| sample == 77.0));
             assert!(
-                core.spatial_voices[&voice].dirty,
+                core.spatial_voices[&voice].refresh_requested_at.is_some(),
                 "failed render consumed a spatial update"
             );
             assert!(Arc::ptr_eq(
@@ -140,12 +140,53 @@ fn audit_spatial_preflight_rejects_invalid_output_without_advancing_voices() {
                 core.render_block(&mut valid).unwrap();
             }
             assert!(valid.iter().all(|sample| sample.is_finite()));
-            assert!(!core.spatial_voices[&voice].dirty);
+            assert!(core.spatial_voices[&voice].refresh_requested_at.is_none());
             assert_ne!(core.spatial_voices[&voice].impulse_response_id, old_ir_id);
         }
     }
     core.stop_voice(voice);
     assert!(core.sound_sources.is_empty());
+}
+
+#[test]
+#[ignore = "requires Vulkan ray tracing; run hardware tests serially"]
+fn returning_to_cached_pose_completes_refresh_without_replacing_the_voice_filter() {
+    let mut core = EngineCore::new(preflight_config()).unwrap();
+    let sound = core
+        .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.1; 1024]).unwrap())
+        .unwrap();
+    let voice = core
+        .play_sound(PlaySpatialSoundRequest::new(sound, Vec3::X))
+        .unwrap();
+    let original_pose = core.listener;
+    let original_buffer = core.spatial_voices[&voice].acoustic_ir_buffer.clone();
+    let original_ir = core.spatial_voices[&voice].impulse_response_id;
+    let next_ir = core.next_impulse_response_id;
+    let mut output = vec![0.0; 128];
+
+    for realtime in [false, true] {
+        // Several accepted poses may coalesce before either rendering mode
+        // refreshes the voice. Returning to its cached response still consumes
+        // the pending request, without starting an unnecessary crossfade.
+        let moved = ListenerPose::new(Vec3::Y, Vec3::Z, Vec3::Y);
+        core.set_listener_pose(moved).unwrap();
+        core.set_listener_pose(original_pose).unwrap();
+        assert!(core.spatial_voices[&voice].refresh_requested_at.is_some());
+        if realtime {
+            core.render_realtime_block(&mut output, true).unwrap();
+        } else {
+            core.render_block(&mut output).unwrap();
+        }
+        assert!(core.spatial_voices[&voice].refresh_requested_at.is_none());
+        assert_eq!(core.spatial_voices[&voice].impulse_response_id, original_ir);
+        assert!(Arc::ptr_eq(
+            &core.spatial_voices[&voice].acoustic_ir_buffer,
+            &original_buffer
+        ));
+        assert_eq!(core.next_impulse_response_id, next_ir);
+        assert_eq!(core.spatial_updates, 0);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
 }
 
 fn box_scene() -> SceneDescription {
@@ -288,7 +329,7 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
 
     core.set_listener_pose(second).unwrap();
     core.render_realtime_block(&mut output, false).unwrap();
-    assert!(core.spatial_voices[&voice].dirty);
+    assert!(core.spatial_voices[&voice].refresh_requested_at.is_some());
     assert!(Arc::ptr_eq(
         &original,
         &core.spatial_voices[&voice].acoustic_ir_buffer
@@ -300,7 +341,7 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
     core.update_sound_source(source_id, moved_source).unwrap();
     let reference = core.build_impulse_response(moved_source, second).unwrap();
     core.render_realtime_block(&mut output, true).unwrap();
-    assert!(!core.spatial_voices[&voice].dirty);
+    assert!(core.spatial_voices[&voice].refresh_requested_at.is_none());
     assert_same_pressure(&samples(&core, voice), &reference);
 
     let other = core.play_sound_from_source(asset, source_id, 1.0).unwrap();

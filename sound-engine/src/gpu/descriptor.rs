@@ -109,7 +109,7 @@ impl Drop for DescriptorPools {
 mod tests {
     use super::*;
     use crate::gpu::backend::VkBackend;
-    use crate::gpu::resource::PipelineBuildGuard;
+    use crate::gpu::resource::PipelineResources;
 
     #[test]
     #[ignore = "requires Vulkan; run hardware tests serially"]
@@ -128,14 +128,7 @@ mod tests {
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
         ];
-        let mut layout_owner = PipelineBuildGuard::new(device.clone());
-        layout_owner.descriptor_set_layout = unsafe {
-            device.device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
-                None,
-            )
-        }
-        .unwrap();
+        let layout_owner = PipelineResources::new(device.clone(), &bindings, &[]).unwrap();
         let mut pools = DescriptorPools::new(device.clone(), &bindings);
         let _pool_access = gpu.compute().descriptor_pool_guard();
         let mut initial_pool_count = 0;

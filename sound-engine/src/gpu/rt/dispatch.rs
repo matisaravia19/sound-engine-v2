@@ -136,7 +136,7 @@ impl RtContext {
         let _pool_access = self.compute.descriptor_pool_guard();
         let descriptor_allocation = pipeline
             .descriptor_pools
-            .allocate(pipeline.descriptor_set_layout)?;
+            .allocate(pipeline.resources.descriptor_set_layout)?;
         let descriptor_set = descriptor_allocation.set;
         self.compute
             .track_descriptor_set(command_buffer, descriptor_allocation);
@@ -146,12 +146,12 @@ impl RtContext {
             self.device_context.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.handle,
+                pipeline.resources.handle,
             );
             self.device_context.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.layout,
+                pipeline.resources.layout,
                 0,
                 std::slice::from_ref(&descriptor_set),
                 &[],
@@ -160,7 +160,7 @@ impl RtContext {
             if !spec.push_constants.is_empty() {
                 self.device_context.device.cmd_push_constants(
                     command_buffer,
-                    pipeline.layout,
+                    pipeline.resources.layout,
                     stages,
                     spec.push_constant_offset,
                     &spec.push_constants,
@@ -169,9 +169,9 @@ impl RtContext {
 
             self.device_context.ray_tracing_pipeline.cmd_trace_rays(
                 command_buffer,
-                &pipeline.raygen_region,
-                &pipeline.miss_region,
-                &pipeline.hit_region,
+                &pipeline.sbt.raygen,
+                &pipeline.sbt.miss,
+                &pipeline.sbt.hit,
                 &vk::StridedDeviceAddressRegionKHR::default(),
                 spec.dimensions[0],
                 spec.dimensions[1],

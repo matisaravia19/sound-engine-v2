@@ -1,6 +1,7 @@
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::{QueueSet, VkDeviceContext};
 use crate::gpu::descriptor::{DescriptorPools, DescriptorSetAllocation};
+use crate::gpu::resource::PipelineResources;
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use std::collections::HashMap;
@@ -51,11 +52,8 @@ struct InFlightSubmission {
 pub struct PipelineId(u32);
 
 struct ComputePipeline {
-    device_context: Arc<VkDeviceContext>,
+    resources: PipelineResources,
     descriptor_bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
-    handle: vk::Pipeline,
-    layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
     push_constant_ranges: Vec<vk::PushConstantRange>,
     descriptor_pools: DescriptorPools,
 }
@@ -191,22 +189,6 @@ impl ComputeContext {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for ComputePipeline {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_context
-                .device
-                .destroy_pipeline(self.handle, None);
-            self.device_context
-                .device
-                .destroy_pipeline_layout(self.layout, None);
-            self.device_context
-                .device
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        }
     }
 }
 

@@ -107,7 +107,7 @@ impl ComputeContext {
         let _pool_access = self.descriptor_pool_guard();
         let descriptor_allocation = pipeline
             .descriptor_pools
-            .allocate(pipeline.descriptor_set_layout)?;
+            .allocate(pipeline.resources.descriptor_set_layout)?;
         let descriptor_set = descriptor_allocation.set;
         self.track_descriptor_set(command_buffer, descriptor_allocation);
 
@@ -121,13 +121,13 @@ impl ComputeContext {
             self.device_context.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
-                pipeline.handle,
+                pipeline.resources.handle,
             );
 
             self.device_context.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
+                pipeline.resources.layout,
                 0,
                 std::slice::from_ref(&descriptor_set),
                 &[],
@@ -136,7 +136,7 @@ impl ComputeContext {
             if !spec.push_constants.is_empty() {
                 self.device_context.device.cmd_push_constants(
                     command_buffer,
-                    pipeline.layout,
+                    pipeline.resources.layout,
                     stages,
                     spec.push_constant_offset,
                     &spec.push_constants,

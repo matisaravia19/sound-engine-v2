@@ -64,35 +64,13 @@ impl ComputeContext {
         let shader_module = self.shaders.shader_module(spec.shader_id)?;
         let descriptor_bindings = build_vk_descriptor_bindings(&spec.descriptor_bindings);
         let push_constant_ranges = build_vk_push_constant_ranges(&spec.push_constant_ranges);
-        crate::gpu::resource::validate_pipeline_layout(
+        let mut resources = PipelineResources::new(
+            self.device_context.clone(),
             &descriptor_bindings,
             &push_constant_ranges,
-            &self.device_context.limits,
         )?;
-        let mut cleanup =
-            crate::gpu::resource::PipelineBuildGuard::new(self.device_context.clone());
-
-        // Pipeline layout is built from exactly one descriptor set layout for now.
-        let descriptor_set_layout_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&descriptor_bindings);
-        let descriptor_set_layout = unsafe {
-            self.device_context
-                .device
-                .create_descriptor_set_layout(&descriptor_set_layout_info, None)?
-        };
-
-        let layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(std::slice::from_ref(&descriptor_set_layout))
-            .push_constant_ranges(&push_constant_ranges);
-        cleanup.descriptor_set_layout = descriptor_set_layout;
-        let layout = unsafe {
-            self.device_context
-                .device
-                .create_pipeline_layout(&layout_info, None)?
-        };
 
         let entry = CString::new(SHADER_ENTRY_POINT)?;
-        cleanup.layout = layout;
         let stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
@@ -100,9 +78,9 @@ impl ComputeContext {
 
         let compute_info = vk::ComputePipelineCreateInfo::default()
             .stage(stage_info)
-            .layout(layout);
+            .layout(resources.layout);
 
-        let pipeline = unsafe {
+        resources.handle = unsafe {
             self.device_context
                 .device
                 .create_compute_pipelines(
@@ -117,7 +95,6 @@ impl ComputeContext {
                     err
                 })?[0]
         };
-        cleanup.handle = pipeline;
 
         let mut pipelines = self
             .pipelines
@@ -141,16 +118,12 @@ impl ComputeContext {
         pipelines.insert(
             id,
             ComputePipeline {
-                device_context: self.device_context.clone(),
+                resources,
                 descriptor_bindings,
-                handle: pipeline,
-                layout,
-                descriptor_set_layout,
                 push_constant_ranges,
                 descriptor_pools,
             },
         );
-        cleanup.disarm();
         Ok(id)
     }
 }

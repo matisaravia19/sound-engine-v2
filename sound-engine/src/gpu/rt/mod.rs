@@ -2,6 +2,7 @@ use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::ComputeContext;
 use crate::gpu::descriptor::DescriptorPools;
 use crate::gpu::memory::{BufferHandle, GpuAllocator};
+use crate::gpu::resource::PipelineResources;
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use std::collections::HashMap;
@@ -11,7 +12,10 @@ use std::sync::{Arc, Mutex};
 mod acceleration;
 mod dispatch;
 mod pipeline;
+mod sbt;
 mod scene;
+
+use sbt::ShaderBindingTable;
 
 pub use acceleration::{AabbBlasBuildSpec, BlasBuildSpec, BlasId, TlasBuildSpec, TlasId};
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
@@ -49,17 +53,11 @@ struct AccelerationStructureHandle {
 }
 
 struct RayTracingPipeline {
-    device_context: Arc<VkDeviceContext>,
+    resources: PipelineResources,
     descriptor_bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
-    handle: vk::Pipeline,
-    layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
     push_constant_ranges: Vec<vk::PushConstantRange>,
     descriptor_pools: DescriptorPools,
-    _sbt: BufferHandle,
-    raygen_region: vk::StridedDeviceAddressRegionKHR,
-    miss_region: vk::StridedDeviceAddressRegionKHR,
-    hit_region: vk::StridedDeviceAddressRegionKHR,
+    sbt: ShaderBindingTable,
 }
 
 impl RtContext {
@@ -101,22 +99,6 @@ impl Drop for RtContext {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
-    }
-}
-
-impl Drop for RayTracingPipeline {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_context
-                .device
-                .destroy_pipeline(self.handle, None);
-            self.device_context
-                .device
-                .destroy_pipeline_layout(self.layout, None);
-            self.device_context
-                .device
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        }
     }
 }
 
@@ -224,15 +206,8 @@ impl Drop for AccelerationStructureHandle {
     }
 }
 
-fn align_up(value: usize, alignment: usize) -> usize {
-    debug_assert!(alignment.is_power_of_two());
-    (value + alignment - 1) & !(alignment - 1)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::align_up;
-
     #[test]
     #[ignore = "requires Vulkan; run hardware tests serially"]
     fn audit_tlas_retains_blas_after_registry_owner_is_released() {
@@ -355,15 +330,5 @@ mod tests {
         }
         drop(scene);
         assert_eq!(gpu.rt().resource_counts(), (0, 0));
-    }
-
-    #[test]
-    fn align_up_keeps_aligned_values() {
-        assert_eq!(align_up(64, 32), 64);
-    }
-
-    #[test]
-    fn align_up_rounds_to_next_boundary() {
-        assert_eq!(align_up(65, 32), 96);
     }
 }
