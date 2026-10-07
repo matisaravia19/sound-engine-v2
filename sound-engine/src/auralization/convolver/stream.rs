@@ -1,71 +1,43 @@
-use crate::auralization::assets::SoundId;
-use crate::auralization::convolver::ImpulseResponse;
+//! Per-stream overlap history and impulse-response transitions.
+
+use super::ImpulseResponse;
 use std::sync::Arc;
 
-/// Identifier for a currently playing voice.
-pub type VoiceId = u64;
-
-/// Runtime state for one active sound voice.
+/// Independent convolution history for one mono input stream.
 ///
-/// The auralization engine owns voices and advances their dry playback cursor.
-/// The convolver mutates only the embedded convolution state while processing
-/// and flushing overlap samples.
-pub struct Voice {
-    /// Unique id assigned by the auralization engine.
-    pub(crate) id: VoiceId,
-    /// Dry sound asset rendered by this voice.
-    pub(crate) sound_id: SoundId,
-    /// Current dry sample cursor within the asset.
-    pub(crate) cursor: usize,
-    /// Linear dry gain applied before convolution.
-    pub(crate) gain: f32,
-    /// High-level playback phase owned by the auralization engine.
-    pub(crate) state: VoiceState,
-    /// Per-voice overlap and FFT scratch state used by the convolver.
-    pub(crate) convolution: VoiceConvolutionState,
-    /// Previous convolution state retained while an IR update crossfades.
-    pub(crate) ir_transition: Option<VoiceIrTransition>,
-    /// Most recent IR requested while another transition is still active.
-    ///
-    /// Coalescing rapid updates prevents an in-progress outgoing filter from
-    /// being dropped abruptly when listener poses arrive faster than the ramp.
-    pub(crate) pending_impulse_response: Option<Arc<ImpulseResponse>>,
+/// Created by [`super::FftConvolver::create_stream`]. The stream retains its IR
+/// spectra and overlap samples independently of sound assets or playback cursors.
+/// Use it with a convolver on the same backend and with matching dimensions and
+/// output channels. Mutable borrowing excludes concurrent updates and rendering.
+pub struct ConvolutionStream {
+    /// Current filter and its overlap history.
+    pub(super) current: FilterState,
+    /// Previous filter retained until its replacement ramp finishes.
+    pub(super) ir_transition: Option<IrTransition>,
+    /// Latest IR queued while another transition is active.
+    pub(super) pending_impulse_response: Option<Arc<ImpulseResponse>>,
+    /// Interleaved output layout fixed when the stream is created.
+    pub(super) output_channels: usize,
 }
 
-impl Voice {
-    /// Creates a voice with playback starting at the beginning of the asset.
-    pub fn new(
-        id: VoiceId,
-        sound_id: SoundId,
-        gain: f32,
+impl ConvolutionStream {
+    /// Allocates zeroed history for a validated IR and convolver layout.
+    pub(super) fn new(
         impulse_response: Arc<ImpulseResponse>,
         tail_size: usize,
         fft_size: usize,
+        output_channels: usize,
     ) -> Self {
         Self {
-            id,
-            sound_id,
-            cursor: 0,
-            gain,
-            state: VoiceState::Playing,
-            convolution: VoiceConvolutionState::new(impulse_response, tail_size, fft_size),
+            current: FilterState::new(impulse_response, tail_size, fft_size),
             ir_transition: None,
             pending_impulse_response: None,
+            output_channels,
         }
     }
 
-    /// Returns the unique id assigned to this voice.
-    pub fn id(&self) -> VoiceId {
-        self.id
-    }
-
-    /// Returns the original dry asset identifier, even after its bank entry is removed.
-    pub fn sound_id(&self) -> SoundId {
-        self.sound_id
-    }
-
     /// Starts a sample-ramped transition from the current IR to `impulse_response`.
-    pub(crate) fn transition_impulse_response(
+    pub(super) fn transition_impulse_response(
         &mut self,
         impulse_response: Arc<ImpulseResponse>,
         output_samples: usize,
@@ -74,9 +46,9 @@ impl Voice {
         // The overlap tail summarizes every dry sample emitted before this IR
         // update. Both transition branches must retain it; only contributions
         // from new dry samples should diverge between the old and new filters.
-        let next = VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution);
-        let previous = std::mem::replace(&mut self.convolution, next);
-        self.ir_transition = Some(VoiceIrTransition {
+        let next = FilterState::with_carried_tail(impulse_response, &self.current);
+        let previous = std::mem::replace(&mut self.current, next);
+        self.ir_transition = Some(IrTransition {
             previous,
             output_buffer: vec![0.0; output_samples],
             processed_frames: 0,
@@ -85,7 +57,7 @@ impl Voice {
     }
 
     /// Starts an IR transition or coalesces it behind the active transition.
-    pub(crate) fn queue_impulse_response_transition(
+    pub(super) fn queue_impulse_response_transition(
         &mut self,
         impulse_response: Arc<ImpulseResponse>,
         output_samples: usize,
@@ -99,47 +71,34 @@ impl Voice {
     }
 }
 
-/// High-level playback phase for an active voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VoiceState {
-    /// Dry samples are still being fed into the convolver.
-    Playing,
-    /// Dry samples are exhausted and only the convolution tail remains.
-    FlushingTail,
-}
-
-/// Per-voice convolution state.
-///
-/// The state keeps a shared reference to the uploaded IR spectrum plus CPU
-/// buffers for overlap-add and GPU transfer. It is owned by the voice so the
-/// convolver does not need its own voice registry or synchronization.
-pub(crate) struct VoiceConvolutionState {
-    /// Frequency-domain IR used when convolving this voice.
-    pub(crate) impulse_response: Arc<ImpulseResponse>,
+/// One filter's shared GPU spectrum, overlap history, and CPU staging buffers.
+pub(super) struct FilterState {
+    /// Frequency-domain IR used by this filter.
+    pub(super) impulse_response: Arc<ImpulseResponse>,
     /// Overlap tail carried between processed blocks.
-    pub(crate) tail: Vec<[f32; 2]>,
+    pub(super) tail: Vec<[f32; 2]>,
     /// Current read position while draining `tail`.
-    pub(crate) tail_position: usize,
+    pub(super) tail_position: usize,
     /// Complex CPU staging buffer used for FFT input and output.
-    pub(crate) complex_cpu_buffer: Vec<[f32; 2]>,
+    pub(super) complex_cpu_buffer: Vec<[f32; 2]>,
 }
 
 /// Previous filter state and ramp progress for one live IR replacement.
-pub(crate) struct VoiceIrTransition {
+pub(super) struct IrTransition {
     /// Convolution state using the outgoing IR, including its overlap tail.
-    pub(crate) previous: VoiceConvolutionState,
+    pub(super) previous: FilterState,
     /// Interleaved scratch output rendered by the outgoing filter.
-    pub(crate) output_buffer: Vec<f32>,
+    pub(super) output_buffer: Vec<f32>,
     /// Output frames already blended since this transition began.
     processed_frames: usize,
     /// Total output frames across which the incoming IR reaches full weight.
     total_frames: usize,
 }
 
-impl VoiceIrTransition {
+impl IrTransition {
     /// Blends equally sized interleaved blocks and reports whether the ramp is complete.
-    /// `output_channels` must match the voice's mono or stereo layout.
-    pub(crate) fn blend_into(&mut self, incoming: &mut [f32], output_channels: usize) -> bool {
+    /// `output_channels` must match the stream's mono or stereo layout.
+    pub(super) fn blend_into(&mut self, incoming: &mut [f32], output_channels: usize) -> bool {
         blend_ir_transition(
             incoming,
             &self.output_buffer,
@@ -154,9 +113,9 @@ impl VoiceIrTransition {
     }
 }
 
-impl VoiceConvolutionState {
+impl FilterState {
     /// Allocates zeroed overlap and staging buffers for a registered IR.
-    pub(crate) fn new(
+    pub(super) fn new(
         impulse_response: Arc<ImpulseResponse>,
         tail_size: usize,
         fft_size: usize,
@@ -206,5 +165,5 @@ fn blend_ir_transition(
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/auralization/voice.rs"]
+#[path = "../../../tests/unit/auralization/convolver/stream.rs"]
 mod tests;

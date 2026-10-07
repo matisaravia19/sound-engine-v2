@@ -2,6 +2,76 @@ use super::*;
 
 #[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
+fn mixes_partial_asset_blocks_and_drains_each_tail() {
+    let gpu = Arc::new(VkBackend::new().unwrap());
+    let mut engine = AuralizationEngine::new(
+        gpu,
+        SoundConfig {
+            output_channels: crate::core::config::OutputChannels::Stereo,
+            sample_rate: 48_000,
+            ir_num_samples: 8,
+        },
+        AuralizationConfig {
+            block_size: 4,
+        },
+    )
+    .unwrap();
+    let taps = [
+        IrSample::new(1.0, 0.5),
+        IrSample::zero(),
+        IrSample::new(-0.5, 0.25),
+    ];
+    engine.register_impulse_response(1, &taps).unwrap();
+    let sounds = [
+        (vec![0.25, -0.5, 1.0], 0.5),
+        (vec![1.0, 0.0, -0.25, 0.5, -1.0, 0.25], -0.25),
+    ];
+    let mut expected = vec![[0.0; 2]; 8];
+    for (samples, gain) in sounds {
+        for (frame, &sample) in samples.iter().enumerate() {
+            for (delay, tap) in taps.iter().enumerate() {
+                expected[frame + delay][0] += sample * gain * tap.left;
+                expected[frame + delay][1] += sample * gain * tap.right;
+            }
+        }
+        let id = engine
+            .insert_sound(SoundAsset::from_mono_samples(48_000, samples).unwrap())
+            .unwrap();
+        engine
+            .play_sound(PlaySoundRequest {
+                sound_id: id,
+                impulse_response_id: 1,
+                gain,
+            })
+            .unwrap();
+        engine.sound_bank_mut().remove(id).unwrap();
+    }
+    engine.forget_impulse_response(1);
+
+    let mut actual = Vec::new();
+    let mut block = [77.0; 8];
+    for _ in 0..16 {
+        engine.render_block(&mut block).unwrap();
+        actual.extend(block.chunks_exact(2).map(|frame| [frame[0], frame[1]]));
+        if !engine.has_active_voices() {
+            break;
+        }
+    }
+    assert!(!engine.has_active_voices(), "all finite tails must finish");
+    assert!(actual.len() >= expected.len());
+    expected.resize(actual.len(), [0.0; 2]);
+    for (actual, expected) in actual.iter().zip(expected) {
+        for channel in 0..2 {
+            assert!((actual[channel] - expected[channel]).abs() < 1e-5);
+        }
+    }
+    block.fill(77.0);
+    engine.render_block(&mut block).unwrap();
+    assert_eq!(block, [0.0; 8]);
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
 fn audit_voices_retain_assets_and_reject_invalid_registry_state() {
     let gpu = Arc::new(VkBackend::new().unwrap());
     let mut engine = AuralizationEngine::new(

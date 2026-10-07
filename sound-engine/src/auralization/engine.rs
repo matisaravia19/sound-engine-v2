@@ -1,8 +1,7 @@
 use crate::acoustics::{GpuIrSnapshot, IrSample};
+use crate::auralization::ImpulseResponseId;
 use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
-use crate::auralization::convolver::{FftConvolver, ImpulseResponse};
-use crate::auralization::voice::{Voice, VoiceState};
-use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
+use crate::auralization::convolver::{ConvolutionStream, FftConvolver, ImpulseResponse};
 use crate::core::config::{AuralizationConfig, SoundConfig};
 use crate::core::error::ErrorCode;
 use crate::core::error::{SoundError, SoundResult};
@@ -10,6 +9,9 @@ use crate::gpu::backend::VkBackend;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+
+/// Identifier for a currently playing voice.
+pub type VoiceId = u64;
 
 /// Request used to start a dry sound through a registered impulse response.
 #[derive(Debug, Clone, Copy)]
@@ -54,8 +56,14 @@ pub struct AuralizationEngine {
 
 /// Retains immutable dry samples even if the application's sound bank removes them.
 struct ActiveVoice {
+    /// Dry samples retained even after removal from the sound bank.
     asset: SoundAsset,
-    voice: Voice,
+    /// Next dry frame to render; reaching the asset end starts tail flushing.
+    cursor: usize,
+    /// Linear gain applied before convolution.
+    gain: f32,
+    /// Filter history independent of the asset and its playback cursor.
+    convolution: ConvolutionStream,
 }
 
 impl AuralizationEngine {
@@ -196,13 +204,8 @@ impl AuralizationEngine {
             .get_mut(&voice_id)
             .ok_or_else(|| SoundError::not_found(format!("Unknown voice id {}", voice_id)))?;
 
-        let transition_frames = self.dry_block.len().saturating_mul(IR_TRANSITION_BLOCKS);
-        voice.voice.queue_impulse_response_transition(
-            impulse_response,
-            self.wet_block.len(),
-            transition_frames,
-        );
-        Ok(())
+        self.convolver
+            .update_impulse_response(&mut voice.convolution, impulse_response)
     }
 
     /// Starts playing a sound through a registered impulse response.
@@ -226,14 +229,9 @@ impl AuralizationEngine {
             voice_id,
             ActiveVoice {
                 asset,
-                voice: Voice::new(
-                    voice_id,
-                    request.sound_id,
-                    request.gain,
-                    impulse_response.clone(),
-                    self.convolver.tail_size(),
-                    self.convolver.fft_size(),
-                ),
+                cursor: 0,
+                gain: request.gain,
+                convolution: self.convolver.create_stream(impulse_response.clone())?,
             },
         );
 
@@ -275,33 +273,27 @@ impl AuralizationEngine {
         output_block.fill(0.0);
         self.finished_voices.clear();
 
-        for (voice_id, active) in self.active_voices.iter_mut() {
-            let ActiveVoice {
-                asset,
-                voice,
-            } = active;
-            self.wet_block.fill(0.0);
-            match voice.state {
-                VoiceState::Playing => {
-                    render_asset_samples(asset, &mut voice.cursor, voice.gain, &mut self.dry_block);
-                    self.convolver
-                        .process_block(voice, &self.dry_block, &mut self.wet_block)?;
-                    if voice.cursor >= asset.len() {
-                        voice.state = VoiceState::FlushingTail;
-                    }
-                    mix_into(output_block, &self.wet_block);
-                }
-                VoiceState::FlushingTail => {
-                    if self
-                        .convolver
-                        .flush_tail_block(voice, &mut self.wet_block)?
-                    {
-                        mix_into(output_block, &self.wet_block);
-                    } else {
-                        self.finished_voices.push(*voice_id);
-                    }
-                }
+        for (voice_id, voice) in self.active_voices.iter_mut() {
+            if voice.cursor < voice.asset.len() {
+                render_asset_samples(
+                    &voice.asset,
+                    &mut voice.cursor,
+                    voice.gain,
+                    &mut self.dry_block,
+                );
+                self.convolver.process_block(
+                    &mut voice.convolution,
+                    &self.dry_block,
+                    &mut self.wet_block,
+                )?;
+            } else if !self
+                .convolver
+                .flush_tail_block(&mut voice.convolution, &mut self.wet_block)?
+            {
+                self.finished_voices.push(*voice_id);
+                continue;
             }
+            mix_into(output_block, &self.wet_block);
         }
 
         for voice_id in self.finished_voices.drain(..) {

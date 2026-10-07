@@ -3,7 +3,7 @@
 
 use glam::{Mat4, Vec3};
 use sound_engine::acoustics::IrSample;
-use sound_engine::auralization::{Voice, convolver::FftConvolver};
+use sound_engine::auralization::convolver::FftConvolver;
 use sound_engine::core::config::*;
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
@@ -83,11 +83,11 @@ fn measure_gpu() -> SoundResult<()> {
     let mut convolver = FftConvolver::new(gpu.clone(), config.sound, config.auralization)?;
     let samples = [IrSample::new(1.0, 0.5)];
     let ir = convolver.create_impulse_response(&samples)?;
-    let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());
+    let mut stream = convolver.create_stream(ir)?;
     let input = vec![0.25; 1024];
     let mut output = vec![0.0; 2048];
     measure("convolution_1024_frames", 32, || {
-        convolver.process_block(&mut voice, &input, &mut output)?;
+        convolver.process_block(&mut stream, &input, &mut output)?;
         black_box(&output);
         Ok(())
     })?;

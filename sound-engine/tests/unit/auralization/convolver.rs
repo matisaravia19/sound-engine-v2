@@ -138,11 +138,11 @@ fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
         } else {
             convolver.create_impulse_response(&taps).unwrap()
         };
-        let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());
+        let mut stream = convolver.create_stream(ir).unwrap();
         let mut output = vec![0.0; 2048];
         for (block, samples) in input.chunks_exact(1024).enumerate() {
             convolver
-                .process_block(&mut voice, samples, &mut output)
+                .process_block(&mut stream, samples, &mut output)
                 .unwrap();
             for frame in 0..1024 {
                 let index = block * 1024 + frame;
@@ -178,30 +178,27 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
     }
     let input = vec![0.0; 1024];
     let mut output = vec![0.0; 2048];
-    let mut malformed_voice = Voice::new(1, 1, 1.0, ir.clone(), 0, 1);
+    let mut malformed_stream = ConvolutionStream::new(ir.clone(), 0, 1, 2);
     assert!(
         convolver
-            .process_block(&mut malformed_voice, &input, &mut output)
+            .process_block(&mut malformed_stream, &input, &mut output)
             .is_err()
     );
-    drop(malformed_voice);
+    drop(malformed_stream);
     let undersized_ir = Arc::new(ImpulseResponse {
         buffer: gpu.memory().create_storage_buffer(8).unwrap(),
     });
-    let mut malformed_voice = Voice::new(
-        1,
-        1,
-        1.0,
-        undersized_ir,
-        convolver.tail_size(),
-        convolver.fft_size(),
-    );
+    assert!(convolver.create_stream(undersized_ir.clone()).is_err());
+    let mut stream = convolver.create_stream(ir.clone()).unwrap();
     assert!(
         convolver
-            .process_block(&mut malformed_voice, &input, &mut output)
+            .update_impulse_response(&mut stream, undersized_ir)
             .is_err()
     );
-    drop(malformed_voice);
+    assert!(stream.ir_transition.is_none());
+    assert!(stream.pending_impulse_response.is_none());
+    assert!(Arc::ptr_eq(&stream.current.impulse_response, &ir));
+    drop(stream);
     drop(convolver);
     assert_eq!(gpu.compute().pipeline_count(), 0);
     for _ in 0..2 {
@@ -297,17 +294,25 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
         } else {
             convolver.create_impulse_response(&taps).unwrap()
         };
-        let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());
+        let mut stream = convolver.create_stream(ir).unwrap();
         let mut output = [0.0; 8];
         convolver
-            .process_block(&mut voice, &[0.0, 0.0, 0.0, 1.0], &mut output)
+            .process_block(&mut stream, &[0.0, 0.0, 0.0, 1.0], &mut output)
             .unwrap();
         assert!(output.iter().all(|sample| sample.abs() < 1e-5));
-        assert!(convolver.flush_tail_block(&mut voice, &mut output).unwrap());
+        assert!(
+            convolver
+                .flush_tail_block(&mut stream, &mut output)
+                .unwrap()
+        );
         assert!(output[..6].iter().all(|sample| sample.abs() < 1e-5));
         assert!((output[6] - 1.0).abs() < 1e-5);
         assert!((output[7] - 0.5).abs() < 1e-5);
-        assert!(!convolver.flush_tail_block(&mut voice, &mut output).unwrap());
+        assert!(
+            !convolver
+                .flush_tail_block(&mut stream, &mut output)
+                .unwrap()
+        );
     }
 }
 
