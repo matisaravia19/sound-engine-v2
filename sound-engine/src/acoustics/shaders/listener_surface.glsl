@@ -5,8 +5,13 @@
 // Evaluates all surface branches that can connect this vertex to the source.
 // This is evaluation, not sampling, so valid specular and rough reflection
 // responses are summed within the reflection hemisphere.
-float surfaceSourceResponse(SceneMaterial material, vec3 incoming_direction, vec3 normal, vec3 source_direction, float source_fraction) {
-
+float surfaceSourceResponse(
+    SceneMaterial material,
+    vec3 incoming_direction,
+    vec3 normal,
+    vec3 source_direction,
+    float source_fraction
+) {
     // These are pressure-domain local responses. The normalized lobe value
     // includes directional density, with pressure gains converted before scene upload.
     float response = 0.0;
@@ -66,8 +71,13 @@ void connectSurfaceToSource(
     // Reflection footprint and spreading use the same post-edge origin.
     // With no previous edge this is the complete listener-to-source length.
     float connection_path_length = total_path_length - spreading_origin_distance;
-    float local_response = surfaceSourceResponse(material, incoming_direction, normal, source_direction,
-                                                 source_distance / max(connection_path_length, RAY_EPSILON));
+    float local_response = surfaceSourceResponse(
+        material,
+        incoming_direction,
+        normal,
+        source_direction,
+        source_distance / max(connection_path_length, RAY_EPSILON)
+    );
     if (local_response <= 0.0) {
         return;
     }

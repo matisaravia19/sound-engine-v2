@@ -3,7 +3,7 @@
 use super::{
     ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId, validate_play_request,
 };
-use crate::acoustics::{AcousticsEngine, GpuIrSnapshot, IrSnapshot};
+use crate::acoustics::{AcousticsEngine, GpuIrSnapshot, IrSnapshot, validate_source};
 use crate::auralization::{
     AuralizationEngine, ImpulseResponseId, PlaySoundRequest, SoundAsset, SoundId, VoiceId,
 };
@@ -145,7 +145,7 @@ impl EngineCore {
         &mut self,
         source: PointSource,
     ) -> SoundResult<SoundSourceId> {
-        self.acoustics.validate_source_reference(source)?;
+        validate_source(source)?;
         self.insert_sound_source(source, false)
     }
 
@@ -155,7 +155,7 @@ impl EngineCore {
         id: SoundSourceId,
         source: PointSource,
     ) -> SoundResult<()> {
-        self.acoustics.validate_source_reference(source)?;
+        validate_source(source)?;
         let record = self
             .sound_sources
             .get_mut(&id)
@@ -196,7 +196,7 @@ impl EngineCore {
     /// Builds or reuses an acoustic IR and starts a convolved voice.
     pub(super) fn play_sound(&mut self, request: PlaySpatialSoundRequest) -> SoundResult<VoiceId> {
         validate_play_request(request)?;
-        self.acoustics.validate_source_reference(request.source)?;
+        validate_source(request.source)?;
         self.auralization.playable_sound(request.sound_id)?;
         let source_id = self.insert_sound_source(request.source, true)?;
         match self.play_sound_from_source(request.sound_id, source_id, request.volume) {

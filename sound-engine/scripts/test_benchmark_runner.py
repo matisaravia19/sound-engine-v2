@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchmark_runner import BenchmarkRun, file_hash, verify_hashes, write_json
+from benchmark_runner import ROOT, BenchmarkRun, file_hash, source_hashes, verify_hashes, write_json
 
 
 class BenchmarkRunTests(unittest.TestCase):
@@ -87,6 +87,24 @@ class BenchmarkRunTests(unittest.TestCase):
         fixture.unlink()
         with self.assertRaisesRegex(RuntimeError, "Input changed"):
             verify_hashes(self.output, expected)
+
+    def test_provenance_rejects_native_build_input_changes(self):
+        runner = BenchmarkRun(self.output)
+        write_json(self.output / "provenance.json", {"source_sha256": source_hashes()})
+        for name in (
+            "vkfft-rs/build_support.rs",
+            "vkfft-rs/patches/compiler_cleanup.patch",
+            "vkfft-rs/lib/vkfft/vkFFT/vkFFT.h",
+        ):
+            with self.subTest(name=name):
+                changed = ROOT / name
+
+                def changed_hash(path):
+                    return "modified" if path == changed else file_hash(path)
+
+                with patch("benchmark_runner.file_hash", side_effect=changed_hash):
+                    with self.assertRaisesRegex(RuntimeError, "Source changed"):
+                        runner.verify_provenance()
 
 
 if __name__ == "__main__":

@@ -72,6 +72,8 @@ def source_hashes():
         "sound-engine/examples",
         "sound-engine/tests",
         "vkfft-rs/src",
+        "vkfft-rs/patches",
+        "vkfft-rs/lib/vkfft/vkFFT",
         "sandbox/src",
     ):
         files.extend(path for path in (ROOT / directory).rglob("*") if path.is_file())
@@ -86,6 +88,7 @@ def source_hashes():
             "sound-engine/build.rs",
             "vkfft-rs/Cargo.toml",
             "vkfft-rs/build.rs",
+            "vkfft-rs/build_support.rs",
             "sandbox/Cargo.toml",
             "sound-engine/scripts/pyproject.toml",
             "sound-engine/scripts/uv.lock",

@@ -94,7 +94,6 @@ impl RtContext {
             ));
         }
 
-        // BLAS v1 supports triangle geometry only.
         let mut geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
             .geometry(vk::AccelerationStructureGeometryDataKHR {
@@ -104,29 +103,7 @@ impl RtContext {
             geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
         }
 
-        let range =
-            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
-        let handle = self.build_acceleration_structure(
-            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-            spec.flags,
-            std::slice::from_ref(&geometry),
-            std::slice::from_ref(&primitive_count),
-            std::slice::from_ref(&range),
-        )?;
-
-        let mut blas = self
-            .blas
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
-        let id = BlasId(
-            self.next_blas_id
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .map_err(|_| {
-                    SoundError::resource_allocation_failed("RT BLAS id space exhausted")
-                })?,
-        );
-        blas.insert(id, Arc::new(handle));
-        Ok(id)
+        self.build_bottom_level(&geometry, primitive_count, spec.flags)
     }
 
     /// Builds a bottom-level acceleration structure from procedural AABBs.
@@ -167,30 +144,7 @@ impl RtContext {
             geometry = geometry.flags(vk::GeometryFlagsKHR::OPAQUE);
         }
 
-        let primitive_count = spec.aabbs.primitive_count;
-        let range =
-            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
-        let handle = self.build_acceleration_structure(
-            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-            spec.flags,
-            std::slice::from_ref(&geometry),
-            std::slice::from_ref(&primitive_count),
-            std::slice::from_ref(&range),
-        )?;
-
-        let mut blas = self
-            .blas
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
-        let id = BlasId(
-            self.next_blas_id
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .map_err(|_| {
-                    SoundError::resource_allocation_failed("RT BLAS id space exhausted")
-                })?,
-        );
-        blas.insert(id, Arc::new(handle));
-        Ok(id)
+        self.build_bottom_level(&geometry, spec.aabbs.primitive_count, spec.flags)
     }
 
     /// Builds a top-level acceleration structure from BLAS instances.
@@ -242,16 +196,11 @@ impl RtContext {
             .geometry(vk::AccelerationStructureGeometryDataKHR {
                 instances: instances_data,
             });
-        let primitive_count = instances.len() as u32;
-        let range =
-            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
-
         let mut handle = self.build_acceleration_structure(
             vk::AccelerationStructureTypeKHR::TOP_LEVEL,
             spec.flags,
-            std::slice::from_ref(&geometry),
-            std::slice::from_ref(&primitive_count),
-            std::slice::from_ref(&range),
+            &geometry,
+            instances.len() as u32,
         )?;
 
         let mut tlas = self
@@ -289,20 +238,44 @@ impl RtContext {
         Ok(())
     }
 
+    fn build_bottom_level(
+        &self,
+        geometry: &vk::AccelerationStructureGeometryKHR<'_>,
+        primitive_count: u32,
+        flags: vk::BuildAccelerationStructureFlagsKHR,
+    ) -> SoundResult<BlasId> {
+        let handle = self.build_acceleration_structure(
+            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            flags,
+            geometry,
+            primitive_count,
+        )?;
+
+        let mut blas = self
+            .blas
+            .lock()
+            .map_err(|_| SoundError::poisoned_lock("RT BLAS lock is poisoned"))?;
+        let id = BlasId(
+            self.next_blas_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| {
+                    SoundError::resource_allocation_failed("RT BLAS id space exhausted")
+                })?,
+        );
+        blas.insert(id, Arc::new(handle));
+        Ok(id)
+    }
+
     fn build_acceleration_structure(
         &self,
         ty: vk::AccelerationStructureTypeKHR,
         flags: vk::BuildAccelerationStructureFlagsKHR,
-        geometries: &[vk::AccelerationStructureGeometryKHR<'_>],
-        primitive_counts: &[u32],
-        ranges: &[vk::AccelerationStructureBuildRangeInfoKHR],
+        geometry: &vk::AccelerationStructureGeometryKHR<'_>,
+        primitive_count: u32,
     ) -> SoundResult<AccelerationStructureHandle> {
         validate_build_flags(flags)?;
         if ty == vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL
-            && primitive_counts
-                .iter()
-                .map(|count| *count as u64)
-                .sum::<u64>()
+            && primitive_count as u64
                 > self
                     .device_context
                     .rt_properties
@@ -317,7 +290,7 @@ impl RtContext {
             .ty(ty)
             .flags(flags)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-            .geometries(geometries);
+            .geometries(std::slice::from_ref(geometry));
 
         // Query Vulkan for AS storage and temporary scratch requirements.
         let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
@@ -327,7 +300,7 @@ impl RtContext {
                 .get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
                     &build_info,
-                    primitive_counts,
+                    &[primitive_count],
                     &mut size_info,
                 );
         }
@@ -380,49 +353,45 @@ impl RtContext {
                 .acceleration_structure
                 .create_acceleration_structure(&create_info, None)?
         };
+        // Own the Vulkan object immediately so failed submissions release it
+        // before its backing buffer, just like a completed build.
+        let mut acceleration_structure = AccelerationStructureHandle {
+            handle,
+            device_address: 0,
+            _storage: storage,
+            _referenced_blas: Vec::new(),
+            device_context: self.device_context.clone(),
+        };
         let build_info = build_info.dst_acceleration_structure(handle).scratch_data(
             vk::DeviceOrHostAddressKHR {
                 device_address: scratch_address,
             },
         );
+        let range =
+            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(primitive_count);
 
-        if let Err(error) = self
-            .compute
+        self.compute
             .submit_compute_and_wait(|command_buffer| unsafe {
                 self.device_context
                     .acceleration_structure
                     .cmd_build_acceleration_structures(
                         command_buffer,
                         std::slice::from_ref(&build_info),
-                        &[ranges],
+                        &[std::slice::from_ref(&range)],
                     );
 
                 Ok(())
-            })
-        {
-            unsafe {
-                self.device_context
-                    .acceleration_structure
-                    .destroy_acceleration_structure(handle, None);
-            }
-            return Err(error);
-        }
+            })?;
 
         let address_info =
             vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(handle);
-        let device_address = unsafe {
+        acceleration_structure.device_address = unsafe {
             self.device_context
                 .acceleration_structure
                 .get_acceleration_structure_device_address(&address_info)
         };
 
-        Ok(AccelerationStructureHandle {
-            handle,
-            device_address,
-            _storage: storage,
-            _referenced_blas: Vec::new(),
-            device_context: self.device_context.clone(),
-        })
+        Ok(acceleration_structure)
     }
 
     fn resolve_instances(

@@ -23,11 +23,6 @@ pub struct AcousticsEngine {
 }
 
 impl AcousticsEngine {
-    /// Validates source parameters before changing a source or querying cached pressure.
-    pub(crate) fn validate_source_reference(&self, source: PointSource) -> SoundResult<()> {
-        validate_source(source)
-    }
-
     /// Creates the scalar acoustic engine with an empty scene and IR cache.
     pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
         Ok(Self {
@@ -73,7 +68,7 @@ impl AcousticsEngine {
         listener: ListenerPose,
     ) -> SoundResult<GpuIrSnapshot> {
         self.pipeline.validate_backend(gpu)?;
-        self.validate_source_reference(source)?;
+        validate_source(source)?;
         let listener = canonicalize_listener(listener)?;
 
         let cache_query = cache_query(self.scene.version(), source, listener);

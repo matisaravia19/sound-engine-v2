@@ -18,7 +18,7 @@ pub struct GpuAllocator {
     allocator: Arc<AllocatorOwner>,
     device_context: Arc<VkDeviceContext>,
     compute: Arc<ComputeContext>,
-    transfer: Mutex<TransferContext>,
+    staging_buffer: Mutex<BufferHandle>,
 }
 
 /// Owns a VMA buffer, its allocator, and the device/loader required for destruction.
@@ -52,7 +52,7 @@ impl std::ops::Deref for BufferHandle {
 // Declaration order keeps the device alive through vmaDestroyAllocator.
 struct AllocatorOwner {
     allocator: Allocator,
-    _device: Arc<VkDeviceContext>,
+    device_context: Arc<VkDeviceContext>,
 }
 
 impl std::ops::Deref for AllocatorOwner {
@@ -61,10 +61,6 @@ impl std::ops::Deref for AllocatorOwner {
     fn deref(&self) -> &Allocator {
         &self.allocator
     }
-}
-
-struct TransferContext {
-    staging_buffer: BufferHandle,
 }
 
 impl GpuAllocator {
@@ -87,27 +83,23 @@ impl GpuAllocator {
                         "GPU allocator creation failed: {e:?}"
                     ))
                 })?,
-                _device: device_context.clone(),
+                device_context: device_context.clone(),
             })
         };
 
         let staging_buffer = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
 
-        let transfer = TransferContext {
-            staging_buffer,
-        };
-
         Ok(Self {
             allocator,
             device_context,
             compute,
-            transfer: Mutex::new(transfer),
+            staging_buffer: Mutex::new(staging_buffer),
         })
     }
 
     /// Creates a device-local storage buffer with transfer source/destination usage.
     pub fn create_storage_buffer(&self, size: u64) -> SoundResult<BufferHandle> {
-        self.create_buffer(
+        self.allocator.allocate_buffer(
             size as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
@@ -127,7 +119,7 @@ impl GpuAllocator {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> SoundResult<BufferHandle> {
-        self.create_buffer(
+        self.allocator.allocate_buffer(
             size,
             usage
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
@@ -146,7 +138,7 @@ impl GpuAllocator {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> SoundResult<BufferHandle> {
-        self.create_buffer(
+        self.allocator.allocate_buffer(
             size,
             usage
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
@@ -258,15 +250,15 @@ impl GpuAllocator {
             )));
         }
 
-        let mut transfer = self
-            .transfer
+        let mut staging_buffer = self
+            .staging_buffer
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Transfer lock is poisoned"))?;
 
         // Grow staging lazily so large scene uploads do not require a fixed cap.
-        self.ensure_staging_capacity(&mut transfer, data.len() as u64)?;
-        self.upload_to_staging(&transfer, data)?;
-        self.copy_buffer(&transfer.staging_buffer, destination, copy_size, None)?;
+        self.ensure_staging_capacity(&mut staging_buffer, copy_size)?;
+        self.write_mapped_bytes(&staging_buffer, data)?;
+        self.copy_buffer(&staging_buffer, destination, copy_size, None)?;
         Ok(())
     }
 
@@ -301,21 +293,21 @@ impl GpuAllocator {
             )));
         }
 
-        let mut transfer = self
-            .transfer
+        let mut staging_buffer = self
+            .staging_buffer
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Transfer lock is poisoned"))?;
 
-        self.ensure_staging_capacity(&mut transfer, copy_size)?;
+        self.ensure_staging_capacity(&mut staging_buffer, copy_size)?;
         self.copy_buffer(
             src,
-            &transfer.staging_buffer,
+            &staging_buffer,
             copy_size,
             Some(BufferBarrierSpec::transfer_write_to_host_read(
-                transfer.staging_buffer.buffer,
+                staging_buffer.buffer,
             )),
         )?;
-        self.download_from_staging(&transfer, size, out)?;
+        self.download_from_staging(&staging_buffer, size, out)?;
 
         Ok(())
     }
@@ -344,163 +336,51 @@ impl GpuAllocator {
         Ok(())
     }
 
-    fn create_buffer(
-        &self,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        memory_usage: MemoryUsage,
-        allocation_flags: AllocationCreateFlags,
-    ) -> SoundResult<BufferHandle> {
-        validate_buffer_usage(usage)?;
-        if size == 0 {
-            return Err(SoundError::invalid_argument(
-                "Vulkan buffers must have non-zero size",
-            ));
-        }
-        if usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER)
-            && size > self.device_context.limits.max_storage_buffer_range as u64
-        {
-            return Err(SoundError::invalid_argument(
-                "Storage buffer exceeds maxStorageBufferRange",
-            ));
-        }
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let allocation_info = vk_mem::AllocationCreateInfo {
-            usage: memory_usage,
-            flags: allocation_flags,
-            ..Default::default()
-        };
-
-        let (buffer, allocation) = unsafe {
-            self.allocator
-                .create_buffer(&buffer_info, &allocation_info)
-                .map_err(|e| {
-                    SoundError::resource_allocation_failed(format!(
-                        "Buffer allocation failed: {e:?}"
-                    ))
-                })?
-        };
-        Ok(BufferHandle {
-            info: BufferInfo {
-                buffer,
-                size,
-            },
-            allocation,
-            allocator: self.allocator.clone(),
-            mapped_access: Mutex::new(()),
-            usage,
-        })
-    }
-
     fn create_staging_buffer(
         allocator: &Arc<AllocatorOwner>,
         size: vk::DeviceSize,
     ) -> SoundResult<BufferHandle> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let allocation_info = vk_mem::AllocationCreateInfo {
-            usage: MemoryUsage::AutoPreferHost,
-            flags: AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_RANDOM,
-            ..Default::default()
-        };
-
-        let (buffer, allocation) = unsafe {
-            allocator
-                .create_buffer(&buffer_info, &allocation_info)
-                .map_err(|e| {
-                    SoundError::resource_allocation_failed(format!(
-                        "Staging buffer allocation failed: {e:?}"
-                    ))
-                })?
-        };
-        Ok(BufferHandle {
-            info: BufferInfo {
-                buffer,
-                size,
-            },
-            allocation,
-            allocator: allocator.clone(),
-            mapped_access: Mutex::new(()),
-            usage: vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
-        })
+        allocator.allocate_buffer(
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryUsage::AutoPreferHost,
+            AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_RANDOM,
+        )
     }
 
     fn ensure_staging_capacity(
         &self,
-        transfer: &mut TransferContext,
+        staging_buffer: &mut BufferHandle,
         required_size: vk::DeviceSize,
     ) -> SoundResult<()> {
-        if transfer.staging_buffer.size >= required_size {
+        if staging_buffer.size >= required_size {
             return Ok(());
         }
 
-        // Preserve amortized growth while still handling a single very large upload.
-        let new_size = std::cmp::max(
-            transfer.staging_buffer.size.saturating_mul(2),
-            required_size,
-        );
-        let old = std::mem::replace(
-            &mut transfer.staging_buffer,
-            Self::create_staging_buffer(&self.allocator, new_size)?,
-        );
-
-        // BufferHandle owns the VMA allocation. An explicit VMA free followed
-        // by its destructor would free it twice when the staging buffer grows.
-        drop(old);
-
-        Ok(())
-    }
-
-    fn upload_to_staging(&self, transfer: &TransferContext, data: &[u8]) -> SoundResult<()> {
-        let mapped_ptr = self
-            .allocator
-            .get_allocation_info(&transfer.staging_buffer.allocation)
-            .mapped_data;
-
-        if mapped_ptr.is_null() {
-            return Err(SoundError::invalid_state("Staging buffer is not mapped"));
-        }
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), mapped_ptr as *mut u8, data.len());
-        }
-
-        self.allocator.flush_allocation(
-            &transfer.staging_buffer.allocation,
-            0,
-            data.len() as u64,
-        )?;
-
+        // Transfers hold the staging lock through GPU completion, so the old
+        // allocation can drop here. Doubling amortizes repeated upload growth.
+        let new_size = staging_buffer.size.saturating_mul(2).max(required_size);
+        *staging_buffer = Self::create_staging_buffer(&self.allocator, new_size)?;
         Ok(())
     }
 
     fn download_from_staging(
         &self,
-        transfer: &TransferContext,
+        staging_buffer: &BufferHandle,
         size: usize,
         out: &mut [u8],
     ) -> SoundResult<()> {
         let mapped_ptr = self
             .allocator
-            .get_allocation_info(&transfer.staging_buffer.allocation)
+            .get_allocation_info(&staging_buffer.allocation)
             .mapped_data;
 
         if mapped_ptr.is_null() {
             return Err(SoundError::invalid_state("Staging buffer is not mapped"));
         }
 
-        self.allocator.invalidate_allocation(
-            &transfer.staging_buffer.allocation,
-            0,
-            size as u64,
-        )?;
+        self.allocator
+            .invalidate_allocation(&staging_buffer.allocation, 0, size as u64)?;
 
         unsafe {
             std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, out.as_mut_ptr(), size);
@@ -606,6 +486,60 @@ impl GpuAllocator {
     pub(crate) fn live_allocation_stats(&self) -> SoundResult<(u32, u64)> {
         let stats = self.allocator.calculate_statistics()?.total.statistics;
         Ok((stats.allocationCount, stats.allocationBytes))
+    }
+}
+
+impl AllocatorOwner {
+    fn allocate_buffer(
+        self: &Arc<Self>,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        memory_usage: MemoryUsage,
+        allocation_flags: AllocationCreateFlags,
+    ) -> SoundResult<BufferHandle> {
+        validate_buffer_usage(usage)?;
+        if size == 0 {
+            return Err(SoundError::invalid_argument(
+                "Vulkan buffers must have non-zero size",
+            ));
+        }
+        if usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER)
+            && size > self.device_context.limits.max_storage_buffer_range as u64
+        {
+            return Err(SoundError::invalid_argument(
+                "Storage buffer exceeds maxStorageBufferRange",
+            ));
+        }
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let allocation_info = vk_mem::AllocationCreateInfo {
+            usage: memory_usage,
+            flags: allocation_flags,
+            ..Default::default()
+        };
+
+        let (buffer, allocation) = unsafe {
+            self.allocator
+                .create_buffer(&buffer_info, &allocation_info)
+                .map_err(|e| {
+                    SoundError::resource_allocation_failed(format!(
+                        "Buffer allocation failed: {e:?}"
+                    ))
+                })?
+        };
+        Ok(BufferHandle {
+            info: BufferInfo {
+                buffer,
+                size,
+            },
+            allocation,
+            allocator: self.clone(),
+            mapped_access: Mutex::new(()),
+            usage,
+        })
     }
 }
 
