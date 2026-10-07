@@ -1,16 +1,18 @@
 use crate::core::error::{SoundError, SoundResult};
 use crate::playback::queue::SampleQueue;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
 
-/// Shared playback lifecycle flags used by producers and the device callback.
+/// Owns one stream's sample queue and shared producer/callback lifecycle.
 ///
-/// The state is shared through `Arc<PlaybackState>`. Atomic flags are used for
-/// callback-safe status checks. Each state belongs to one stream; its queue and
-/// first failure are installed once and remain available through shutdown.
+/// Construction installs the queue and prebuffer policy before the state can be
+/// shared through `Arc`. Atomic flags remain callback-safe; the first failure
+/// and cancellation cannot be reset for another stream.
 pub(super) struct PlaybackState {
-    /// Queue currently associated with this playback run, if one was prepared.
-    queue: OnceLock<Arc<SampleQueue>>,
+    /// Queue retained through callback completion and producer cancellation.
+    queue: SampleQueue,
+    /// Initial queue occupancy required before device consumption begins.
+    prefill_samples: usize,
     /// First stream/callback error, retained for every subsequent caller.
     failure: OnceLock<SoundError>,
     /// Set by the producer once no more blocks will be pushed.
@@ -38,13 +40,19 @@ pub(super) struct PlaybackState {
 }
 
 impl PlaybackState {
-    /// Creates an idle playback state with no prepared queue.
-    pub(super) fn new() -> Self {
-        Self {
-            queue: OnceLock::new(),
+    /// Allocates a stream's queue and installs its initial prebuffer threshold.
+    pub(super) fn new(capacity: usize, prefill_samples: usize) -> SoundResult<Self> {
+        if prefill_samples > capacity {
+            return Err(SoundError::invalid_argument(
+                "Playback prebuffer exceeds queue capacity",
+            ));
+        }
+        Ok(Self {
+            queue: SampleQueue::new(capacity)?,
+            prefill_samples,
             failure: OnceLock::new(),
-            producer_done: AtomicBool::new(true),
-            playback_done: AtomicBool::new(true),
+            producer_done: AtomicBool::new(false),
+            playback_done: AtomicBool::new(false),
             stop_requested: AtomicBool::new(false),
             expects_audio: AtomicBool::new(true),
             received_audio: AtomicBool::new(false),
@@ -53,27 +61,30 @@ impl PlaybackState {
             created_at: std::time::Instant::now(),
             first_underrun_ns: AtomicU64::new(u64::MAX),
             last_underrun_ns: AtomicU64::new(0),
-            ready: AtomicBool::new(true),
-        }
+            ready: AtomicBool::new(prefill_samples == 0),
+        })
     }
 
-    /// Installs this stream's queue before callbacks or producers can start.
-    /// Reusing state for another stream is rejected so failures cannot be cleared.
-    pub(super) fn prepare_queue(&self, capacity: usize) -> SoundResult<Arc<SampleQueue>> {
+    /// Borrows this stream's queue for callback draining and occupancy queries.
+    pub(super) fn queue(&self) -> &SampleQueue {
+        &self.queue
+    }
+
+    /// Enqueues a complete block and releases the initial prebuffer when full.
+    /// Failure takes precedence over cancellation, including while waiting for space.
+    pub(super) fn push_block(&self, block: &[f32]) -> SoundResult<bool> {
         self.check_error()?;
-        if self.queue.get().is_some() || self.is_stop_requested() {
-            return Err(SoundError::invalid_state(
-                "Playback state cannot be restarted",
-            ));
+        let accepted = self
+            .queue
+            .push_block(block, &self.stop_requested, &self.producer_done);
+        // Failure can arrive while this producer waits on a full queue.
+        self.check_error()?;
+        let accepted = accepted?;
+        if accepted && !self.ready_to_play() && self.queue.queued_samples()? >= self.prefill_samples
+        {
+            self.release_prebuffer();
         }
-        let queue = Arc::new(SampleQueue::new(capacity)?);
-        self.queue
-            .set(queue.clone())
-            .map_err(|_| SoundError::invalid_state("Playback queue is already prepared"))?;
-        self.producer_done.store(false, Ordering::Release);
-        self.playback_done.store(false, Ordering::Release);
-        self.stop_requested.store(false, Ordering::Release);
-        Ok(queue)
+        Ok(accepted)
     }
 
     /// Retains the first callback failure before waking stopped producers.
@@ -87,14 +98,9 @@ impl PlaybackState {
         self.failure.get().cloned().map_or(Ok(()), Err)
     }
 
-    /// Returns the completion flag observed by queue producers and the callback.
-    pub(super) fn producer_done(&self) -> &AtomicBool {
-        &self.producer_done
-    }
-
-    /// Gates callback consumption until enough initial blocks have been queued.
-    pub(super) fn begin_prebuffering(&self) {
-        self.ready.store(false, Ordering::Release);
+    /// Observes producer completion before a callback drains the final queued samples.
+    pub(super) fn is_producer_done(&self) -> bool {
+        self.producer_done.load(Ordering::Acquire)
     }
 
     /// Releases the callback after the producer fills its prebuffer.
@@ -167,11 +173,6 @@ impl PlaybackState {
         })
     }
 
-    /// Returns the stop flag observed by producers while they wait for capacity.
-    pub(super) fn stop_requested(&self) -> &AtomicBool {
-        &self.stop_requested
-    }
-
     /// Marks the producer as finished and wakes any blocked queue users.
     pub(super) fn mark_producer_done(&self) -> SoundResult<()> {
         self.producer_done.store(true, Ordering::Release);
@@ -179,7 +180,7 @@ impl PlaybackState {
         self.release_prebuffer();
         // Taking the queue mutex also finishes any enqueue that had already
         // accepted its block, before this method returns to the producer.
-        self.notify_all();
+        self.queue.notify_available_space();
         self.check_error()
     }
 
@@ -192,7 +193,7 @@ impl PlaybackState {
     pub(super) fn request_stop(&self) -> SoundResult<()> {
         self.stop_requested.store(true, Ordering::Release);
         self.playback_done.store(true, Ordering::Release);
-        self.notify_all();
+        self.queue.notify_available_space();
         self.check_error()
     }
 
@@ -204,13 +205,6 @@ impl PlaybackState {
     /// Returns whether playback has been asked to stop.
     pub(super) fn is_stop_requested(&self) -> bool {
         self.stop_requested.load(Ordering::Acquire)
-    }
-
-    /// Notifies the active queue, if any, so waiting producers can re-check flags.
-    fn notify_all(&self) {
-        if let Some(queue) = self.queue.get() {
-            queue.notify_available_space();
-        }
     }
 }
 

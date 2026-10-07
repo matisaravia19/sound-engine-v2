@@ -5,20 +5,33 @@ use super::*;
 impl SoundPlayer {
     /// Creates a device-free player whose real callback is driven explicitly by tests.
     pub(crate) fn test_player(block_samples: usize) -> (Self, TestPlaybackControl) {
-        let state = Arc::new(PlaybackState::new());
-        let queue = state.prepare_queue(block_samples).unwrap();
+        Self::test_player_with_prefill(block_samples, 0)
+    }
+
+    /// Creates a player with room for its prebuffer; callbacks remain under test control.
+    pub(super) fn test_player_with_prefill(
+        block_samples: usize,
+        prefill_blocks: usize,
+    ) -> (Self, TestPlaybackControl) {
+        let state = Arc::new(
+            PlaybackState::new(
+                block_samples * prefill_blocks.max(1),
+                block_samples * prefill_blocks,
+            )
+            .unwrap(),
+        );
         let control = TestPlaybackControl {
             state: state.clone(),
-            queue: queue.clone(),
         };
         (
             Self {
-                config: PlaybackConfig::default(),
+                config: PlaybackConfig {
+                    prefill_blocks,
+                    ..Default::default()
+                },
                 state,
-                queue,
-                stream: None,
+                _stream: None,
                 block_samples,
-                prefill_samples: 0,
             },
             control,
         )
@@ -28,13 +41,12 @@ impl SoundPlayer {
 /// Test-only access to device callbacks and failures without a platform stream.
 pub(crate) struct TestPlaybackControl {
     state: Arc<PlaybackState>,
-    queue: Arc<SampleQueue>,
 }
 
 impl TestPlaybackControl {
     /// Drains one stereo callback through production conversion and queue code.
     pub(crate) fn drain(&self, samples: &mut [f32]) {
-        crate::playback::device::write_output(samples, 2, 2, &self.queue, &self.state);
+        crate::playback::device::write_output(samples, 2, 2, &self.state);
     }
 
     /// Injects the same retained failure and wakeup used by a device error callback.
@@ -44,6 +56,6 @@ impl TestPlaybackControl {
 
     /// Returns buffered samples so tests can establish backpressure before shutdown.
     pub(crate) fn queued_samples(&self) -> usize {
-        self.queue.queued_samples().unwrap()
+        self.state.queue().queued_samples().unwrap()
     }
 }

@@ -1,7 +1,5 @@
-use crate::core::error::ErrorCode;
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::playback::device::{build_output_stream, default_output_sample_rate};
-use crate::playback::queue::SampleQueue;
 use crate::playback::state::PlaybackState;
 use cpal::traits::StreamTrait;
 use std::sync::Arc;
@@ -33,12 +31,9 @@ impl Default for PlaybackConfig {
 pub struct SoundPlayer {
     config: PlaybackConfig,
     state: Arc<PlaybackState>,
-    queue: Arc<SampleQueue>,
     // Production players always own a stream; tests drive the same queue/callback manually.
-    stream: Option<cpal::Stream>,
+    _stream: Option<cpal::Stream>,
     block_samples: usize,
-    /// Initial queue occupancy required before device consumption begins.
-    prefill_samples: usize,
 }
 
 impl SoundPlayer {
@@ -72,18 +67,16 @@ impl SoundPlayer {
         let block_samples = block_size
             .checked_mul(output_channels)
             .ok_or_else(|| SoundError::invalid_argument("Playback block size overflow"))?;
-        let state = Arc::new(PlaybackState::new());
-        if config.prefill_blocks > 0 {
-            state.begin_prebuffering();
-        }
         let max_queued_blocks = max_queued_blocks(config, sample_rate, block_size);
         let capacity = max_queued_blocks
             .checked_mul(block_samples)
             .filter(|samples| *samples <= isize::MAX as usize / std::mem::size_of::<f32>())
             .ok_or_else(|| SoundError::invalid_argument("Playback queue capacity overflow"))?;
-        let queue = state.prepare_queue(capacity)?;
-        let stream =
-            build_output_stream(sample_rate, output_channels, queue.clone(), state.clone())?;
+        let state = Arc::new(PlaybackState::new(
+            capacity,
+            config.prefill_blocks * block_samples,
+        )?);
+        let stream = build_output_stream(sample_rate, output_channels, state.clone())?;
 
         stream
             .play()
@@ -93,10 +86,8 @@ impl SoundPlayer {
         Ok(Self {
             config,
             state,
-            queue,
-            stream: Some(stream),
+            _stream: Some(stream),
             block_samples,
-            prefill_samples: config.prefill_blocks * block_samples,
         })
     }
 
@@ -144,22 +135,7 @@ impl SoundPlayer {
             self.block_samples
         );
 
-        self.check_error()?;
-        let accepted = self.queue.push_block(
-            block,
-            self.state.stop_requested(),
-            self.state.producer_done(),
-        );
-        // Failure can arrive while this producer waits on a full queue.
-        self.check_error()?;
-        let accepted = accepted?;
-        if accepted
-            && !self.state.ready_to_play()
-            && self.queue.queued_samples()? >= self.prefill_samples
-        {
-            self.state.release_prebuffer();
-        }
-        Ok(accepted)
+        self.state.push_block(block)
     }
 
     /// Closes production while allowing the callback to drain queued samples.
@@ -216,7 +192,6 @@ impl PlaybackStopHandle {
 impl Drop for SoundPlayer {
     fn drop(&mut self) {
         let _ = self.state.request_stop();
-        let _ = &self.stream;
     }
 }
 

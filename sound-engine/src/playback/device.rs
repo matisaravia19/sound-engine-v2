@@ -1,10 +1,7 @@
-use crate::core::error::ErrorCode;
-use crate::core::error::{SoundError, SoundResult};
-use crate::playback::queue::SampleQueue;
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::playback::state::PlaybackState;
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Returns the sample rate advertised by the default output device.
 ///
@@ -18,14 +15,13 @@ pub(super) fn default_output_sample_rate() -> SoundResult<u32> {
 
 /// Builds a CPAL output stream that drains interleaved engine samples.
 ///
-/// The stream callback owns `Arc` handles to `queue` and `state`. Samples
+/// The stream callback shares ownership of the state and its sample queue. Samples
 /// are read as `f32`, clamped to the target sample format, and mapped onto the
 /// first `output_channels` of the device; any remaining device channels are
 /// filled with silence.
 pub(super) fn build_output_stream(
     sample_rate: u32,
     output_channels: usize,
-    queue: Arc<SampleQueue>,
     state: Arc<PlaybackState>,
 ) -> SoundResult<cpal::Stream> {
     let config = default_output_device_config()?;
@@ -40,7 +36,6 @@ pub(super) fn build_output_stream(
         config.supported_config.sample_format(),
         config.device_channels,
         output_channels,
-        queue,
         state,
     )
 }
@@ -87,7 +82,6 @@ fn build_stream_for_sample_format(
     sample_format: cpal::SampleFormat,
     device_channels: usize,
     output_channels: usize,
-    queue: Arc<SampleQueue>,
     state: Arc<PlaybackState>,
 ) -> SoundResult<cpal::Stream> {
     match sample_format {
@@ -96,7 +90,6 @@ fn build_stream_for_sample_format(
             stream_config,
             device_channels,
             output_channels,
-            queue,
             state,
         ),
         cpal::SampleFormat::I16 => build_typed_output_stream::<i16>(
@@ -104,7 +97,6 @@ fn build_stream_for_sample_format(
             stream_config,
             device_channels,
             output_channels,
-            queue,
             state,
         ),
         cpal::SampleFormat::U16 => build_typed_output_stream::<u16>(
@@ -112,7 +104,6 @@ fn build_stream_for_sample_format(
             stream_config,
             device_channels,
             output_channels,
-            queue,
             state,
         ),
         other => {
@@ -133,7 +124,6 @@ fn build_typed_output_stream<T>(
     stream_config: &cpal::StreamConfig,
     device_channels: usize,
     output_channels: usize,
-    queue: Arc<SampleQueue>,
     state: Arc<PlaybackState>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
@@ -152,9 +142,7 @@ where
     };
     device.build_output_stream(
         stream_config,
-        move |data: &mut [T], _| {
-            write_output(data, device_channels, output_channels, &queue, &state)
-        },
+        move |data: &mut [T], _| write_output(data, device_channels, output_channels, &state),
         err_fn,
         None,
     )
@@ -168,7 +156,6 @@ pub(super) fn write_output<T>(
     data: &mut [T],
     device_channels: usize,
     output_channels: usize,
-    queue: &SampleQueue,
     state: &PlaybackState,
 ) where
     T: cpal::Sample + cpal::FromSample<f32>,
@@ -188,8 +175,8 @@ pub(super) fn write_output<T>(
     let required_samples = frames * output_channels;
     // If finish races the drain, the producer may still enqueue its last block.
     // Observe completion first so an empty tail proves no later enqueue remains.
-    let producer_done = state.producer_done().load(Ordering::Acquire);
-    let drained = match queue.drain_into(required_samples, |index, input| {
+    let producer_done = state.is_producer_done();
+    let drained = match state.queue().drain_into(required_samples, |index, input| {
         let output_index = (index / output_channels) * device_channels + index % output_channels;
         // DSP overflow must never reach the device or integer sample conversion.
         let finite = if input.is_finite() {

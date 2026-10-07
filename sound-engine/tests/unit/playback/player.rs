@@ -2,12 +2,8 @@ use super::*;
 
 #[test]
 fn finished_player_rejects_late_blocks_without_losing_its_queued_tail() {
-    for prebuffer in [false, true] {
-        let (mut player, control) = SoundPlayer::test_player(2);
-        if prebuffer {
-            player.prefill_samples = 8;
-            player.state.begin_prebuffering();
-        }
+    for prefill_blocks in [0, 4] {
+        let (player, control) = SoundPlayer::test_player_with_prefill(2, prefill_blocks);
         assert!(player.push_block(&[0.25, -0.25]).unwrap());
         player.finish().unwrap();
         player.finish().unwrap();
@@ -36,22 +32,14 @@ fn finished_player_rejects_late_blocks_without_losing_its_queued_tail() {
 
 #[test]
 fn finish_releases_a_blocked_producer_without_draining() {
-    let state = Arc::new(PlaybackState::new());
-    let queue = state.prepare_queue(1).unwrap();
-    queue
-        .push_block(&[0.25], state.stop_requested(), state.producer_done())
-        .unwrap();
+    let state = Arc::new(PlaybackState::new(1, 0).unwrap());
+    state.push_block(&[0.25]).unwrap();
     let producer_state = state.clone();
-    let producer_queue = queue.clone();
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        let result = producer_queue.push_block(
-            &[0.5],
-            producer_state.stop_requested(),
-            producer_state.producer_done(),
-        );
+        let result = producer_state.push_block(&[0.5]);
         result_tx.send(result).unwrap();
     });
     started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -64,36 +52,25 @@ fn finish_releases_a_blocked_producer_without_draining() {
         finished.unwrap().unwrap_err().code(),
         ErrorCode::InvalidState
     );
-    assert_eq!(queue.queued_samples().unwrap(), 1);
+    assert_eq!(state.queue().queued_samples().unwrap(), 1);
 }
 
 #[test]
 fn device_failure_wakes_a_full_queue_and_remains_visible_to_the_runtime() {
-    let state = Arc::new(PlaybackState::new());
-    let queue = state.prepare_queue(1).unwrap();
-    queue
-        .push_block(&[1.0], state.stop_requested(), state.producer_done())
-        .unwrap();
+    let state = Arc::new(PlaybackState::new(1, 0).unwrap());
+    state.push_block(&[1.0]).unwrap();
     let handle = PlaybackStopHandle {
         state: state.clone(),
     };
     let worker_state = state.clone();
     let (sent, received) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let accepted = queue
-            .push_block(
-                &[2.0],
-                worker_state.stop_requested(),
-                worker_state.producer_done(),
-            )
-            .unwrap();
-        sent.send((accepted, worker_state.check_error())).unwrap();
+        sent.send(worker_state.push_block(&[2.0])).unwrap();
     });
     state.report_failure(SoundError::external("device disconnected"));
-    let (accepted, status) = received.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(!accepted);
+    let result = received.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(
-        status
+        result
             .unwrap_err()
             .to_string()
             .contains("device disconnected")
@@ -105,22 +82,14 @@ fn device_failure_wakes_a_full_queue_and_remains_visible_to_the_runtime() {
 
 #[test]
 fn stop_handle_releases_a_producer_without_an_audio_callback() {
-    let state = Arc::new(PlaybackState::new());
-    let queue = state.prepare_queue(1).unwrap();
-    queue
-        .push_block(&[1.0], state.stop_requested(), state.producer_done())
-        .unwrap();
+    let state = Arc::new(PlaybackState::new(1, 0).unwrap());
+    state.push_block(&[1.0]).unwrap();
     let handle = PlaybackStopHandle {
         state: state.clone(),
     };
     let (sent, received) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        sent.send(
-            queue
-                .push_block(&[2.0], state.stop_requested(), state.producer_done())
-                .unwrap(),
-        )
-        .unwrap();
+        sent.send(state.push_block(&[2.0]).unwrap()).unwrap();
     });
     handle.request_stop().unwrap();
     assert!(!received.recv_timeout(Duration::from_secs(1)).unwrap());

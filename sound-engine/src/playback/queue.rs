@@ -1,13 +1,12 @@
-use crate::core::error::ErrorCode;
-use crate::core::error::{SoundError, SoundResult};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, TryLockError};
 
 /// Bounded FIFO of interleaved `f32` playback samples.
 ///
-/// Producers hold shared ownership through `Arc<SampleQueue>` and push complete
-/// engine blocks. The audio callback drains batches without blocking; producers
+/// Owned by one playback state. Producers push complete engine blocks; the
+/// audio callback drains batches without blocking. Producers
 /// may block on the condition variable until the callback frees capacity.
 pub(super) struct SampleQueue {
     /// Interleaved engine samples protected against producer/callback access.
