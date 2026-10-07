@@ -4,6 +4,7 @@ mod config;
 mod controls;
 mod geometry;
 mod layout;
+mod listener;
 mod poses;
 mod render;
 
@@ -15,12 +16,8 @@ use controls::{
     sync_camera_listener_if_changed, sync_red_sphere_listener,
 };
 use geometry::{PlaygroundScene, SceneConfig, build_scene, from_glam, scene_description, to_glam};
-use glam::Vec3;
-use poses::{
-    angle_from_forward, camera_listener_pose, listener_forward, listener_position,
-    listener_position_name, listener_rotation_name, listener_spin_forward, source_position,
-    source_position_name,
-};
+use listener::{ListenerController, ListenerMode};
+use poses::{listener_position, listener_position_name, source_position, source_position_name};
 use raylib::prelude::*;
 use render::{draw_overlay, draw_scene, draw_scene_menu};
 use sound_engine::auralization::VoiceId;
@@ -30,8 +27,6 @@ use sound_engine::scene::SceneDescription;
 use sound_engine::{ListenerPose, PointSource, SoundEngine};
 use std::time::Instant;
 
-const LISTENER_SPIN_RADIANS_PER_SECOND: f32 = std::f32::consts::PI * 0.125;
-
 struct UiState {
     status: String,
     last_voice: Option<VoiceId>,
@@ -40,12 +35,6 @@ struct UiState {
     benchmark_wireframe: bool,
     /// Full geometry when enabled; an empty acoustic scene supplies the distance-only comparison.
     full_acoustics: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ListenerMode {
-    RedSphere,
-    Camera,
 }
 
 struct PlaygroundState {
@@ -63,12 +52,7 @@ struct PlaygroundState {
     scene_config: SceneConfig,
     scene: PlaygroundScene,
     listener_index: usize,
-    listener_rotation_index: usize,
-    listener_spin_enabled: bool,
-    listener_spin_angle: f32,
-    listener_mode: ListenerMode,
-    last_camera_listener_pose: Option<ListenerPose>,
-    last_camera_listener_sync: Option<Instant>,
+    listener: ListenerController,
     source_index: usize,
     ui: UiState,
 }
@@ -92,12 +76,7 @@ impl PlaygroundState {
             scene_config,
             scene: build_scene(scene_config),
             listener_index: 0,
-            listener_rotation_index: 0,
-            listener_spin_enabled: false,
-            listener_spin_angle: 0.0,
-            listener_mode: ListenerMode::RedSphere,
-            last_camera_listener_pose: None,
-            last_camera_listener_sync: None,
+            listener: ListenerController::default(),
             source_index: 0,
             ui: UiState {
                 status: "Ready".to_owned(),
@@ -126,57 +105,13 @@ impl PlaygroundState {
         }
     }
 
-    fn listener_forward(&self) -> Vec3 {
-        if self.listener_spin_enabled {
-            listener_spin_forward(self.listener_spin_angle)
-        } else {
-            listener_forward(self.listener_rotation_index)
-        }
-    }
-
-    fn listener_rotation_label(&self) -> String {
-        if self.listener_spin_enabled {
-            format!(
-                "spinning {:.0} deg",
-                self.listener_spin_angle
-                    .rem_euclid(std::f32::consts::TAU)
-                    .to_degrees()
-            )
-        } else {
-            listener_rotation_name(self.listener_rotation_index).to_owned()
-        }
-    }
-
     fn red_sphere_listener_pose(&self) -> ListenerPose {
-        let forward = self.listener_forward().normalize_or_zero();
-        ListenerPose {
-            position: to_glam(self.listener_position()),
-            forward,
-            up: Vec3::Y,
-        }
+        self.listener.marker_pose(to_glam(self.listener_position()))
     }
 
     fn active_listener_pose(&self, camera: &Camera3D) -> ListenerPose {
-        match self.listener_mode {
-            ListenerMode::RedSphere => self.red_sphere_listener_pose(),
-            ListenerMode::Camera => camera_listener_pose(camera),
-        }
-    }
-
-    fn listener_mode_label(&self) -> &'static str {
-        match self.listener_mode {
-            ListenerMode::RedSphere => "red sphere",
-            ListenerMode::Camera => "camera",
-        }
-    }
-
-    fn toggle_listener_mode(&mut self) {
-        self.listener_mode = match self.listener_mode {
-            ListenerMode::RedSphere => ListenerMode::Camera,
-            ListenerMode::Camera => ListenerMode::RedSphere,
-        };
-        self.last_camera_listener_pose = None;
-        self.last_camera_listener_sync = None;
+        self.listener
+            .active_pose(to_glam(self.listener_position()), camera)
     }
 
     fn source_position(&self) -> Vector3 {
@@ -195,25 +130,6 @@ impl PlaygroundState {
 
     fn rebuild_scene(&mut self) {
         self.scene = build_scene(self.scene_config);
-    }
-
-    fn toggle_listener_spin(&mut self) {
-        self.listener_spin_enabled = !self.listener_spin_enabled;
-        if self.listener_spin_enabled {
-            self.listener_spin_angle =
-                angle_from_forward(listener_forward(self.listener_rotation_index));
-        }
-    }
-
-    fn update_listener_spin(&mut self, frame_time_seconds: f32) -> bool {
-        if !self.listener_spin_enabled {
-            return false;
-        }
-
-        self.listener_spin_angle = (self.listener_spin_angle
-            + LISTENER_SPIN_RADIANS_PER_SECOND * frame_time_seconds)
-            .rem_euclid(std::f32::consts::TAU);
-        true
     }
 }
 
@@ -302,7 +218,7 @@ pub(crate) fn run() -> SoundResult<()> {
         // first-frame teleport otherwise rebuilds it immediately after playback.
         camera.position = Vector3::new(7.0, 2.0, 0.0);
         camera.target = Vector3::new(0.0, 1.0, 0.0);
-        state.listener_mode = ListenerMode::Camera;
+        state.listener.set_mode(ListenerMode::Camera);
         sync_camera_listener_if_changed(&mut audio, &mut state, &camera, true);
         let voice_id = audio.play(state.active_listener_pose(&camera))?;
         state.ui.last_voice = Some(voice_id);
@@ -334,11 +250,11 @@ pub(crate) fn run() -> SoundResult<()> {
         if !state.scene_menu {
             handle_config_keys(&rl, &mut audio, &mut state, &camera);
         }
-        if state.listener_mode == ListenerMode::Camera {
+        if state.listener.mode() == ListenerMode::Camera {
             sync_camera_listener_if_changed(&mut audio, &mut state, &camera, false);
         }
-        if state.update_listener_spin(rl.get_frame_time())
-            && state.listener_mode == ListenerMode::RedSphere
+        if state.listener.advance_spin(rl.get_frame_time())
+            && state.listener.mode() == ListenerMode::RedSphere
         {
             sync_red_sphere_listener(&mut audio, &mut state, "listener spin");
         }

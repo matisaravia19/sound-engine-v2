@@ -75,7 +75,7 @@ pub(super) fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: 
             }
         }
         draw_marker(d, state.source_position(), 0.12, Color::GREEN);
-        draw_listener(d, state.listener_position(), state.listener_forward());
+        draw_listener(d, state.listener_position(), state.listener.forward());
         if state.ui.show_bisector_planes {
             draw_bisector_planes(d, &scene.description.diffraction_edges);
         }
@@ -93,7 +93,7 @@ pub(super) fn draw_scene(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, state: 
     }
 
     draw_marker(d, state.source_position(), 0.38, Color::GREEN);
-    draw_listener(d, state.listener_position(), state.listener_forward());
+    draw_listener(d, state.listener_position(), state.listener.forward());
     if state.ui.show_bisector_planes {
         draw_bisector_planes(d, &state.scene.diffraction_edges);
     }
@@ -281,7 +281,7 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
             state.source_position().x,
             state.source_position().y,
             state.source_position().z,
-            state.listener_mode_label(),
+            state.listener.mode().label(),
             active_listener.x,
             active_listener.y,
             active_listener.z
@@ -309,7 +309,7 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
                     "closed"
                 },
                 listener_position_name(state.listener_index),
-                state.listener_rotation_label()
+                state.listener.rotation_label()
             )
         },
         24,
@@ -338,8 +338,8 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
     d.draw_text(
         &format!(
             "7 red spin: {} | L listener: {} | bisector planes: {}",
-            on_off(state.listener_spin_enabled),
-            state.listener_mode_label(),
+            on_off(state.listener.is_spinning()),
+            state.listener.mode().label(),
             on_off(state.ui.show_bisector_planes)
         ),
         24,

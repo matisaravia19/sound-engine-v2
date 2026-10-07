@@ -2,16 +2,12 @@
 use super::audio::AudioSession;
 use super::geometry::{from_glam, scene_description, to_glam};
 use super::layout::{BISECTOR_BUTTON, PLAYBACK_MODE_BUTTON, START_SOUND_BUTTON, SceneMenuLayout};
-use super::poses::{
-    camera_listener_pose, listener_poses_match, listener_position_count, listener_rotation_count,
-    source_position_count,
-};
-use super::{ListenerMode, PlaygroundState, empty_acoustic_scene, playback_label, playback_scene};
+use super::listener::{ListenerController, ListenerMode};
+use super::poses::{listener_position_count, source_position_count};
+use super::{PlaygroundState, empty_acoustic_scene, playback_label, playback_scene};
 use glam::vec3;
 use raylib::prelude::*;
-use std::time::{Duration, Instant};
-
-const CAMERA_LISTENER_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+use std::time::Instant;
 
 /// Frames the current source and receiver in the display camera.
 pub(super) fn frame_selected_pair(state: &PlaygroundState, camera: &mut Camera3D) {
@@ -43,7 +39,7 @@ pub(super) fn handle_scene_menu(
     if !state.scene_menu {
         if rl.is_key_pressed(KeyboardKey::KEY_H) {
             frame_selected_pair(state, camera);
-            if state.listener_mode == ListenerMode::Camera {
+            if state.listener.mode() == ListenerMode::Camera {
                 sync_camera_listener_if_changed(audio, state, camera, true);
             }
         }
@@ -109,11 +105,7 @@ fn select_scene(
     state.benchmark = benchmark;
     state.scene_index = index;
     state.pair_index = 0;
-    state.listener_mode = ListenerMode::RedSphere;
-    state.listener_spin_enabled = false;
-    state.listener_rotation_index = 0;
-    state.last_camera_listener_pose = None;
-    state.last_camera_listener_sync = None;
+    state.listener = ListenerController::default();
     frame_selected_pair(state, camera);
     sync_source(audio, state);
     sync_red_sphere_listener(audio, state, "scene");
@@ -171,9 +163,7 @@ pub(super) fn handle_config_keys(
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_FOUR) {
-        state.listener_spin_enabled = false;
-        state.listener_rotation_index =
-            next_index(state.listener_rotation_index, listener_rotation_count());
+        state.listener.next_orientation();
         sync_red_sphere_listener(audio, state, "red sphere rotation");
     }
 
@@ -193,12 +183,12 @@ pub(super) fn handle_config_keys(
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_SEVEN) {
-        state.toggle_listener_spin();
+        state.listener.toggle_spin();
         sync_red_sphere_listener(audio, state, "red sphere spin");
     }
     if rl.is_key_pressed(KeyboardKey::KEY_L) {
-        state.toggle_listener_mode();
-        match state.listener_mode {
+        state.listener.toggle_mode();
+        match state.listener.mode() {
             ListenerMode::RedSphere => sync_red_sphere_listener(audio, state, "listener mode"),
             ListenerMode::Camera => sync_camera_listener_if_changed(audio, state, camera, true),
         }
@@ -246,11 +236,11 @@ pub(super) fn sync_red_sphere_listener(
     state: &mut PlaygroundState,
     label: &str,
 ) {
-    if state.listener_mode == ListenerMode::Camera {
+    if state.listener.mode() == ListenerMode::Camera {
         state.ui.status = format!(
             "Changed {label}: {} / {}; camera remains the active listener",
             state.position_label(false),
-            state.listener_rotation_label()
+            state.listener.rotation_label()
         );
         return;
     }
@@ -263,7 +253,7 @@ pub(super) fn sync_red_sphere_listener(
             state.ui.status = format!(
                 "Changed {label}: {} / {}",
                 state.position_label(false),
-                state.listener_rotation_label()
+                state.listener.rotation_label()
             );
         }
         Err(error) => {
@@ -279,26 +269,16 @@ pub(super) fn sync_camera_listener_if_changed(
     camera: &Camera3D,
     announce: bool,
 ) {
-    if !announce
-        && state
-            .last_camera_listener_sync
-            .is_some_and(|last_sync| last_sync.elapsed() < CAMERA_LISTENER_UPDATE_INTERVAL)
-    {
+    let Some(pose) = state
+        .listener
+        .pending_camera_pose(camera, Instant::now(), announce)
+    else {
         return;
-    }
-
-    let pose = camera_listener_pose(camera);
-    if state
-        .last_camera_listener_pose
-        .is_some_and(|previous| listener_poses_match(previous, pose))
-    {
-        return;
-    }
+    };
 
     match audio.engine.update_listener_pose(pose) {
         Ok(()) => {
-            state.last_camera_listener_pose = Some(pose);
-            state.last_camera_listener_sync = Some(Instant::now());
+            state.listener.camera_synced(pose, Instant::now());
             if announce {
                 state.ui.status = "Camera is now the active listener".to_owned();
             }
