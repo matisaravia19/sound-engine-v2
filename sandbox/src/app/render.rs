@@ -1,5 +1,6 @@
 //! Room rendering and playback overlays.
 use super::geometry::{Block, ROOM_HALF_X, ROOM_HALF_Z, from_glam, to_glam};
+use super::layout::{BISECTOR_BUTTON, PLAYBACK_MODE_BUTTON, START_SOUND_BUTTON, SceneMenuLayout};
 use super::poses::{listener_position_name, source_position_name};
 use super::{PlaygroundState, playback_label};
 use glam::{Vec3, vec3};
@@ -8,16 +9,13 @@ use sound_engine::scene::DiffractionEdge;
 
 /// Draws the catalog page containing the current selection.
 pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundState) {
-    let width = (d.get_screen_width() - 80).clamp(240, 760);
-    let rows = scene_menu_rows(d.get_screen_height());
-    let start = state.scene_choice / rows * rows;
-    d.draw_rectangle(
-        32,
-        48,
-        width + 16,
-        rows as i32 * 26 + 104,
-        Color::new(20, 28, 36, 250),
+    let layout = SceneMenuLayout::new(
+        d.get_screen_width(),
+        d.get_screen_height(),
+        state.scene_choice,
+        state.catalog.len(),
     );
+    d.draw_rectangle_rec(layout.panel(), Color::new(20, 28, 36, 250));
     d.draw_text("Elegir escena", 48, 62, 24, Color::RAYWHITE);
     d.draw_text(
         "Arriba/abajo o rueda | Enter o clic | F1: cerrar",
@@ -26,21 +24,28 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
         16,
         Color::LIGHTGRAY,
     );
-    for (row, entry) in state.catalog.iter().enumerate().skip(start).take(rows) {
-        let y = 112 + (row - start) as i32 * 26;
-        if row == state.scene_choice {
-            d.draw_rectangle(40, y, width, 25, Color::new(40, 83, 105, 255));
+    for index in layout.entries() {
+        let entry = &state.catalog[index];
+        let row = layout.row(index);
+        if index == state.scene_choice {
+            d.draw_rectangle_rec(row, Color::new(40, 83, 105, 255));
         }
         let label = format!(
             "{}{}",
-            if row == state.scene_index {
+            if index == state.scene_index {
                 "* "
             } else {
                 "  "
             },
             entry.title
         );
-        d.draw_text(&label, 48, y + 4, 17, Color::RAYWHITE);
+        d.draw_text(
+            &label,
+            row.x as i32 + 8,
+            row.y as i32 + 4,
+            17,
+            Color::RAYWHITE,
+        );
     }
     d.draw_text(
         &format!(
@@ -50,15 +55,10 @@ pub(super) fn draw_scene_menu(d: &mut RaylibDrawHandle<'_>, state: &PlaygroundSt
             state.ui.status
         ),
         48,
-        120 + rows as i32 * 26,
+        layout.footer_y(),
         14,
         Color::LIGHTGRAY,
     );
-}
-
-/// Computes the catalog page size shared by drawing and hit testing.
-pub(super) fn scene_menu_rows(height: i32) -> usize {
-    ((height - 180) / 26).clamp(3, 18) as usize
 }
 
 /// Draws the active room, acoustic edges, source, and listener.
@@ -130,6 +130,8 @@ fn draw_block(d: &mut RaylibMode3D<'_, RaylibDrawHandle<'_>>, block: &Block) {
 }
 
 fn lit_surface_color(normal: Vec3, base: Color) -> Color {
+    // A fixed world-space light distinguishes wall orientations; ambient fill
+    // keeps enclosed and back-facing surfaces visible without shadow passes.
     let toward_light = vec3(-0.45, 0.82, 0.35).normalize();
     let direct = normal.dot(toward_light).max(0.0);
     let sky = (normal.y + 1.0) * 0.5;
@@ -216,30 +218,42 @@ pub(super) fn draw_overlay(d: &mut RaylibDrawHandle, camera: &Camera3D, state: &
     d.draw_rectangle(12, 12, 1_040, 284, Color::new(12, 16, 20, 220));
 
     let button_color = Color::new(42, 128, 74, 255);
-    d.draw_rectangle(24, 24, 160, 40, button_color);
-    d.draw_rectangle_lines(24, 24, 160, 40, Color::new(190, 230, 205, 255));
-    d.draw_text("Start Sound", 42, 35, 18, Color::RAYWHITE);
+    d.draw_rectangle_rec(START_SOUND_BUTTON, button_color);
+    d.draw_rectangle_lines_ex(START_SOUND_BUTTON, 1.0, Color::new(190, 230, 205, 255));
+    d.draw_text(
+        "Start Sound",
+        START_SOUND_BUTTON.x as i32 + 18,
+        START_SOUND_BUTTON.y as i32 + 11,
+        18,
+        Color::RAYWHITE,
+    );
 
     let toggle_color = if state.ui.show_bisector_planes {
         Color::new(35, 118, 150, 255)
     } else {
         Color::new(46, 54, 62, 255)
     };
-    d.draw_rectangle(24, 70, 230, 34, toggle_color);
-    d.draw_rectangle_lines(24, 70, 230, 34, Color::new(160, 205, 225, 255));
-    d.draw_text("Bisector Planes", 42, 78, 17, Color::RAYWHITE);
+    d.draw_rectangle_rec(BISECTOR_BUTTON, toggle_color);
+    d.draw_rectangle_lines_ex(BISECTOR_BUTTON, 1.0, Color::new(160, 205, 225, 255));
+    d.draw_text(
+        "Bisector Planes",
+        BISECTOR_BUTTON.x as i32 + 18,
+        BISECTOR_BUTTON.y as i32 + 8,
+        17,
+        Color::RAYWHITE,
+    );
 
     let audio_color = if state.ui.full_acoustics {
         Color::new(35, 118, 150, 255)
     } else {
         Color::new(115, 82, 35, 255)
     };
-    d.draw_rectangle(278, 70, 310, 34, audio_color);
-    d.draw_rectangle_lines(278, 70, 310, 34, Color::new(160, 205, 225, 255));
+    d.draw_rectangle_rec(PLAYBACK_MODE_BUTTON, audio_color);
+    d.draw_rectangle_lines_ex(PLAYBACK_MODE_BUTTON, 1.0, Color::new(160, 205, 225, 255));
     d.draw_text(
         &format!("T: {}", playback_label(state)),
-        292,
-        78,
+        PLAYBACK_MODE_BUTTON.x as i32 + 14,
+        PLAYBACK_MODE_BUTTON.y as i32 + 8,
         17,
         Color::RAYWHITE,
     );

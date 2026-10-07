@@ -1,11 +1,11 @@
 //! Input handling and synchronization of interactive scene changes.
 use super::audio::AudioSession;
 use super::geometry::{from_glam, scene_description, to_glam};
+use super::layout::{BISECTOR_BUTTON, PLAYBACK_MODE_BUTTON, START_SOUND_BUTTON, SceneMenuLayout};
 use super::poses::{
     camera_listener_pose, listener_poses_match, listener_position_count, listener_rotation_count,
     source_position_count,
 };
-use super::render::scene_menu_rows;
 use super::{ListenerMode, PlaygroundState, empty_acoustic_scene, playback_label, playback_scene};
 use glam::vec3;
 use raylib::prelude::*;
@@ -57,20 +57,18 @@ pub(super) fn handle_scene_menu(
     if rl.is_key_pressed(KeyboardKey::KEY_UP) || wheel > 0.0 {
         state.scene_choice = (state.scene_choice + count - 1) % count;
     }
-    let rows = scene_menu_rows(rl.get_screen_height());
-    let start = state.scene_choice / rows * rows;
-    let mouse = rl.get_mouse_position();
+    let layout = SceneMenuLayout::new(
+        rl.get_screen_width(),
+        rl.get_screen_height(),
+        state.scene_choice,
+        count,
+    );
     let mut choose = rl.is_key_pressed(KeyboardKey::KEY_ENTER);
     if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-        && mouse.x >= 40.0
-        && mouse.x < (rl.get_screen_width() - 40).min(800) as f32
-        && mouse.y >= 112.0
+        && let Some(index) = layout.hit_test(rl.get_mouse_position())
     {
-        let row = ((mouse.y - 112.0) / 26.0) as usize;
-        if row < rows && start + row < count {
-            state.scene_choice = start + row;
-            choose = true;
-        }
+        state.scene_choice = index;
+        choose = true;
     }
     if !choose {
         return;
@@ -136,11 +134,7 @@ pub(super) fn handle_config_keys(
     state: &mut PlaygroundState,
     camera: &Camera3D,
 ) {
-    let mouse = rl.get_mouse_position();
-    let audio_button = mouse.x >= 278.0 && mouse.x <= 588.0 && mouse.y >= 70.0 && mouse.y <= 104.0;
-    if rl.is_key_pressed(KeyboardKey::KEY_T)
-        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && audio_button)
-    {
+    if rl.is_key_pressed(KeyboardKey::KEY_T) || button_clicked(rl, PLAYBACK_MODE_BUTTON) {
         state.ui.full_acoustics = !state.ui.full_acoustics;
         match audio.engine.load_scene(playback_scene(state)) {
             Ok(_) => {
@@ -321,22 +315,14 @@ fn next_index(index: usize, len: usize) -> usize {
 
 /// Recognizes the keyboard and mouse actions that start playback.
 pub(super) fn start_sound_requested(rl: &RaylibHandle) -> bool {
-    rl.is_key_pressed(KeyboardKey::KEY_SPACE)
-        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && mouse_in_start_button(rl))
+    rl.is_key_pressed(KeyboardKey::KEY_SPACE) || button_clicked(rl, START_SOUND_BUTTON)
 }
 
 fn bisector_plane_toggle_requested(rl: &RaylibHandle) -> bool {
-    rl.is_key_pressed(KeyboardKey::KEY_B)
-        || (rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-            && mouse_in_bisector_toggle(rl))
+    rl.is_key_pressed(KeyboardKey::KEY_B) || button_clicked(rl, BISECTOR_BUTTON)
 }
 
-fn mouse_in_start_button(rl: &RaylibHandle) -> bool {
-    let mouse = rl.get_mouse_position();
-    mouse.x >= 24.0 && mouse.x <= 184.0 && mouse.y >= 24.0 && mouse.y <= 64.0
-}
-
-fn mouse_in_bisector_toggle(rl: &RaylibHandle) -> bool {
-    let mouse = rl.get_mouse_position();
-    mouse.x >= 24.0 && mouse.x <= 254.0 && mouse.y >= 70.0 && mouse.y <= 104.0
+fn button_clicked(rl: &RaylibHandle, bounds: Rectangle) -> bool {
+    rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+        && bounds.check_collision_point_rec(rl.get_mouse_position())
 }

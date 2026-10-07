@@ -3,6 +3,7 @@ mod audio;
 mod config;
 mod controls;
 mod geometry;
+mod layout;
 mod poses;
 mod render;
 
@@ -412,6 +413,3 @@ fn playback_scene(state: &PlaygroundState) -> SceneDescription {
         empty_acoustic_scene()
     }
 }
-
-// A fixed world-space light makes differently oriented walls readable while moving.
-// Ambient fill keeps enclosed and back-facing surfaces visible without shadow passes.
