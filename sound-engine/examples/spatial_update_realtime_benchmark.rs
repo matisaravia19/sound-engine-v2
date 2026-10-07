@@ -259,12 +259,7 @@ fn engine_config(output_channels: OutputChannels) -> EngineConfig {
 }
 
 fn empty_scene() -> SceneDescription {
-    SceneDescription {
-        meshes: Vec::new(),
-        materials: Vec::new(),
-        objects: Vec::new(),
-        diffraction_edges: Vec::new(),
-    }
+    SceneDescription::default()
 }
 
 fn milliseconds(start: Instant) -> f64 {

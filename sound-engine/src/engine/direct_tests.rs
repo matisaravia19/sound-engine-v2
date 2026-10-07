@@ -183,9 +183,8 @@ fn box_scene() -> SceneDescription {
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![1.0],
+            absorption: 1.0,
             scattering: 0.0,
-            transmission: None,
             roughness: 0.0,
         }],
         objects: vec![SceneObject {

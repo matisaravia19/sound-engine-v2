@@ -437,8 +437,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_queue_seconds() {
-        let mut config = PlaybackConfig::default();
-        config.max_queue_seconds = f32::NAN;
+        let mut config = PlaybackConfig {
+            max_queue_seconds: f32::NAN,
+            ..Default::default()
+        };
         assert!(validate_config(config).is_err());
 
         config.max_queue_seconds = 0.0;

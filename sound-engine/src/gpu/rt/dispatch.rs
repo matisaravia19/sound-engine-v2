@@ -1,9 +1,5 @@
 use super::*;
-use crate::core::error::ErrorCode;
-use crate::{
-    core::error::{SoundError, SoundResult},
-    gpu::compute::MemoryBarrierSpec,
-};
+use crate::core::error::{ErrorCode, SoundError, SoundResult};
 
 /// One ray tracing dispatch recorded into a command buffer.
 pub struct RtTraceSpec {
@@ -17,8 +13,6 @@ pub struct RtTraceSpec {
     pub push_constant_offset: u32,
     /// Trace dimensions passed to `vkCmdTraceRaysKHR`.
     pub dimensions: [u32; 3],
-    /// Whether to add a shader-write to host-read barrier after tracing.
-    pub barrier_after_trace: bool,
 }
 
 /// Descriptor write supported by RT trace dispatches.
@@ -140,10 +134,12 @@ impl RtContext {
 
         // Descriptor sets are allocated per trace from growable pools.
         let _pool_access = self.compute.descriptor_pool_guard();
-        let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_allocation = pipeline
+            .descriptor_pools
+            .allocate(pipeline.descriptor_set_layout)?;
         let descriptor_set = descriptor_allocation.set;
         self.compute
-            .track_descriptor_set(command_buffer, descriptor_allocation)?;
+            .track_descriptor_set(command_buffer, descriptor_allocation);
         self.update_descriptor_set(descriptor_set, &spec.descriptor_writes)?;
 
         unsafe {
@@ -176,19 +172,11 @@ impl RtContext {
                 &pipeline.raygen_region,
                 &pipeline.miss_region,
                 &pipeline.hit_region,
-                &pipeline.callable_region,
+                &vk::StridedDeviceAddressRegionKHR::default(),
                 spec.dimensions[0],
                 spec.dimensions[1],
                 spec.dimensions[2],
             );
-
-            if spec.barrier_after_trace {
-                // Required when the host reads storage-buffer results immediately.
-                self.compute.record_memory_barrier(
-                    command_buffer,
-                    &MemoryBarrierSpec::ray_tracing_shader_write_to_host_read(),
-                );
-            }
         }
 
         Ok(())

@@ -1,12 +1,12 @@
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::{QueueSet, VkDeviceContext};
+use crate::gpu::descriptor::{DescriptorPools, DescriptorSetAllocation};
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 
-mod descriptor;
 mod dispatch;
 mod pipeline;
 mod submit;
@@ -17,7 +17,6 @@ pub use pipeline::{ComputePipelineSpec, DescriptorBindingSpec, PushConstantSpec}
 pub use sync::{BufferBarrierSpec, MemoryBarrierSpec};
 
 const COMMAND_BUFFER_POOL_SIZE: u32 = 12;
-const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 
 /// Owns compute pipelines and command submission state for the backend.
 ///
@@ -47,15 +46,6 @@ struct InFlightSubmission {
     command_buffer: vk::CommandBuffer,
 }
 
-/// Descriptor set retained until the command buffer using it has completed.
-#[derive(Clone, Copy)]
-pub(crate) struct DescriptorSetAllocation {
-    /// Pool that owns the descriptor set.
-    pub pool: vk::DescriptorPool,
-    /// Set referenced by commands recorded into one submission.
-    pub set: vk::DescriptorSet,
-}
-
 /// Stable handle to a compute pipeline stored in `ComputeContext`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PipelineId(u32);
@@ -67,8 +57,7 @@ struct ComputePipeline {
     layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     push_constant_ranges: Vec<vk::PushConstantRange>,
-    pool_sizes_template: Vec<vk::DescriptorPoolSize>,
-    descriptor_pools: Vec<vk::DescriptorPool>,
+    descriptor_pools: DescriptorPools,
 }
 
 impl ComputeContext {
@@ -109,33 +98,6 @@ impl ComputeContext {
         })
     }
 
-    /// Returns the raw compute queue for integrations that record directly.
-    ///
-    /// # Safety
-    ///
-    /// Callers must preserve the queue synchronization guarantees expected by
-    /// the compute context.
-    pub unsafe fn queue_handle(&self) -> SoundResult<vk::Queue> {
-        let queue = self
-            .queue
-            .read()
-            .map_err(|_| SoundError::poisoned_lock("Compute queue lock is poisoned"))?;
-        Ok(queue.handle)
-    }
-
-    /// Returns the raw compute command pool for integrations that need it.
-    ///
-    /// # Safety
-    ///
-    /// Callers must not free or reset command buffers owned by this context.
-    pub unsafe fn command_pool_handle(&self) -> SoundResult<vk::CommandPool> {
-        let queue = self
-            .queue
-            .read()
-            .map_err(|_| SoundError::poisoned_lock("Compute queue lock is poisoned"))?;
-        Ok(queue.command_pool)
-    }
-
     /// Serializes integrations that use both the queue and its command pool.
     pub(crate) fn with_queue<T>(
         &self,
@@ -155,7 +117,7 @@ impl ComputeContext {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    fn drop_command_pool(&self) -> SoundResult<()> {
+    fn drop_command_pool(&self) {
         if let Ok(mut available) = self.available_command_buffers.lock() {
             available.clear();
         }
@@ -175,16 +137,13 @@ impl ComputeContext {
                     .destroy_command_pool(queue.command_pool, None);
             }
         }
-
-        Ok(())
     }
 
-    fn drop_pipelines(&self) -> SoundResult<()> {
+    fn drop_pipelines(&self) {
         self.pipelines
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
-        Ok(())
     }
 
     /// Releases a private synchronous user's pipeline after its final dispatch.
@@ -202,18 +161,17 @@ impl ComputeContext {
     }
 
     /// Retains a descriptor set until the command buffer's fence completes.
-    pub(crate) fn track_descriptor_set(
+    pub(super) fn track_descriptor_set(
         &self,
         command_buffer: vk::CommandBuffer,
         allocation: DescriptorSetAllocation,
-    ) -> SoundResult<()> {
+    ) {
         self.descriptor_sets_by_command_buffer
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .entry(command_buffer)
             .or_default()
             .push(allocation);
-        Ok(())
     }
 
     /// Frees descriptor sets after all commands that reference them complete.
@@ -239,11 +197,6 @@ impl ComputeContext {
 impl Drop for ComputePipeline {
     fn drop(&mut self) {
         unsafe {
-            for pool in &self.descriptor_pools {
-                self.device_context
-                    .device
-                    .destroy_descriptor_pool(*pool, None);
-            }
             self.device_context
                 .device
                 .destroy_pipeline(self.handle, None);
@@ -284,7 +237,7 @@ impl Drop for ComputeContext {
             }
             let _ = self.release_descriptor_sets(submission.command_buffer);
         }
-        let _ = self.drop_pipelines();
-        let _ = self.drop_command_pool();
+        self.drop_pipelines();
+        self.drop_command_pool();
     }
 }

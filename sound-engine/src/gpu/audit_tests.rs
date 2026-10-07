@@ -76,10 +76,9 @@ fn exercise_engine_lifecycle(gpu: &Arc<VkBackend>) {
             meshes: vec![mesh.clone()],
             materials: vec![Material {
                 id: 1,
-                absorption_bands: vec![0.2],
+                absorption: 0.2,
                 scattering: 0.0,
                 roughness: 0.0,
-                transmission: None,
             }],
             objects: vec![SceneObject {
                 id: 1,

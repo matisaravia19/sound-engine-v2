@@ -41,15 +41,10 @@ fn fft_dimensions_reject_zero_and_overflow_before_allocating() {
 fn audit_native_fft_transfers_match_dft_and_round_trip() {
     let gpu = VkBackend::new().unwrap();
     let fence = OwnedFence::new(gpu.device_context()).unwrap();
-    // Small lengths cover the specialized radix/permutation kernels. Prime
-    // lengths exercise VkFFT's LUT/recursive FFT initialization transfers;
-    // 41 and 3*41 also cover Rader stages with unequal register demands.
-    // 65,537 exceeds the bundled Rader cutoff and exercises Bluestein setup.
-    for size in [
-        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 17, 41, 123, 257, 1009, 65_537,
-    ] {
+    // Cover small radix kernels and the larger plans used by audio convolution.
+    for size in [1, 2, 4, 8, 16, 32, 256, 1024, 65_536] {
         let (plan, buffer) =
-            PartitionedConvolver::build_fft_plan(&gpu, size as u64, true, fence.handle).unwrap();
+            FftConvolver::build_fft_plan(&gpu, size as u64, true, fence.handle).unwrap();
         let input: Vec<[f32; 2]> = (0..size)
             .map(|index| [(index % 13) as f32 * 0.01, (index % 7) as f32 * -0.02])
             .collect();
@@ -66,7 +61,7 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
             .download_typed(&buffer, size, &mut actual)
             .unwrap();
         // Check selected bins against an independent double-precision DFT.
-        for bin in [0, 1, size / 2, size - 1] {
+        for bin in [0, 1.min(size - 1), size / 2, size - 1] {
             let mut expected = [0.0_f64; 2];
             for (index, value) in input.iter().enumerate() {
                 let phase = -std::f64::consts::TAU * bin as f64 * index as f64 / size as f64;
@@ -104,110 +99,9 @@ fn audit_native_fft_transfers_match_dft_and_round_trip() {
 
 #[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
-fn audit_multidimensional_fft_shared_tables_match_dft_and_round_trip() {
-    let gpu = VkBackend::new().unwrap();
-    let fence = OwnedFence::new(gpu.device_context()).unwrap();
-    // Equal axes exercise reuse; unequal axes must retain their own table layout.
-    // Prime axes include nested Rader tables in both directions.
-    for dimensions in [
-        &[16_u64, 16][..],
-        &[17, 17][..],
-        &[16, 16, 16][..],
-        &[8, 16, 32][..],
-        &[17, 17, 17][..],
-        &[4, 4, 4, 4][..],
-    ] {
-        let size = dimensions.iter().product::<u64>() as usize;
-        let buffer = gpu
-            .memory()
-            .create_storage_buffer((size * std::mem::size_of::<[f32; 2]>()) as u64)
-            .unwrap();
-        let plan = gpu
-            .compute()
-            .with_queue(|queue, command_pool| {
-                let handles = DeviceHandles {
-                    physical_device: gpu.device().physical_device,
-                    device: gpu.device().device.handle(),
-                    queue,
-                    command_pool,
-                    fence: fence.handle,
-                };
-                // Queue/pool access is serialized; device, fence and buffer outlive the plan.
-                unsafe {
-                    FFTPlanBuilder::new(&handles)
-                        .with_dimensions(dimensions)
-                        .with_buffer(buffer.buffer, buffer.size)
-                        .with_normalization()
-                        .build()
-                }
-                .map_err(|error| {
-                    SoundError::external(format!("Multidimensional FFT build: {error:?}"))
-                })
-            })
-            .unwrap();
-        let input: Vec<[f32; 2]> = (0..size)
-            .map(|index| [(index % 13) as f32 * 0.01, (index % 7) as f32 * -0.02])
-            .collect();
-        gpu.memory().upload_typed(&buffer, &input).unwrap();
-        gpu.compute()
-            .submit_compute_and_wait(|command| {
-                // All referenced resources remain alive until synchronous completion.
-                unsafe { plan.append(command) }
-                    .map_err(|error| SoundError::external(format!("Forward FFT failed: {error:?}")))
-            })
-            .unwrap();
-        let mut actual = vec![[0.0_f32; 2]; size];
-        gpu.memory()
-            .download_typed(&buffer, size, &mut actual)
-            .unwrap();
-        for bin in [0, 1, size / 3, size - 1] {
-            let mut expected = [0.0_f64; 2];
-            for (index, value) in input.iter().enumerate() {
-                let (mut position, mut frequency) = (index, bin);
-                let mut cycles = 0.0;
-                for &length in dimensions {
-                    let length = length as usize;
-                    cycles +=
-                        (position % length) as f64 * (frequency % length) as f64 / length as f64;
-                    position /= length;
-                    frequency /= length;
-                }
-                let (sin, cos) = (-std::f64::consts::TAU * cycles).sin_cos();
-                expected[0] += value[0] as f64 * cos - value[1] as f64 * sin;
-                expected[1] += value[0] as f64 * sin + value[1] as f64 * cos;
-            }
-            for (channel, expected) in expected.iter().enumerate() {
-                assert!(
-                    (actual[bin][channel] as f64 - expected).abs() < 2e-3 + expected.abs() * 2e-6,
-                    "FFT {dimensions:?}, bin {bin}: {:?} != {expected}",
-                    actual[bin]
-                );
-            }
-        }
-        gpu.compute()
-            .submit_compute_and_wait(|command| {
-                unsafe { plan.append_inverse(command) }
-                    .map_err(|error| SoundError::external(format!("Inverse FFT failed: {error:?}")))
-            })
-            .unwrap();
-        gpu.memory()
-            .download_typed(&buffer, size, &mut actual)
-            .unwrap();
-        for (actual, expected) in actual.iter().zip(&input) {
-            for channel in 0..2 {
-                assert!((actual[channel] - expected[channel]).abs() < 2e-4);
-            }
-        }
-        drop(plan);
-        drop(buffer);
-    }
-}
-
-#[test]
-#[ignore = "requires Vulkan; run hardware tests serially"]
 fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
     let gpu = Arc::new(VkBackend::new().unwrap());
-    let convolver = PartitionedConvolver::new(gpu.clone(), audit_config()).unwrap();
+    let mut convolver = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
     let taps = [
         IrSample::new(0.5, -0.25),
         IrSample::new(0.125, 0.75),
@@ -280,7 +174,7 @@ fn audit_batched_convolution_matches_cpu_reference_and_clears_reused_padding() {
 fn audit_fft_initialization_and_ir_owner_lifetime() {
     let gpu = Arc::new(VkBackend::new().unwrap());
     let device = Arc::downgrade(&gpu.device_context());
-    let convolver = PartitionedConvolver::new(gpu.clone(), audit_config()).unwrap();
+    let mut convolver = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
     let ir = convolver
         .create_impulse_response(&[IrSample::new(1.0, 0.5)])
         .unwrap();
@@ -320,7 +214,7 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
     drop(convolver);
     assert_eq!(gpu.compute().pipeline_count(), 0);
     for _ in 0..2 {
-        let replacement = PartitionedConvolver::new(gpu.clone(), audit_config()).unwrap();
+        let replacement = FftConvolver::new(gpu.clone(), audit_config()).unwrap();
         assert_eq!(gpu.compute().pipeline_count(), 1);
         drop(replacement);
         assert_eq!(gpu.compute().pipeline_count(), 0);
@@ -335,7 +229,9 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
 fn gpu_ir_validation_rejects_missing_buffer() {
     let snapshot = gpu_ir_snapshot(1);
 
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000).unwrap_err();
+    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
+        .err()
+        .unwrap();
 
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
 }
@@ -344,16 +240,20 @@ fn gpu_ir_validation_rejects_missing_buffer() {
 fn gpu_ir_validation_rejects_empty_ir() {
     let snapshot = gpu_ir_snapshot(0);
 
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000).unwrap_err();
+    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
+        .err()
+        .unwrap();
 
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
 }
 
 #[test]
-fn gpu_ir_validation_rejects_ir_larger_than_fft() {
+fn gpu_ir_validation_rejects_ir_larger_than_linear_capacity() {
     let snapshot = gpu_ir_snapshot(16);
 
-    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000).unwrap_err();
+    let error = validate_gpu_ir_snapshot(&snapshot, 8, 48_000)
+        .err()
+        .unwrap();
 
     assert_eq!(error.code(), ErrorCode::InvalidArgument);
 }
@@ -365,6 +265,64 @@ fn ir_transition_ramps_every_frame_and_reaches_the_incoming_signal() {
     blend_ir_transition(&mut incoming, &outgoing, 2, 0, 2);
 
     assert_eq!(incoming, [0.5, -0.5, 0.0, 0.0]);
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
+fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
+    let gpu = Arc::new(VkBackend::new().unwrap());
+    let mut config = audit_config();
+    config.auralization.block_size = 4;
+    config.sound.ir_num_samples = 5;
+    let mut convolver = FftConvolver::new(gpu.clone(), config).unwrap();
+    assert_eq!(convolver.fft_size(), 8);
+
+    // Six taps fit in eight FFT bins, but their convolution with four input
+    // samples would need nine bins and wrap the last sample into the head.
+    let oversized = [IrSample::new(1.0, 0.5); 6];
+    assert!(convolver.create_impulse_response(&oversized).is_err());
+    let buffer = Arc::new(gpu.memory().create_storage_buffer(48).unwrap());
+    gpu.memory().upload_typed(&buffer, &oversized).unwrap();
+    let mut snapshot = GpuIrSnapshot {
+        buffer: Some(buffer.clone()),
+        byte_size: 48,
+        sample_rate: config.sound.sample_rate,
+        sample_count: 6,
+        energy: None,
+        scene_version: 1,
+        query_id: 0,
+    };
+    assert!(
+        convolver
+            .create_impulse_response_from_gpu_ir(&snapshot)
+            .is_err()
+    );
+
+    let mut taps = [IrSample::new(0.0, 0.0); 5];
+    taps[4] = IrSample::new(1.0, 0.5);
+    gpu.memory().upload_typed(&buffer, &taps).unwrap();
+    snapshot.sample_count = 5;
+    snapshot.byte_size = 40;
+    for from_gpu in [false, true] {
+        let ir = if from_gpu {
+            convolver
+                .create_impulse_response_from_gpu_ir(&snapshot)
+                .unwrap()
+        } else {
+            convolver.create_impulse_response(&taps).unwrap()
+        };
+        let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());
+        let mut output = [0.0; 8];
+        convolver
+            .process_block(&mut voice, &[0.0, 0.0, 0.0, 1.0], &mut output)
+            .unwrap();
+        assert!(output.iter().all(|sample| sample.abs() < 1e-5));
+        assert!(convolver.flush_tail_block(&mut voice, &mut output).unwrap());
+        assert!(output[..6].iter().all(|sample| sample.abs() < 1e-5));
+        assert!((output[6] - 1.0).abs() < 1e-5);
+        assert!((output[7] - 0.5).abs() < 1e-5);
+        assert!(!convolver.flush_tail_block(&mut voice, &mut output).unwrap());
+    }
 }
 
 fn gpu_ir_snapshot(sample_count: u32) -> GpuIrSnapshot {

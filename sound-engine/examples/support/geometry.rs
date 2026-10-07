@@ -1,16 +1,14 @@
 //! Shared planar geometry for acoustic validation scenes.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Each standalone example uses a different subset of these helpers."
+)]
 use glam::{Mat4, Vec3, vec3};
 use sound_engine::scene::{DiffractionEdge, Material, MeshAsset, SceneDescription, SceneObject};
 
 /// Provides a geometry-free direct-path control.
 pub fn empty_scene() -> SceneDescription {
-    SceneDescription {
-        meshes: Vec::new(),
-        materials: Vec::new(),
-        objects: Vec::new(),
-        diffraction_edges: Vec::new(),
-    }
+    SceneDescription::default()
 }
 
 /// Builds an X=0 reflector extending 80 m in each tangential direction.
@@ -104,10 +102,9 @@ pub fn scene_from_walls(walls: Vec<Vec<Vec3>>, absorption: f32) -> SceneDescript
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![absorption],
+            absorption,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,

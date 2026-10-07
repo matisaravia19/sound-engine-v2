@@ -74,16 +74,7 @@ fn exhausted_revision_rejects_changes_without_invalidating_the_scene() {
             })
             .is_err()
     );
-    assert!(
-        store
-            .load(SceneDescription {
-                meshes: Vec::new(),
-                materials: Vec::new(),
-                objects: Vec::new(),
-                diffraction_edges: Vec::new(),
-            })
-            .is_err()
-    );
+    assert!(store.load(SceneDescription::default()).is_err());
     store
         .apply_updates(SceneUpdates {
             updates: Vec::new(),
@@ -136,10 +127,9 @@ fn apply_updates_can_add_reassign_and_remove_materials_in_order() {
             updates: vec![
                 SceneUpdate::AddMaterial(Material {
                     id: 2,
-                    absorption_bands: vec![0.4],
+                    absorption: 0.4,
                     scattering: 0.2,
                     roughness: 0.2,
-                    transmission: None,
                 }),
                 SceneUpdate::SetMaterial {
                     id: 10,
@@ -181,10 +171,9 @@ fn material_roughness_must_be_finite_and_normalized() {
     for roughness in [-0.1, 1.1, f32::NAN] {
         let material = Material {
             id: 1,
-            absorption_bands: vec![0.2],
+            absorption: 0.2,
             scattering: 0.1,
             roughness,
-            transmission: None,
         };
 
         assert!(validate_material(&material).is_err());
@@ -198,10 +187,9 @@ fn populated_store() -> SceneStore {
             meshes: vec![mesh(1), mesh(2)],
             materials: vec![Material {
                 id: 1,
-                absorption_bands: vec![0.2],
+                absorption: 0.2,
                 scattering: 0.1,
                 roughness: 0.1,
-                transmission: None,
             }],
             objects: vec![object(10, 1), object(20, 2)],
             diffraction_edges: Vec::new(),
@@ -253,10 +241,9 @@ fn load_accepts_valid_diffraction_edges() {
             meshes: vec![mesh(1)],
             materials: vec![Material {
                 id: 1,
-                absorption_bands: vec![0.2],
+                absorption: 0.2,
                 scattering: 0.1,
                 roughness: 0.1,
-                transmission: None,
             }],
             objects: vec![object(10, 1)],
             diffraction_edges: vec![edge(1)],
@@ -277,10 +264,9 @@ fn load_rejects_invalid_diffraction_edges() {
             meshes: vec![mesh(1)],
             materials: vec![Material {
                 id: 1,
-                absorption_bands: vec![0.2],
+                absorption: 0.2,
                 scattering: 0.1,
                 roughness: 0.1,
-                transmission: None,
             }],
             objects: vec![object(10, 1)],
             diffraction_edges: vec![invalid],
@@ -302,10 +288,9 @@ fn load_rejects_diffraction_angles_outside_exterior_range() {
                 meshes: vec![mesh(1)],
                 materials: vec![Material {
                     id: 1,
-                    absorption_bands: vec![0.2],
+                    absorption: 0.2,
                     scattering: 0.1,
                     roughness: 0.1,
-                    transmission: None,
                 }],
                 objects: vec![object(10, 1)],
                 diffraction_edges: vec![invalid],
@@ -349,4 +334,50 @@ fn apply_updates_can_add_replace_and_remove_diffraction_edges() {
         .unwrap();
 
     assert!(!store.diffraction_edges.contains_key(&1));
+}
+
+#[test]
+fn invalid_material_coefficients_cannot_enter_or_replace_scene_state() {
+    for value in [-0.01, 1.01, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for field in 0..3 {
+            let mut material = Material {
+                id: 1,
+                absorption: 0.2,
+                scattering: 0.1,
+                roughness: 0.1,
+            };
+            match field {
+                0 => material.absorption = value,
+                1 => material.scattering = value,
+                _ => material.roughness = value,
+            }
+            let mut store = populated_store();
+            let version = store.version();
+            let original = store.materials[&1].clone();
+            assert_eq!(
+                store
+                    .apply_updates(SceneUpdates {
+                        updates: vec![SceneUpdate::ReplaceMaterial(material.clone())],
+                    })
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidArgument
+            );
+            assert_eq!(store.version(), version);
+            assert_eq!(store.materials[&1].absorption, original.absorption);
+            assert_eq!(store.materials[&1].scattering, original.scattering);
+            assert_eq!(store.materials[&1].roughness, original.roughness);
+            assert_eq!(
+                store
+                    .load(SceneDescription {
+                        materials: vec![material],
+                        ..Default::default()
+                    })
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidArgument
+            );
+            assert_eq!(store.version(), version);
+        }
+    }
 }

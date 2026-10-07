@@ -1,4 +1,3 @@
-use super::descriptor::aggregate_pool_sizes;
 use super::*;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::shader::{SHADER_ENTRY_POINT, ShaderId, ShaderStage};
@@ -53,11 +52,6 @@ pub enum RtShaderGroupSpec {
         closest_hit_shader: u32,
         /// Intersection shader stage index.
         intersection_shader: u32,
-    },
-    /// Callable group referencing a general shader stage index.
-    Callable {
-        /// Callable stage index in the pipeline shader list.
-        shader: u32,
     },
 }
 
@@ -229,7 +223,7 @@ impl RtContext {
         cleanup.handle = handle;
 
         // The SBT is derived from created pipeline group handles.
-        let (sbt, raygen_region, miss_region, hit_region, callable_region) =
+        let (sbt, raygen_region, miss_region, hit_region) =
             self.build_sbt(self.device_context.clone(), handle, &spec.groups)?;
 
         let mut pipelines = self
@@ -253,14 +247,15 @@ impl RtContext {
                 layout,
                 descriptor_set_layout,
                 push_constant_ranges,
-                pool_sizes_template: aggregate_pool_sizes(&descriptor_bindings),
+                descriptor_pools: DescriptorPools::new(
+                    self.device_context.clone(),
+                    &descriptor_bindings,
+                ),
                 descriptor_bindings,
-                descriptor_pools: Vec::new(),
                 _sbt: sbt,
                 raygen_region,
                 miss_region,
                 hit_region,
-                callable_region,
             },
         );
         cleanup.disarm();
@@ -287,7 +282,6 @@ impl RtContext {
         groups: &[RtShaderGroupSpec],
     ) -> SoundResult<(
         BufferHandle,
-        vk::StridedDeviceAddressRegionKHR,
         vk::StridedDeviceAddressRegionKHR,
         vk::StridedDeviceAddressRegionKHR,
         vk::StridedDeviceAddressRegionKHR,
@@ -355,7 +349,6 @@ impl RtContext {
             region_for(groups, base_address, region_size, RtGroupKind::Raygen),
             region_for(groups, base_address, region_size, RtGroupKind::Miss),
             region_for(groups, base_address, region_size, RtGroupKind::Hit),
-            region_for(groups, base_address, region_size, RtGroupKind::Callable),
         ))
     }
 }
@@ -365,7 +358,6 @@ enum RtGroupKind {
     Raygen,
     Miss,
     Hit,
-    Callable,
 }
 
 fn region_for(
@@ -406,9 +398,6 @@ impl RtShaderGroupSpec {
             Self::ProceduralHit {
                 ..
             } => RtGroupKind::Hit,
-            Self::Callable {
-                ..
-            } => RtGroupKind::Callable,
         }
     }
 }
@@ -419,9 +408,6 @@ fn build_shader_group(spec: &RtShaderGroupSpec) -> vk::RayTracingShaderGroupCrea
             shader: general_shader,
         }
         | RtShaderGroupSpec::Miss {
-            shader: general_shader,
-        }
-        | RtShaderGroupSpec::Callable {
             shader: general_shader,
         } => vk::RayTracingShaderGroupCreateInfoKHR::default()
             .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
@@ -523,9 +509,6 @@ fn validate_groups(
             RtShaderGroupSpec::Miss {
                 shader,
             } => validate_group_stage(stages, shader, vk::ShaderStageFlags::MISS_KHR)?,
-            RtShaderGroupSpec::Callable {
-                shader,
-            } => validate_group_stage(stages, shader, vk::ShaderStageFlags::CALLABLE_KHR)?,
             RtShaderGroupSpec::TrianglesHit {
                 closest_hit_shader,
             } => validate_group_stage(
@@ -577,9 +560,7 @@ fn shader_stage_to_vk(stage: ShaderStage) -> SoundResult<vk::ShaderStageFlags> {
         ShaderStage::RayGeneration => Ok(vk::ShaderStageFlags::RAYGEN_KHR),
         ShaderStage::RayMiss => Ok(vk::ShaderStageFlags::MISS_KHR),
         ShaderStage::RayClosestHit => Ok(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-        ShaderStage::RayAnyHit => Ok(vk::ShaderStageFlags::ANY_HIT_KHR),
         ShaderStage::RayIntersection => Ok(vk::ShaderStageFlags::INTERSECTION_KHR),
-        ShaderStage::RayCallable => Ok(vk::ShaderStageFlags::CALLABLE_KHR),
         ShaderStage::Compute => Err(SoundError::invalid_argument(
             "Compute shader cannot be used in an RT pipeline",
         )),
@@ -590,7 +571,5 @@ fn default_rt_stage_flags() -> vk::ShaderStageFlags {
     vk::ShaderStageFlags::RAYGEN_KHR
         | vk::ShaderStageFlags::MISS_KHR
         | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-        | vk::ShaderStageFlags::ANY_HIT_KHR
         | vk::ShaderStageFlags::INTERSECTION_KHR
-        | vk::ShaderStageFlags::CALLABLE_KHR
 }

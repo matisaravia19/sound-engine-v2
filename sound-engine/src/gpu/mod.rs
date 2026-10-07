@@ -8,6 +8,7 @@
 pub mod backend;
 /// Compute pipelines, command submission, and synchronization.
 pub mod compute;
+mod descriptor;
 /// GPU allocations, mapped transfers, and buffer lifetime management.
 pub mod memory;
 /// Lifetime guards and validation shared by GPU resource constructors.

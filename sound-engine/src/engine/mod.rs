@@ -5,8 +5,11 @@ mod diagnostics;
 mod direct;
 #[cfg(feature = "playback")]
 mod runtime;
+mod types;
 #[cfg(feature = "playback")]
 mod worker;
+
+pub use types::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundSourceId};
 
 use crate::acoustics::IrSnapshot;
 use crate::auralization::{SoundAsset, SoundId, VoiceId};
@@ -14,103 +17,12 @@ use crate::core::config::EngineConfig;
 use crate::core::error::{SoundError, SoundResult};
 use crate::scene::{SceneDescription, SceneUpdates, SceneVersion};
 use direct::EngineCore;
-use glam::Vec3;
 use std::path::Path;
 
 #[cfg(feature = "playback")]
 use crate::playback::PlaybackConfig;
 #[cfg(feature = "playback")]
 use runtime::EngineRuntime;
-
-/// Identifier for a tracked movable sound source.
-pub type SoundSourceId = u64;
-
-/// Listener pose used for spatial acoustic queries.
-#[derive(Debug, Clone, Copy)]
-pub struct ListenerPose {
-    /// Listener position in world meters.
-    pub position: Vec3,
-    /// Listener forward direction in world space.
-    pub forward: Vec3,
-    /// Listener up direction in world space.
-    ///
-    /// Valid poses need not provide an exactly orthogonal unit vector; the
-    /// engine orthogonalizes it against `forward` before acoustic queries.
-    pub up: Vec3,
-}
-
-impl Default for ListenerPose {
-    fn default() -> Self {
-        Self {
-            position: Vec3::ZERO,
-            forward: -Vec3::Z,
-            up: Vec3::Y,
-        }
-    }
-}
-
-impl ListenerPose {
-    /// Creates a listener pose from a position and approximate forward/up axes.
-    pub fn new(position: Vec3, forward: Vec3, up: Vec3) -> Self {
-        Self {
-            position,
-            forward,
-            up,
-        }
-    }
-
-    /// Returns the unit right-ear axis derived from this pose.
-    ///
-    /// Invalid or collinear orientation vectors produce the zero vector; public
-    /// engine entry points reject those poses before using them.
-    pub fn right(self) -> Vec3 {
-        self.forward
-            .normalize_or_zero()
-            .cross(self.up)
-            .normalize_or_zero()
-    }
-}
-
-/// Point sound source rendered through the current acoustic scene.
-#[derive(Debug, Clone, Copy)]
-pub struct PointSource {
-    /// Source position in world meters.
-    pub position: Vec3,
-    /// Reference pressure amplitude used when generating an impulse response.
-    pub amplitude: f32,
-}
-
-impl PointSource {
-    /// Creates a point source with unit reference pressure amplitude.
-    pub fn new(position: Vec3) -> Self {
-        Self {
-            position,
-            amplitude: 1.0,
-        }
-    }
-}
-
-/// Request used by [`SoundEngine`] to play a sound at a world-space position.
-#[derive(Debug, Clone, Copy)]
-pub struct PlaySpatialSoundRequest {
-    /// Dry sound asset to render.
-    pub sound_id: SoundId,
-    /// World-space source used to build or reuse the acoustic IR.
-    pub source: PointSource,
-    /// Linear playback volume applied to the dry sound before convolution.
-    pub volume: f32,
-}
-
-impl PlaySpatialSoundRequest {
-    /// Creates a play request with unit source amplitude and unit volume.
-    pub fn new(sound_id: SoundId, source_position: Vec3) -> Self {
-        Self {
-            sound_id,
-            source: PointSource::new(source_position),
-            volume: 1.0,
-        }
-    }
-}
 
 /// Public handle for synchronous rendering or feature-gated background playback.
 pub struct SoundEngine {
@@ -121,7 +33,7 @@ pub struct SoundEngine {
 /// Internal ownership mode for the engine core.
 enum EngineMode {
     /// Synchronous mode where the public handle owns the core directly.
-    Direct(EngineCore),
+    Direct(Box<EngineCore>),
     #[cfg(feature = "playback")]
     /// Background playback mode where the runtime worker owns the core.
     Runtime(EngineRuntime),
@@ -131,7 +43,7 @@ impl SoundEngine {
     /// Creates the scalar acoustic engine with an empty scene and sound bank.
     pub fn new(config: EngineConfig) -> SoundResult<Self> {
         Ok(Self {
-            mode: Some(EngineMode::Direct(EngineCore::new(config)?)),
+            mode: Some(EngineMode::Direct(Box::new(EngineCore::new(config)?))),
         })
     }
 
@@ -312,34 +224,31 @@ impl SoundEngine {
     /// Returns the configured engine sample rate.
     pub fn sample_rate(&self) -> u32 {
         match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => Some(core.sample_rate()),
+            Some(EngineMode::Direct(core)) => core.sample_rate(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => Some(runtime.sample_rate()),
-            None => None,
+            Some(EngineMode::Runtime(runtime)) => runtime.sample_rate(),
+            None => 0,
         }
-        .unwrap_or(0)
     }
 
     /// Returns the number of frames rendered per block.
     pub fn block_size(&self) -> usize {
         match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => Some(core.block_size()),
+            Some(EngineMode::Direct(core)) => core.block_size(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => Some(runtime.block_size()),
-            None => None,
+            Some(EngineMode::Runtime(runtime)) => runtime.block_size(),
+            None => 0,
         }
-        .unwrap_or(0)
     }
 
     /// Returns the number of interleaved output channels per frame.
     pub fn output_channels(&self) -> usize {
         match self.mode.as_ref() {
-            Some(EngineMode::Direct(core)) => Some(core.output_channels()),
+            Some(EngineMode::Direct(core)) => core.output_channels(),
             #[cfg(feature = "playback")]
-            Some(EngineMode::Runtime(runtime)) => Some(runtime.output_channels()),
-            None => None,
+            Some(EngineMode::Runtime(runtime)) => runtime.output_channels(),
+            None => 0,
         }
-        .unwrap_or(0)
     }
 
     /// Starts a feature-gated background sound player.
@@ -429,6 +338,7 @@ fn validate_play_request(request: PlaySpatialSoundRequest) -> SoundResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn play_request_defaults_to_unit_amplitude_and_volume() {

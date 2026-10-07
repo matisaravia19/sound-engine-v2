@@ -52,7 +52,7 @@ impl SoundAsset {
         if channels == 0 {
             return Err(SoundError::invalid_argument("channel count must be > 0"));
         }
-        if samples.len() % channels as usize != 0 {
+        if !samples.len().is_multiple_of(channels as usize) {
             return Err(SoundError::invalid_argument(
                 "interleaved sample count must be divisible by channel count",
             ));

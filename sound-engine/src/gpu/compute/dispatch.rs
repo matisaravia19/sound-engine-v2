@@ -105,9 +105,11 @@ impl ComputeContext {
 
         // Descriptor sets are short-lived and allocated from growable pools.
         let _pool_access = self.descriptor_pool_guard();
-        let descriptor_allocation = self.acquire_descriptor_set(pipeline)?;
+        let descriptor_allocation = pipeline
+            .descriptor_pools
+            .allocate(pipeline.descriptor_set_layout)?;
         let descriptor_set = descriptor_allocation.set;
-        self.track_descriptor_set(command_buffer, descriptor_allocation)?;
+        self.track_descriptor_set(command_buffer, descriptor_allocation);
 
         let buffer_infos = build_buffer_infos(spec);
         let writes = build_descriptor_writes(spec, descriptor_set, &buffer_infos);
@@ -177,7 +179,7 @@ fn build_buffer_infos(spec: &DispatchSpec) -> Vec<vk::DescriptorBufferInfo> {
 fn build_descriptor_writes<'a>(
     spec: &DispatchSpec,
     descriptor_set: vk::DescriptorSet,
-    buffer_infos: &'a Vec<vk::DescriptorBufferInfo>,
+    buffer_infos: &'a [vk::DescriptorBufferInfo],
 ) -> Vec<vk::WriteDescriptorSet<'a>> {
     let mut writes = Vec::new();
     for (idx, write) in spec.descriptor_writes.iter().enumerate() {

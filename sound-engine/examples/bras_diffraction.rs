@@ -337,10 +337,9 @@ fn benchmark_scene(name: &str, radius: f32, diffraction: bool) -> SceneDescripti
     // Rigid boundary is explicit pending use of the supplied MDF material data.
     scene.materials.push(Material {
         id: 2,
-        absorption_bands: vec![0.0],
+        absorption: 0.0,
         scattering: 0.0,
         roughness: 0.0,
-        transmission: None,
     });
     scene.objects.push(SceneObject {
         id: 2,

@@ -45,7 +45,7 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
             block_size: 64,
         },
     };
-    let mut core = EngineCore::new(config).unwrap();
+    let mut core = Box::new(EngineCore::new(config).unwrap());
     let device = core.device_lifetime();
     let short = core
         .insert_sound(SoundAsset::from_mono_samples(48_000, vec![0.01; 256]).unwrap())
@@ -169,7 +169,7 @@ fn audit_runtime_handoff_status_failure_recovery_and_drop() {
     );
 }
 
-fn start_headless(core: EngineCore) -> (EngineRuntime, TestPlaybackControl) {
+fn start_headless(core: Box<EngineCore>) -> (EngineRuntime, TestPlaybackControl) {
     let (sender, receiver) = mpsc::sync_channel(1);
     let runtime = EngineRuntime::start_with_player(core, move || {
         let (player, control) = SoundPlayer::test_player(128);

@@ -56,9 +56,10 @@ impl SceneManager {
         if let Some(resources) = &self.gpu_resources {
             gpu.memory().validate_owner(resources.material_buffer())?;
         }
-        let needs_sync = self.gpu_resources.as_ref().map_or(true, |resources| {
-            resources.version() != self.store.version()
-        });
+        let needs_sync = self
+            .gpu_resources
+            .as_ref()
+            .is_none_or(|resources| resources.version() != self.store.version());
 
         if needs_sync {
             let previous = self.gpu_resources.take();

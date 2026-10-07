@@ -1,6 +1,6 @@
 use crate::acoustics::{GpuIrSnapshot, IrSample};
 use crate::auralization::assets::{SoundAsset, SoundBank, SoundId};
-use crate::auralization::convolver::{ImpulseResponse, PartitionedConvolver};
+use crate::auralization::convolver::{FftConvolver, ImpulseResponse};
 use crate::auralization::voice::{Voice, VoiceState};
 use crate::auralization::{IR_TRANSITION_BLOCKS, ImpulseResponseId, VoiceId};
 use crate::core::config::EngineConfig;
@@ -49,7 +49,7 @@ pub struct AuralizationEngine {
     finished_voices: Vec<VoiceId>,
     // Drop the registries and voices that own GPU buffers before the convolver,
     // whose backend Arc keeps the Vulkan device alive through teardown.
-    convolver: PartitionedConvolver,
+    convolver: FftConvolver,
 }
 
 /// Retains immutable dry samples even if the application's sound bank removes them.
@@ -64,7 +64,7 @@ impl AuralizationEngine {
         validate_config(config)?;
         let block_size = config.auralization.block_size;
         let output_channels = config.sound.output_channels.count();
-        let convolver = PartitionedConvolver::new(gpu, config)?;
+        let convolver = FftConvolver::new(gpu, config)?;
 
         Ok(Self {
             config,
@@ -201,8 +201,6 @@ impl AuralizationEngine {
             .saturating_mul(IR_TRANSITION_BLOCKS);
         voice.voice.queue_impulse_response_transition(
             impulse_response,
-            self.convolver.tail_size(),
-            self.convolver.fft_size(),
             self.wet_block.len(),
             transition_frames,
         );

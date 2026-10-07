@@ -51,10 +51,9 @@ fn alternating_screens(scale: f32, first_radius: f32, last_radius: f32) -> Scene
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![1.0],
+            absorption: 1.0,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,
@@ -166,10 +165,9 @@ fn screen_with_listener_side_floor(radius: f32, floor: bool) -> SceneDescription
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![1.0],
+            absorption: 1.0,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,
@@ -203,10 +201,9 @@ fn screen_with_listener_side_floor(radius: f32, floor: bool) -> SceneDescription
         });
         scene.materials.push(Material {
             id: 2,
-            absorption_bands: vec![0.0],
+            absorption: 0.0,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         });
         scene.objects.push(SceneObject {
             id: 2,
@@ -228,7 +225,7 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
     let mut pressures = [[0.0_f64; 3]; 3];
 
     for seed in [41, 42, 43, 44] {
-        for mode in 0..3 {
+        for (mode, mode_pressures) in pressures.iter_mut().enumerate() {
             let floor = mode == 0;
             let config = EngineConfig {
                 sound: SoundConfig {
@@ -276,7 +273,7 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
                 };
                 let ir = pipeline.build_ir(&gpu, &mut manager, query)?;
                 assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));
-                pressures[mode][index] += ir
+                mode_pressures[index] += ir
                     .samples
                     .iter()
                     .map(|sample| sample.left as f64)

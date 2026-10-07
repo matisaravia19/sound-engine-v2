@@ -386,33 +386,17 @@ fn validate_mesh(mesh: &MeshAsset) -> SoundResult<()> {
 }
 
 fn validate_material(material: &Material) -> SoundResult<()> {
-    if material
-        .absorption_bands
-        .iter()
-        .chain(material.transmission.iter().flatten())
-        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-    {
-        return Err(SoundError::invalid_argument(
-            "Material energy fractions must be finite and in [0, 1]",
-        ));
-    }
-    if material.absorption_bands.is_empty() {
-        return Err(SoundError::invalid_argument(format!(
-            "Material {} must contain at least one absorption band",
-            material.id
-        )));
-    }
-    if !material.scattering.is_finite() || !(0.0..=1.0).contains(&material.scattering) {
-        return Err(SoundError::invalid_argument(format!(
-            "Material {} scattering must be finite and in [0, 1]",
-            material.id
-        )));
-    }
-    if !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness) {
-        return Err(SoundError::invalid_argument(format!(
-            "Material {} roughness must be finite and in [0, 1]",
-            material.id
-        )));
+    for (name, value) in [
+        ("absorption", material.absorption),
+        ("scattering", material.scattering),
+        ("roughness", material.roughness),
+    ] {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(SoundError::invalid_argument(format!(
+                "Material {} {name} must be finite and in [0, 1]",
+                material.id
+            )));
+        }
     }
     Ok(())
 }

@@ -247,7 +247,7 @@ fn validate_callback_sample_shape(
         ));
     }
     crate::validate!(
-        data_len % device_channels == 0,
+        data_len.is_multiple_of(device_channels),
         ErrorCode::InvalidArgument,
         "CPAL output buffer length {} must be divisible by device channel count {}",
         data_len,
@@ -258,7 +258,7 @@ fn validate_callback_sample_shape(
 }
 fn validate_drained_sample_shape(drained: usize, output_channels: usize) -> SoundResult<()> {
     crate::validate!(
-        drained % output_channels == 0,
+        drained.is_multiple_of(output_channels),
         ErrorCode::InvalidState,
         "playback queue drained {} sample(s), which is not divisible by output channel count {}",
         drained,

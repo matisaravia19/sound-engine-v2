@@ -39,10 +39,9 @@ fn fixture(path: &std::path::Path) -> Result<SceneDescription, Box<dyn std::erro
             {
                 scene.materials.push(Material {
                     id: p[0] as u32,
-                    absorption_bands: vec![p[1]],
+                    absorption: p[1],
                     scattering: p[2],
                     roughness: 0.0,
-                    transmission: None,
                 });
             }
             "tri" if p.len() == 10 => {

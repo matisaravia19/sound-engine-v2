@@ -57,9 +57,10 @@ impl RtContext {
             || spec.mesh.vertex_count as u64 * size_of::<Vec3>() as u64
                 > spec.mesh.vertex_buffer.size
             || spec.mesh.index_buffer.as_ref().is_some_and(|buffer| {
-                spec.mesh.index_count as u64 * 4 > buffer.size || spec.mesh.index_count % 3 != 0
+                spec.mesh.index_count as u64 * 4 > buffer.size
+                    || !spec.mesh.index_count.is_multiple_of(3)
             })
-            || (spec.mesh.index_buffer.is_none() && spec.mesh.vertex_count % 3 != 0)
+            || (spec.mesh.index_buffer.is_none() && !spec.mesh.vertex_count.is_multiple_of(3))
         {
             return Err(SoundError::invalid_argument(
                 "BLAS geometry counts exceed input buffer bounds or contain incomplete triangles",

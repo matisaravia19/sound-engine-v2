@@ -1,5 +1,6 @@
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::ComputeContext;
+use crate::gpu::descriptor::DescriptorPools;
 use crate::gpu::memory::{BufferHandle, GpuAllocator};
 use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
@@ -8,7 +9,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod acceleration;
-mod descriptor;
 mod dispatch;
 mod pipeline;
 mod scene;
@@ -21,8 +21,6 @@ pub use pipeline::{
 };
 pub use scene::{RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
 pub(crate) use scene::{validate_instance_transform, validate_triangle_mesh};
-
-const DESCRIPTOR_SETS_PER_POOL: u32 = 64;
 
 /// Owns Vulkan ray tracing resources for the backend.
 ///
@@ -57,13 +55,11 @@ struct RayTracingPipeline {
     layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     push_constant_ranges: Vec<vk::PushConstantRange>,
-    pool_sizes_template: Vec<vk::DescriptorPoolSize>,
-    descriptor_pools: Vec<vk::DescriptorPool>,
+    descriptor_pools: DescriptorPools,
     _sbt: BufferHandle,
     raygen_region: vk::StridedDeviceAddressRegionKHR,
     miss_region: vk::StridedDeviceAddressRegionKHR,
     hit_region: vk::StridedDeviceAddressRegionKHR,
-    callable_region: vk::StridedDeviceAddressRegionKHR,
 }
 
 impl RtContext {
@@ -111,11 +107,6 @@ impl Drop for RtContext {
 impl Drop for RayTracingPipeline {
     fn drop(&mut self) {
         unsafe {
-            for pool in &self.descriptor_pools {
-                self.device_context
-                    .device
-                    .destroy_descriptor_pool(*pool, None);
-            }
             self.device_context
                 .device
                 .destroy_pipeline(self.handle, None);
@@ -327,10 +318,9 @@ mod tests {
                 meshes: vec![mesh.clone()],
                 materials: vec![Material {
                     id: 1,
-                    absorption_bands: vec![0.2],
+                    absorption: 0.2,
                     scattering: 0.0,
                     roughness: 0.0,
-                    transmission: None,
                 }],
                 objects: vec![SceneObject {
                     id: 1,

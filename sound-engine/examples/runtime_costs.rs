@@ -3,7 +3,7 @@
 
 use glam::{Mat4, Vec3};
 use sound_engine::acoustics::IrSample;
-use sound_engine::auralization::{Voice, convolver::PartitionedConvolver};
+use sound_engine::auralization::{Voice, convolver::FftConvolver};
 use sound_engine::core::config::*;
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
@@ -23,10 +23,9 @@ fn main() -> SoundResult<()> {
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![0.2],
+            absorption: 0.2,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,
@@ -80,7 +79,7 @@ fn measure_gpu() -> SoundResult<()> {
         },
     };
     let gpu = Arc::new(VkBackend::new()?);
-    let convolver = PartitionedConvolver::new(gpu.clone(), config)?;
+    let mut convolver = FftConvolver::new(gpu.clone(), config)?;
     let samples = [IrSample::new(1.0, 0.5)];
     let ir = convolver.create_impulse_response(&samples)?;
     let mut voice = Voice::new(1, 1, 1.0, ir, convolver.tail_size(), convolver.fft_size());
@@ -125,10 +124,9 @@ fn measure_gpu() -> SoundResult<()> {
 fn measure_scene_sync(gpu: &VkBackend) -> SoundResult<()> {
     let material = Material {
         id: 1,
-        absorption_bands: vec![0.2],
+        absorption: 0.2,
         scattering: 0.0,
         roughness: 0.0,
-        transmission: None,
     };
     let edge = DiffractionEdge {
         id: 1,
@@ -168,7 +166,7 @@ fn measure_scene_sync(gpu: &VkBackend) -> SoundResult<()> {
     scene.sync_gpu_if_needed(gpu)?;
     measure("scene_material_update_64_objects_16_edges", 16, || {
         let mut replacement = material.clone();
-        replacement.absorption_bands[0] = if scene.version() % 2 == 0 {
+        replacement.absorption = if scene.version().is_multiple_of(2) {
             0.1
         } else {
             0.8
@@ -192,7 +190,7 @@ fn measure_scene_sync(gpu: &VkBackend) -> SoundResult<()> {
     })?;
     measure("scene_edge_update_64_objects_16_edges", 16, || {
         let mut replacement = edge.clone();
-        replacement.diffraction_radius = if scene.version() % 2 == 0 {
+        replacement.diffraction_radius = if scene.version().is_multiple_of(2) {
             0.1
         } else {
             0.2

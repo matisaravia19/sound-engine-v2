@@ -62,6 +62,7 @@ pub struct RtInstanceSpec {
     pub sbt_record_offset: u32,
 }
 
+/// Packed Vulkan AABB build input; six contiguous floats with no implicit padding.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RtAabbPrimitive {
@@ -194,7 +195,7 @@ pub(crate) fn validate_triangle_mesh(
         ));
     }
     let count = indices.map_or(vertices.len(), |values| values.len());
-    if count == 0 || count % 3 != 0 || count > u32::MAX as usize {
+    if count == 0 || !count.is_multiple_of(3) || count > u32::MAX as usize {
         return Err(SoundError::invalid_argument(
             "Mesh must contain complete triangle triples within the 32-bit index range",
         ));

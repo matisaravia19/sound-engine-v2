@@ -41,12 +41,8 @@ pub enum ShaderStage {
     RayMiss,
     /// Ray closest-hit shader stage.
     RayClosestHit,
-    /// Ray any-hit shader stage.
-    RayAnyHit,
     /// Ray intersection shader stage.
     RayIntersection,
-    /// Ray callable shader stage.
-    RayCallable,
 }
 
 struct ShaderRecord {
@@ -65,9 +61,7 @@ impl ShaderStage {
             ShaderStage::RayGeneration => "rgen",
             ShaderStage::RayMiss => "rmiss",
             ShaderStage::RayClosestHit => "rchit",
-            ShaderStage::RayAnyHit => "rahit",
             ShaderStage::RayIntersection => "rint",
-            ShaderStage::RayCallable => "rcall",
         }
     }
 }
@@ -109,12 +103,12 @@ impl ShaderLibrary {
             .shaders
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
-        if let Some(source) = bundled_source {
-            if let Some((id, _)) = shaders.iter().find(|(_, shader)| {
+        if let Some(source) = bundled_source
+            && let Some((id, _)) = shaders.iter().find(|(_, shader)| {
                 shader.stage == stage && shader.bundled_sources.contains(&source)
-            }) {
-                return Ok(*id);
-            }
+            })
+        {
+            return Ok(*id);
         }
         #[cfg(test)]
         self.compile_count

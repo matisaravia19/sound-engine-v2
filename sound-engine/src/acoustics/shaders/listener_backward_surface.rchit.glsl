@@ -83,7 +83,7 @@ void main() {
         normal = -normalize(gl_WorldRayDirectionEXT);
     }
     // Orient the normal against the incident path. Ray generation can then use
-    // consistent hemisphere tests for reflection and straight transmission.
+    // consistent reflection hemisphere tests.
     if (dot(normal, gl_WorldRayDirectionEXT) > 0.0) {
         normal = -normal;
     }

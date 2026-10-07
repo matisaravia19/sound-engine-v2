@@ -61,7 +61,7 @@ pub(super) struct EngineRuntime {
     /// Command sender used by the public facade to request worker-thread work.
     commands: Sender<EngineCommand>,
     /// Join handle for recovering direct engine ownership when playback stops.
-    worker: Option<super::worker::OwnerThread<EngineCore>>,
+    worker: Option<super::worker::OwnerThread<Box<EngineCore>>>,
     /// Sample rate copied from the core before it moved to the worker thread.
     sample_rate: u32,
     /// Render block size copied from the core before it moved to the worker thread.
@@ -79,7 +79,7 @@ pub(super) struct EngineRuntime {
 /// Startup failure before ownership transfer; the caller retains a usable core.
 pub(super) struct RuntimeStartError {
     /// Engine that was never handed to a running playback loop.
-    pub(super) core: EngineCore,
+    pub(super) core: Box<EngineCore>,
     /// Initialization or thread-creation failure.
     pub(super) error: SoundError,
 }
@@ -125,7 +125,7 @@ impl Drop for PanicStatusGuard {
 impl EngineRuntime {
     /// Starts the playback worker and moves direct engine ownership into it.
     pub(super) fn start(
-        core: EngineCore,
+        core: Box<EngineCore>,
         playback_config: PlaybackConfig,
     ) -> Result<Self, RuntimeStartError> {
         let sample_rate = core.sample_rate();
@@ -137,7 +137,7 @@ impl EngineRuntime {
     }
 
     fn start_with_player(
-        core: EngineCore,
+        core: Box<EngineCore>,
         initialize: impl FnOnce() -> SoundResult<SoundPlayer> + Send + 'static,
     ) -> Result<Self, RuntimeStartError> {
         let sample_rate = core.sample_rate();
@@ -290,7 +290,7 @@ impl EngineRuntime {
     }
 
     /// Stops the runtime thread and returns direct engine ownership.
-    pub(super) fn stop(mut self) -> (Option<EngineCore>, SoundResult<()>) {
+    pub(super) fn stop(mut self) -> (Option<Box<EngineCore>>, SoundResult<()>) {
         // A command cannot wake a worker blocked in push_block. Wake its queue
         // first; the command separately wakes an idle receiver.
         let stopped = self.stop_handle.request_stop();

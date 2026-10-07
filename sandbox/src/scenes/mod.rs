@@ -310,10 +310,9 @@ fn read_fixture(path: &Path) -> Result<SceneDescription, String> {
             "material" if p.len() == 3 => {
                 scene.materials.push(Material {
                     id: material_id(p[0])?,
-                    absorption_bands: vec![p[1]],
+                    absorption: p[1],
                     scattering: p[2],
                     roughness: 0.0,
-                    transmission: None,
                 });
             }
             "tri" if p.len() == 10 => {

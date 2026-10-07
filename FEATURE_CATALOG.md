@@ -1,0 +1,164 @@
+# Feature catalog
+
+This catalog describes the current working tree after the cleanup so far. It separates running engine capabilities from optional applications, validation tools, and dependency internals. Use the IDs to mark **keep**, **remove**, or **simplify**. E5 and D3/D4 have been removed, and U1-U5 are complete. Their IDs are retained below to record the decision; removal effects for other rows remain hypothetical.
+
+All 15 first-party GLSL files are connected to the current implementation: eight shader entry points and seven includes. Several include files were extracted from the existing transport shader during cleanup. They do not represent additional acoustic models. The uncalled helper identified under U1 has been removed; the remaining files still serve the retained features.
+
+The code implements one broadband scalar acoustic model. Material arrays do not imply frequency-dependent transport, and the binaural mode does not load measured HRTFs. Offline reference calculations and measured-data comparisons are separate from the running acoustic model.
+
+## Engine capabilities
+
+| ID | Capability | Current use and implementation | Effect of removing it |
+| --- | --- | --- | --- |
+| E1 | Scene geometry and instances | Triangle meshes, optional indices, transforms, active objects, and material assignments. [Scene types](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/scene/types.rs), [scene store](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/scene/store.rs). | Removes the engine's scene representation; essential for geometry-based acoustics. |
+| E2 | Incremental scene edits | Replace meshes/materials, update transforms and edges, synchronize changed GPU resource groups, invalidate affected IRs. [Scene manager](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/scene/manager.rs), [GPU scene](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/scene/gpu.rs). | Scenes would need a simpler full-reload-only interface; moving geometry and sandbox edits would need changes. |
+| E3 | Direct sound and occlusion | One deterministic source-to-listener visibility contribution, geometric delay, distance attenuation, fractional arrival placement. [Output shader](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_output.glsl). | Removes the direct arrival, including the free-field control. |
+| E4 | Material absorption and reflection | Converts authored energy loss to scalar pressure coefficients. Samples smooth/glossy and rough reflection lobes using roughness and scattering. [Material upload](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/scene/gpu.rs), [surface transport](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_surface.glsl). | Would leave direct sound and whichever diffraction behavior is retained; room reflections disappear. |
+| E5 | Through-surface transmission — removed | Removed material transmission coefficients, GPU pressure data, opposite-side source connections and continuation sampling. | Materials absorb or reflect sound; surfaces block paths through them. |
+| E6 | Edge diffraction | Authored finite edges, virtual strip intersections, scalar diffraction response, edge/surface combinations and continued paths. [Diffraction transport](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_diffraction.glsl), [path loop](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_path.glsl). | Removes corner/doorway diffraction and two dedicated shader stages and the edge helpers; affects many validation cases. |
+| E7 | Sampling and path budgets | Seeded listener-originated directions, source connections, bounce/path-length/throughput termination. [Sampling](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_sampling.glsl), [configuration](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/core/config.rs). | Core estimator machinery; individual configuration knobs could be reduced without removing ray tracing. |
+| E8 | Mono output | Single-channel acoustic output and convolution rendering. Selected in library configuration and validation scenarios. [Output mode](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/core/config.rs). | Narrows supported output layouts; mono benchmarks/tests need adaptation. |
+| E9 | Stereo output | Listener-space left/right panning. This is the sandbox's configured output. [Output shader](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_output.glsl), [sandbox configuration](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/config.rs). | Changes normal sandbox playback and stereo rendering tests. |
+| E10 | Analytic binaural output | Spherical-head interaural delay and broadband level difference; head radius and maximum level difference are configurable. Available through the library and covered by tests; sandbox currently selects stereo. [Output shader](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_output.glsl). | Removes this optional rendering model and its parameters/tests. No measured HRTF assets are involved. |
+| E11 | IR caching | Reuses responses within position/orientation tolerances; limits entries and GPU bytes, tracks scene revisions. [Cache](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/cache.rs), [acoustics engine](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/engine.rs). | Simplifies state, but repeated spatial queries retrace more often. |
+| E12 | CPU and GPU IR access | GPU snapshots feed convolution directly; CPU snapshots support inspection/export/reference comparisons. [IR types](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/ir.rs), [acoustic pipeline](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs). | CPU readback/export can be reduced independently; GPU IR ownership is part of normal rendering. |
+| E13 | Audio asset loading | WAV decoding, interleaved-to-mono conversion, sample-rate conversion, in-memory mono sounds, asset IDs. [Assets](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/assets.rs). | WAV support could be removed if callers always supply prepared mono samples. |
+| E14 | GPU FFT convolution | Reusable forward/inverse FFT plans, complex spectral multiplication, overlap-add tails, packed stereo IRs. [Convolver](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/convolver.rs). | Removes the current audio-rendering algorithm; requires a replacement to keep auralization. It uses the full IR per FFT, not partitioned IR convolution. |
+| E15 | Voices, gain, and mixing | Several sounds can play concurrently; each keeps its cursor, IR, overlap tail, and gain. Assets/IRs remain alive while voices use them. [Auralization engine](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/engine.rs), [voice state](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/voice.rs). | Could be simplified to one voice, at the cost of overlapping sounds. |
+| E16 | Moving sources and listener | Tracked source handles, listener pose updates, dirty-voice scheduling, cached IR reuse, crossfades, coalescing rapid IR replacements. [Direct core](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/direct.rs), [runtime](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/runtime.rs). | Static acoustics become simpler; interactive movement no longer updates playing audio smoothly. |
+| E17 | Synchronous rendering | Explicit IR queries and pulling audio blocks without an audio device. Used by direct-mode example and tests/benchmarks. [Engine API](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/mod.rs). | Removes offline rendering and a convenient validation interface. |
+| E18 | Background playback | Worker-owned engine, commands, listener-update coalescing, CPAL output, prebuffering, bounded queues, stop/drain/error handling. Enabled by Cargo feature `playback`; sandbox uses it. [Runtime](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/runtime.rs), [playback](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/playback/mod.rs). | Removes live device playback and the sandbox's audio path. Synchronous rendering could remain. |
+
+## GPU and native infrastructure
+
+| ID | Component | Why it exists | Scope decision |
+| --- | --- | --- | --- |
+| G1 | Vulkan backend and memory | Device/queue ownership, required ray-tracing features, staging uploads/readbacks, buffer addresses, allocation lifetime. [Backend](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/backend.rs), [memory](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/memory.rs). | Required by the current engine. |
+| G2 | Compute and ray-tracing wrappers | Pipeline creation, descriptors, barriers, command submission, BLAS/TLAS, shader binding tables. [Compute](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/compute/mod.rs), [ray tracing](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/rt/mod.rs). | Used internally. A decision remains whether these generic APIs should be public or private engine details. |
+| G3 | Runtime GLSL compilation | Runs `glslangValidator`, creates temporary SPIR-V, caches shader modules, verifies bundled sources against the host build. [Shader library](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/shader.rs), [compiler](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/shader/compiler.rs), [build manifest](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/build.rs). | Required by current startup. It could be replaced with build-time shader compilation as a separate architecture change. |
+| G4 | VkFFT binding and patched dependency | Rust plan ownership plus C++ FFI around the pinned VkFFT submodule. The build copies vendor headers into build output and applies local fixes. [Plan API](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/plan.rs), [native build](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/build.rs), [patches](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/patches). | Required by E14. The native headers handle generated-kernel storage, lookup tables, scheduling, arithmetic bounds, and cleanup; they are not independent sound features. |
+| G5 | Audio FFT plans | Single-batch, one-dimensional, power-of-two complex transforms. Invalid lengths are rejected before native initialization. [Plan API](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/plan.rs), [plan tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/plan_tests.rs). | Required by E14. General dimensions/batches and difficult-length application tests were removed under U3; the pinned dependency and its safety patches remain. |
+| G6 | Native failure regression harnesses | Memory, compiler, LUT, scheduler and code-generation fault tests. Four C++ test translation units are compiled only with the `native-tests` feature. [Native tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/native_tests.rs), [build](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/build.rs). | These protect the retained dependency patches. Run `cargo test -p vkfft-rs --features native-tests`; workspace `--all-features` also includes them. |
+
+## Every first-party shader
+
+`.rgen` starts rays; `.rmiss` handles a ray that hits nothing; `.rchit` handles the closest accepted hit; `.rint` intersects procedural geometry; `.comp` runs a compute dispatch. Plain `.glsl` files below are includes, not separately dispatched shaders.
+
+All seven acoustic entry points are loaded and registered by [AcousticPipeline::new](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/pipeline.rs:96). Registration does not mean every stage executes in every scene: diffraction stages need edge geometry, and hit stages need a hit. The eighth entry point is loaded by the convolver.
+
+| ID | Shader | Role and caller | Connected feature |
+| --- | --- | --- | --- |
+| H1 | [listener_backward.rgen.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_backward.rgen.glsl) | Main listener-originated estimator; evaluates direct sound and runs the iterative path loop. | E3–E10 |
+| H2 | [continuation.rmiss.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/continuation.rmiss.glsl) | Reports that a continuation ray reached no surface/edge. | E4, E6–E7 |
+| H3 | [visibility.rmiss.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/visibility.rmiss.glsl) | Reports a clear visibility connection. | E3–E6 |
+| H4 | [visibility.rchit.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/visibility.rchit.glsl) | Marks visibility connections blocked by physical surfaces. | E3–E6 |
+| H5 | [listener_backward_surface.rchit.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_backward_surface.rchit.glsl) | Returns surface normal/material/geometry data to ray generation; it does not recursively shade paths. | E4 |
+| H6 | [diffraction.rint.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/diffraction.rint.glsl) | Intersects finite virtual strips around authored edges. | E6 |
+| H7 | [listener_backward_diffraction.rchit.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_backward_diffraction.rchit.glsl) | Returns accepted edge/proxy hit data to the path loop. | E6 |
+| H8 | [multiply.comp.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/shaders/multiply.comp.glsl) | Multiplies input and IR spectra between forward and inverse FFTs. | E14 |
+| H9 | [listener_transport.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_transport.glsl) | Included by H1; contains visibility tracing and assembles transport helpers. | E3–E7 |
+| H10 | [listener_interface.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_interface.glsl) | Included through H9; shared descriptors, payloads, constants, and host/shader layouts. | Acoustic pipeline |
+| H11 | [listener_sampling.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_sampling.glsl) | Included through H9; seeded sampling, PDFs, basis construction, numerical helpers. | E4, E6–E7 |
+| H12 | [listener_output.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_output.glsl) | Included through H9; direct response, delay interpolation, mono/stereo/binaural deposition. | E3, E8–E10 |
+| H13 | [listener_surface.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_surface.glsl) | Included through H9; reflection evaluation and continuation. | E4 |
+| H14 | [listener_diffraction.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_diffraction.glsl) | Included through H9; scalar edge response and edge-path handling. | E6 |
+| H15 | [listener_path.glsl](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/acoustics/shaders/listener_path.glsl) | Included by H1; path state, interaction scheduling, termination, surface/edge dispatch. | E4, E6–E7 |
+
+VkFFT generates its FFT kernels internally. They are additional runtime GPU code, but not additional first-party `.glsl` source files. Build output, generated SPIR-V, and vendored VkFFT examples are not separate engine features.
+
+## Sandbox features
+
+These belong to the Raylib application, not the library API.
+
+| ID | Feature | Current behavior | Main code |
+| --- | --- | --- | --- |
+| S1 | Editable room demo | Door configuration, room dimensions, and outer-wall toggles rebuild the acoustic scene. | [Geometry](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/geometry.rs), [controls](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/controls.rs) |
+| S2 | Scene catalog | Built-in free field, rigid/absorbing wall, parallel walls, shoebox, wedge, Bell Labs box variants; RS5/RS6 and extended BRAS fixtures when data exists. | [Catalog](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/scenes/mod.rs) |
+| S3 | Listener/source exploration | Preset positions/orientations, paired measurement positions, spinning listener, camera-follow listener, frame selected pair. | [Poses](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/poses.rs), [controls](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/controls.rs) |
+| S4 | Playback controls | Select WAV at startup, trigger sound, adjust startup gain, compare full scene acoustics with an empty scene. | [Application](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/mod.rs), [configuration](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/config.rs) |
+| S5 | Geometry/debug visualization | Scene meshes, source/listener markers, diffraction bisector displays and status/menu overlays. | [Rendering](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/render.rs) |
+| S6 | Imported-room edge inference | Authors convex creases/open rims at scene load for surveyed room geometry without authored edges. Separate from the core engine, which consumes explicit edges. | [Edge inference](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/scenes/diffraction.rs), [catalog loading](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/scenes/mod.rs) |
+| S7 | Stress and inspection commands | Automated camera movement, frame CSV export, scene listing/validation without starting playback. | [Configuration](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/config.rs), [application](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sandbox/src/app/mod.rs) |
+
+S2's measured scene catalog can be removed without removing basic room playback. S6 affects imported-room acoustics; it is more than a visualization helper. S5's overlays and S7's stress recording can be trimmed independently.
+
+## Examples and benchmarks
+
+Every remaining standalone Rust example is listed here. These are executable clients of the library, not code that the engine automatically runs.
+
+| ID | Executable | Purpose |
+| --- | --- | --- |
+| D1 | [sound_engine_direct_mode](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/sound_engine_direct_mode.rs) | Minimal synthesized-sound example that renders a WAV synchronously. |
+| D2 | [sound_engine_runtime_mode](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/sound_engine_runtime_mode.rs) | Minimal synthesized-sound example using live background playback. |
+| D3 | `simple_fft` — removed | Superseded by native FFT DFT/round-trip regression coverage. Source retained in `codex/pre-feature-pruning-20261007`. |
+| D4 | `convolution` — removed | Superseded by convolution regression tests and the two engine usage examples. Source retained in `codex/pre-feature-pruning-20261007`. |
+| B1 | [acoustic_method_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/acoustic_method_benchmark.rs) | Analytical/reference accuracy and timing cases for direct sound, reflections and diffraction. Uses [independent references](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/acoustic_method/reference.rs). |
+| B2 | [bell_labs_box](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/bell_labs_box.rs) | Bell Labs box/baffle reference geometry and response comparisons. |
+| B3 | [bras_diffraction](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/bras_diffraction.rs) | BRAS RS5/RS6 measured configurations. |
+| B4 | [bras_extended](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/bras_extended.rs) | File-driven extended BRAS reference and room fixtures. |
+| B5 | [gpu_ir_diffraction_edge](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/gpu_ir_diffraction_edge.rs) | Edge, radius, doorway and path-budget checks; exports responses. |
+| B6 | [convolution_method_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/convolution_method_benchmark.rs) | CPU direct FIR versus GPU FFT convolution cost. The CPU reference is not an engine fallback. |
+| B7 | [auralization_realtime_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/auralization_realtime_benchmark.rs) | Audio block-rendering latency. |
+| B8 | [spatial_update_realtime_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/spatial_update_realtime_benchmark.rs) | Cost of moving-listener response updates during rendering. |
+| B9 | [runtime_costs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/runtime_costs.rs) | Scene synchronization, acoustic query, IR preparation and convolution costs. |
+| B10 | [btm_realtime_benchmark](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/examples/btm_realtime_benchmark.rs) | Offline BTM mathematical diffraction reference and its computation cost. Despite its name, this is not the engine's realtime diffraction implementation. |
+
+B7–B9 overlap in performance-measurement purpose and remain retained. D3/D4 were removed because their purpose is covered by regression tests and the engine examples. B1/B10 retain independent physics references that are useful if diffraction validation remains important.
+
+## Research and diagnostic workflows
+
+These tools are opt-in. None is imported by the Rust runtime. Download/preparation tools produce external data and fixtures used by measured comparisons and optional sandbox scenes.
+
+| ID | Workflow | Files | What retaining it enables |
+| --- | --- | --- | --- |
+| R1 | BRAS RS5/RS6 data preparation | [download_bras_reference.ps1](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/download_bras_reference.ps1), [prepare_bras_reference.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/prepare_bras_reference.py) | Download/verify measurements and prepare positions/reference data for B3 and the sandbox. |
+| R2 | Source calibration and measured comparison | [calibrate_bras_latency.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/calibrate_bras_latency.py), [bras_reference.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/bras_reference.py) | Fixed source-FIR timing calibration and spectral/waveform comparisons for RS5/RS6. This calibration is a measurement operator, not source directivity in the engine. |
+| R3 | Extended BRAS data and geometry | [download_bras_extended.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/download_bras_extended.py), [export_bras_sketchup.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/export_bras_sketchup.py), [prepare_bras_extended.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/prepare_bras_extended.py) | Download measured configurations, export original SketchUp meshes with separate importer prerequisites, author scalar materials/edges and fixture manifests. |
+| R4 | Extended BRAS runs and reports | [run_bras_extended.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/run_bras_extended.py), [report_bras_extended.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/report_bras_extended.py) | Serial smoke/full/realtime-budget runs, provenance, spectra, waveforms and room-decay diagnostics for B4. |
+| R5 | Recorded benchmark orchestration | [run_current_benchmarks.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/run_current_benchmarks.py), [benchmark_runner.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/benchmark_runner.py) | Build/accuracy/runtime/playback/check/report stages, memory guards, timeout handling, preserved logs and hashes. Runner infrastructure is currently Windows-specific. |
+| R6 | Bell Labs report | [bell_labs_box_report.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/bell_labs_box_report.py) | Plot/report B2 outputs. |
+| R7 | Diffraction regression sweeps | [validate_diffraction.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/validate_diffraction.py), [diffraction_validation_report.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/diffraction_validation_report.py) | Radius/seed comparisons against offline BTM references through B1. |
+| R8 | IR export and plots | [core/debug.rs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/core/debug.rs), [visualize_ir.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/visualize_ir.py) | Inspect response samples, channels and timing outside live playback. |
+| R9 | Playback diagnostics | [engine diagnostics](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/diagnostics.rs), [playground_report.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/playground_report.py) | Runtime timing CSV, rendered-audio capture and callback/underrun diagnostics. Enabled with `SOUND_ENGINE_TIMING_CSV` / `SOUND_ENGINE_CAPTURE_WAV`; independent of sandbox frame CSV. |
+
+The report generator now derives coverage counts from its inputs instead of repeating frozen observations from a previous experiment. Existing result data remains separate under `output/`.
+
+## Tests and quality checks
+
+| ID | Coverage | Files and role |
+| --- | --- | --- |
+| V1 | Core CPU tests | Tests in the Rust modules cover scene validation, IDs, cache policy, configuration, audio queues, layouts and acoustic mathematics. |
+| V2 | GPU acoustic validation | [listener_backward_validation.rs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/tests/listener_backward_validation.rs), acoustic/scene tests. Direct-path and reflection/transport checks require Vulkan and are ignored by default where appropriate. |
+| V3 | GPU convolution and continuity | [sine_convolution_validation.rs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/tests/sine_convolution_validation.rs), [moving_ir_transition_validation.rs](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/tests/moving_ir_transition_validation.rs), [convolver tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/auralization/convolver_tests.rs). |
+| V4 | GPU lifetime and recovery | [GPU audit tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/gpu/audit_tests.rs), [runtime tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/src/engine/runtime_tests.rs), allocator/descriptor tests. These check real teardown, resource reuse and error handling. |
+| V5 | Native FFT correctness and failure handling | [FFT configuration tests](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/plan_tests.rs) and [native harness callers](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/vkfft-rs/src/native_tests.rs), enabled with `native-tests`. Includes scheduler/code-generator invariants and injected failures, plus GPU DFT/round-trip comparisons in the engine tests. |
+| V6 | Benchmark-runner regression tests | [test_benchmark_runner.py](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/test_benchmark_runner.py). Checks output/environment isolation, memory/device failures, preserved records and input fingerprints. |
+| V7 | Formatting and lint tooling | [rustfmt.toml](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/rustfmt.toml), pinned Ruff configuration in [pyproject.toml](C:/Users/matis/OneDrive/Documentos/Fing/Tesis/codigo-v2/sound-engine/scripts/pyproject.toml), Cargo/UV lockfiles. |
+
+V2–V5 should be narrowed together with the features they validate. A test being hardware-dependent or long-running is not evidence that its subject is unused.
+
+## Completed cleanup decisions
+
+| ID | Cleanup | Result |
+| --- | --- | --- |
+| U1 | Uncalled `depositDirectChannel` helper | Removed. Direct output still calls `depositDirectPressure` → `depositStablePressure` → `depositStableChannel`. |
+| U2 | Any-hit and callable shader support | Removed unused stage variants, callable group configuration, callable SBT storage and unused stage masks. Vulkan trace calls supply an empty callable region. |
+| U3 | FFT scope | Completed: G5 now exposes only audio-required 1D, single-batch, power-of-two transforms. Removed general dimension/batch configuration, multidimensional GPU validation and difficult-length application cases. |
+| U4 | Scalar material parameters | Completed: `Material.absorption` is an explicit scalar energy fraction. Removed absorption-band containers and transmission fields; GPU materials now contain two reflection pressure gains and roughness. |
+| U5 | Native test compilation | Completed: C++ regression objects and their Rust callers are gated by `native-tests`. Ordinary builds compile only the FFT shim; explicit regression runs retain native failure coverage. |
+
+All five cleanups were approved and completed. Native internal fault tests still cover the patched dependency, including internal branches beyond the narrowed public API.
+
+## Historical and generated material
+
+- `output/` contains generated measurements, fixtures, reports and audio; selected fixtures feed R1–R4 and S2. It is not source code. Removing all output data would also remove locally available measured scenes.
+- `target/`, temporary compiler directories, `tmp/`, Python environments and caches contain build/development artifacts. They are not runtime features.
+- `references/`, `references.md`, PDFs and `tesis/` are thesis/reference material, not engine dependencies.
+- Existing `/docs` material and audit notes describe project history and have not been treated as authoritative feature definitions.
+- Superseded smoke/demo executables, old UTD/directional-source scripts, and the unused embedded BTM helper were removed in the earlier cleanup. Original removed source is preserved at `codex/pre-cleanup-20261007` (`654cce1`). The current engine has no UTD diffraction mode or directional-source model.
+
+## Retained scope
+
+The requested cuts are complete. All other catalogued features remain, including reflection, diffraction, output layouts, caching, multiple voices, moving acoustics, both rendering modes, sandbox tools, benchmarks and research workflows.
+
+The state immediately before these cuts is preserved at `codex/pre-feature-pruning-20261007` (`09a1906`). Earlier superseded smoke/demo executables are preserved at `codex/pre-cleanup-20261007` (`654cce1`).

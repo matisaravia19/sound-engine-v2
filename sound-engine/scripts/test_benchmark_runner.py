@@ -1,0 +1,93 @@
+"""Regression checks for recorded runs without launching GPU benchmarks."""
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from benchmark_runner import BenchmarkRun, file_hash, verify_hashes, write_json
+
+
+class BenchmarkRunTests(unittest.TestCase):
+    """Exercise process isolation, record preservation, and failure boundaries."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.output = Path(self.directory.name)
+        memory = patch(
+            "benchmark_runner.memory_status",
+            return_value={"available_physical": 16 * 1024**3, "available_commit": 16 * 1024**3},
+        )
+        self.memory = memory.start()
+        self.addCleanup(memory.stop)
+
+    def test_output_and_environment_are_isolated_between_runs(self):
+        first = BenchmarkRun(self.output / "first")
+        second = BenchmarkRun(self.output / "second")
+        key = "BENCHMARK_RUN_TEST_VALUE"
+        command = [sys.executable, "-c", f"import os; print(os.environ.get('{key}', 'unset'))"]
+        with patch.dict(os.environ, {key: "parent"}):
+            self.assertEqual(first.run("probe", command, environment={key: "child"}), 0)
+            self.assertEqual(second.run("probe", command), 0)
+            self.assertEqual(os.environ[key], "parent")
+        self.assertEqual((first.output / "probe.stdout").read_text().strip(), "child")
+        self.assertEqual((second.output / "probe.stdout").read_text().strip(), "parent")
+
+    def test_completed_records_are_never_overwritten(self):
+        runner = BenchmarkRun(self.output)
+        record = self.output / "probe.run.json"
+        record.write_text("preserved", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "Preserving existing run"):
+            runner.run("probe", [sys.executable, "-c", "raise SystemExit(0)"])
+        self.assertEqual(record.read_text(encoding="utf-8"), "preserved")
+        self.memory.assert_not_called()
+
+    def test_insufficient_memory_stops_before_creating_logs(self):
+        self.memory.return_value["available_physical"] = 0
+        runner = BenchmarkRun(self.output)
+        with self.assertRaisesRegex(RuntimeError, "Insufficient headroom"):
+            runner.run("probe", [sys.executable, "-c", "raise SystemExit(0)"])
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_correctness_failures_remain_recorded_results(self):
+        runner = BenchmarkRun(self.output)
+        self.assertEqual(runner.run("failure", [sys.executable, "-c", "raise SystemExit(7)"]), 7)
+        record = json.loads((self.output / "failure.run.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["exit_code"], 7)
+
+    def test_device_failures_are_recorded_before_stopping(self):
+        runner = BenchmarkRun(self.output)
+        command = [sys.executable, "-c", "import sys; sys.stderr.write('DEVICE_LOST')"]
+        with self.assertRaisesRegex(RuntimeError, "resource/device failure"):
+            runner.run("failure", command)
+        self.assertTrue((self.output / "failure.run.json").is_file())
+
+    def test_provenance_rejects_added_sources(self):
+        runner = BenchmarkRun(self.output)
+        recorded = {"source.rs": "original"}
+        write_json(self.output / "provenance.json", {"source_sha256": recorded})
+        with patch("benchmark_runner.source_hashes", return_value=recorded):
+            runner.verify_provenance()
+        with patch("benchmark_runner.source_hashes", return_value={**recorded, "new.rs": "new"}):
+            with self.assertRaisesRegex(RuntimeError, "Source changed"):
+                runner.verify_provenance()
+
+    def test_input_hashes_reject_changed_and_missing_fixtures(self):
+        fixture = self.output / "scene.txt"
+        fixture.write_text("original", encoding="utf-8")
+        expected = {fixture.name: file_hash(fixture)}
+        verify_hashes(self.output, expected)
+        fixture.write_text("modified", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "Input changed"):
+            verify_hashes(self.output, expected)
+        fixture.unlink()
+        with self.assertRaisesRegex(RuntimeError, "Input changed"):
+            verify_hashes(self.output, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

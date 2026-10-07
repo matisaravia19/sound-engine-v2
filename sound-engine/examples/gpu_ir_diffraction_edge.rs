@@ -84,9 +84,9 @@ fn main() -> SoundResult<()> {
         .collect::<Vec<_>>();
     let measured_pressure = measured.iter().sum::<f64>();
     if !measured_pressure.is_finite() || measured.iter().any(|sample| !sample.is_finite()) {
-        return Err(SoundError::invalid_state(format!(
-            "Ray-traced diffraction produced a non-finite pressure"
-        )));
+        return Err(SoundError::invalid_state(
+            "Ray-traced diffraction produced a non-finite pressure".to_string(),
+        ));
     }
 
     let alternate_radius_samples = alternate_radius
@@ -404,10 +404,9 @@ fn diffraction_scene_with_edges(
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![absorption],
+            absorption,
             scattering: 0.0,
             roughness: 0.0,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,
@@ -421,12 +420,7 @@ fn diffraction_scene_with_edges(
 }
 
 fn empty_scene() -> SceneDescription {
-    SceneDescription {
-        meshes: Vec::new(),
-        materials: Vec::new(),
-        objects: Vec::new(),
-        diffraction_edges: Vec::new(),
-    }
+    SceneDescription::default()
 }
 
 fn doorway_scene() -> SceneDescription {
@@ -479,10 +473,9 @@ fn doorway_scene() -> SceneDescription {
         }],
         materials: vec![Material {
             id: 1,
-            absorption_bands: vec![0.18],
+            absorption: 0.18,
             scattering: 0.12,
             roughness: 0.15,
-            transmission: None,
         }],
         objects: vec![SceneObject {
             id: 1,
@@ -535,123 +528,6 @@ fn diffraction_edge(radius: f32) -> DiffractionEdge {
         bisector_dir: Vec3::Z,
         edge_angle_radians: std::f32::consts::TAU,
         diffraction_radius: radius,
-    }
-}
-
-// Retained as an offline mathematical oracle; production diffraction is traced
-// entirely in the ray-generation pipeline.
-#[allow(dead_code)]
-mod btm_reference {
-    use super::*;
-    use std::f64::consts::PI;
-
-    fn btm_reference_ir(
-        source: Vec3,
-        listener: Vec3,
-        edge: &DiffractionEdge,
-        source_amplitude: f64,
-        segments: usize,
-    ) -> Vec<f64> {
-        let mut samples = vec![0.0; IR_SAMPLES as usize];
-        let edge_vector = edge.end - edge.start;
-        let edge_length = edge_vector.length() as f64;
-        let edge_axis = edge_vector.normalize();
-        let bisector =
-            (edge.bisector_dir - edge_axis * edge.bisector_dir.dot(edge_axis)).normalize();
-        let plane_normal = bisector.cross(edge_axis).normalize();
-        let delta = ((edge.edge_angle_radians - std::f32::consts::PI) * 0.5)
-            .clamp(0.0, std::f32::consts::FRAC_PI_2);
-        let positive_shadow = (delta.cos() * plane_normal - delta.sin() * bisector).normalize();
-        let source_relative = source - edge.start;
-        let listener_relative = listener - edge.start;
-        let source_radial = source_relative - source_relative.dot(edge_axis) * edge_axis;
-        let listener_radial = listener_relative - listener_relative.dot(edge_axis) * edge_axis;
-        let source_radius = source_radial.length() as f64;
-        let listener_radius = listener_radial.length() as f64;
-        let source_angle = wedge_angle(positive_shadow, edge_axis, source_radial);
-        let listener_angle = wedge_angle(positive_shadow, edge_axis, listener_radial);
-        let wedge_index = PI / edge.edge_angle_radians as f64;
-        let segment_length = edge_length / segments as f64;
-
-        for segment in 0..segments {
-            let coordinate = (segment as f64 + 0.5) * segment_length;
-            let edge_point = edge.start + edge_axis * coordinate as f32;
-            let source_axial = (edge_point - source).dot(edge_axis) as f64;
-            let listener_axial = (edge_point - listener).dot(edge_axis) as f64;
-            let source_distance = source_radius.hypot(source_axial);
-            let listener_distance = listener_radius.hypot(listener_axial);
-            let eta_argument = (source_distance * listener_distance
-                + source_axial * listener_axial)
-                / (source_radius * listener_radius);
-            let eta = eta_argument.max(1.0).acosh();
-            let mut beta_sum = 0.0;
-            for source_sign in [-1.0, 1.0] {
-                for listener_sign in [-1.0, 1.0] {
-                    let phi = PI + source_sign * source_angle + listener_sign * listener_angle;
-                    beta_sum += (wedge_index * phi).sin()
-                        / ((wedge_index * eta).cosh() - (wedge_index * phi).cos());
-                }
-            }
-            let total_distance = source_distance + listener_distance;
-            let pressure = source_amplitude * -wedge_index / (4.0 * PI) * beta_sum * segment_length
-                / (source_distance * listener_distance);
-            deposit_fractional(
-                &mut samples,
-                total_distance / 343.0 * SAMPLE_RATE as f64,
-                pressure,
-            );
-        }
-        samples
-    }
-
-    fn wedge_angle(origin: Vec3, axis: Vec3, direction: Vec3) -> f64 {
-        let origin = origin.normalize();
-        let direction = direction.normalize();
-        let sine = axis.dot(origin.cross(direction)) as f64;
-        let cosine = origin.dot(direction) as f64;
-        sine.atan2(cosine).rem_euclid(2.0 * PI)
-    }
-
-    fn deposit_fractional(samples: &mut [f64], position: f64, pressure: f64) {
-        let base = position.floor() as usize;
-        let fraction = position - base as f64;
-        if let Some(sample) = samples.get_mut(base) {
-            *sample += pressure * (1.0 - fraction);
-        }
-        if let Some(sample) = samples.get_mut(base + 1) {
-            *sample += pressure * fraction;
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    struct Complex {
-        real: f64,
-        imaginary: f64,
-    }
-
-    fn transfer(samples: &[f64], frequency: f64) -> Complex {
-        let angular_step = -2.0 * PI * frequency / SAMPLE_RATE as f64;
-        samples.iter().enumerate().fold(
-            Complex {
-                real: 0.0,
-                imaginary: 0.0,
-            },
-            |sum, (index, sample)| {
-                let phase = angular_step * index as f64;
-                Complex {
-                    real: sum.real + sample * phase.cos(),
-                    imaginary: sum.imaginary + sample * phase.sin(),
-                }
-            },
-        )
-    }
-
-    fn complex_distance(left: Complex, right: Complex) -> f64 {
-        (left.real - right.real).hypot(left.imaginary - right.imaginary)
-    }
-
-    fn magnitude(value: Complex) -> f64 {
-        value.real.hypot(value.imaginary)
     }
 }
 

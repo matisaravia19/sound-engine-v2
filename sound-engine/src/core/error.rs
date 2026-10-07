@@ -172,9 +172,3 @@ macro_rules! validate {
         }
     }};
 }
-
-/// Compatibility alias for [`validate!`]; validation also runs in release builds.
-#[macro_export]
-macro_rules! debug_validate {
-    ($($arguments:tt)*) => { $crate::validate!($($arguments)*) };
-}

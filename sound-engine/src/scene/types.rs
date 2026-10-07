@@ -33,16 +33,14 @@ pub struct MeshAsset {
 pub struct Material {
     /// Application-provided material identifier.
     pub id: MaterialId,
-    /// Absorbed energy fractions; the first band currently controls broad-band transport.
-    pub absorption_bands: Vec<f32>,
+    /// Broadband absorbed energy fraction in `[0, 1]`; the remainder is reflected.
+    pub absorption: f32,
     /// Authored rough-reflection energy fraction in `[0, 1]`. Scalar transport
     /// preserves the relative lobe amplitudes but normalizes their pressure sum;
     /// it does not model independent diffuse phases or exact directional energy.
     pub scattering: f32,
-    /// Width control for finite glossy reflection and transmission lobes in `[0, 1]`.
+    /// Width control for finite glossy reflection lobes in `[0, 1]`.
     pub roughness: f32,
-    /// Optional transmission energy coefficients for through-surface paths.
-    pub transmission: Option<Vec<f32>>,
 }
 
 /// One placeable object instance in world space.
@@ -86,7 +84,7 @@ pub struct DiffractionEdge {
 }
 
 /// Complete scene replacement payload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct SceneDescription {
     /// Mesh assets available to scene objects.
     pub meshes: Vec<MeshAsset>,

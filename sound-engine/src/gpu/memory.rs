@@ -68,6 +68,7 @@ struct TransferContext {
 }
 
 impl GpuAllocator {
+    /// Owns device-address-capable allocation state and shares serialized transfers.
     pub(super) fn new(
         device_context: Arc<VkDeviceContext>,
         compute: Arc<ComputeContext>,
@@ -204,65 +205,6 @@ impl GpuAllocator {
         Ok(())
     }
 
-    /// Reads bytes from a mapped buffer after invalidating the requested range.
-    pub fn read_mapped_bytes(
-        &self,
-        source: &BufferHandle,
-        size: usize,
-        out: &mut [u8],
-    ) -> SoundResult<()> {
-        self.validate_owner(source)?;
-        let _access = source
-            .mapped_access
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Mapped buffer lock is poisoned"))?;
-        if size as vk::DeviceSize > source.size {
-            return Err(SoundError::invalid_argument(format!(
-                "Mapped read size {} exceeds source buffer size {}",
-                size, source.size
-            )));
-        }
-        if out.len() < size {
-            return Err(SoundError::invalid_argument(format!(
-                "Mapped read output slice too small: out={}, requested={size}",
-                out.len()
-            )));
-        }
-
-        let mapped_ptr = self
-            .allocator
-            .get_allocation_info(&source.allocation)
-            .mapped_data;
-        if mapped_ptr.is_null() {
-            return Err(SoundError::invalid_state("Source buffer is not mapped"));
-        }
-
-        // Invalidate before reading so host memory observes GPU writes.
-        self.allocator
-            .invalidate_allocation(&source.allocation, 0, size as u64)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(mapped_ptr as *const u8, out.as_mut_ptr(), size);
-        }
-        Ok(())
-    }
-
-    /// Creates a mapped host-visible buffer intended for GPU-to-CPU readback.
-    pub fn create_readback_buffer(&self, size: vk::DeviceSize) -> SoundResult<BufferHandle> {
-        self.create_buffer(
-            size,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC,
-            MemoryUsage::AutoPreferHost,
-            AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_RANDOM,
-        )
-    }
-
-    /// Consumes a buffer and releases its allocation exactly once through `Drop`.
-    ///
-    /// Callers must ensure no queued GPU work still uses the buffer.
-    pub fn destroy_buffer(&self, handle: BufferHandle) {
-        drop(handle);
-    }
-
     /// Fills the whole buffer with zero using the compute queue transfer path.
     pub fn clear_buffer(&self, buffer: &BufferHandle) -> SoundResult<()> {
         self.compute
@@ -282,7 +224,9 @@ impl GpuAllocator {
         buffer: &BufferHandle,
     ) -> SoundResult<()> {
         self.validate_owner(buffer)?;
-        if !buffer.usage.contains(vk::BufferUsageFlags::TRANSFER_DST) || buffer.size % 4 != 0 {
+        if !buffer.usage.contains(vk::BufferUsageFlags::TRANSFER_DST)
+            || !buffer.size.is_multiple_of(4)
+        {
             return Err(SoundError::invalid_argument(
                 "Buffer fill requires TRANSFER_DST and a size divisible by four",
             ));
@@ -397,7 +341,7 @@ impl GpuAllocator {
 
         self.download_bytes(src, byte_size, bytemuck::cast_slice_mut::<T, u8>(out))?;
 
-        return Ok(());
+        Ok(())
     }
 
     fn create_buffer(
@@ -788,7 +732,7 @@ mod tests {
                 .download_typed(&buffer, output.len(), &mut output)
                 .unwrap();
             assert_eq!(input, output);
-            gpu.memory().destroy_buffer(buffer);
+            drop(buffer);
         }
     }
 }

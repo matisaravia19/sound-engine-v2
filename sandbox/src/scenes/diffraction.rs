@@ -169,8 +169,8 @@ pub(super) fn infer(triangles: &[[Vec3; 3]], air_points: &[Vec3]) -> Vec<Diffrac
                 let u = radial(a.face);
                 let v = radial(b.face);
                 let solid_angle = u.dot(v).clamp(-1.0, 1.0).acos();
-                if solid_angle > std::f32::consts::PI - MIN_BEND_RADIANS
-                    || solid_angle < MIN_BEND_RADIANS
+                if !(MIN_BEND_RADIANS..=std::f32::consts::PI - MIN_BEND_RADIANS)
+                    .contains(&solid_angle)
                 {
                     continue;
                 }

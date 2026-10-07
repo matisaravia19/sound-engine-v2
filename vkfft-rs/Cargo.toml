@@ -3,9 +3,12 @@ name = "vkfft-rs"
 version = "0.1.0"
 edition = "2024"
 
+# Compile the C++ fault-injection harness only for explicit regression runs.
+[features]
+native-tests = []
+
 [dependencies]
 ash = "0.38.0"
-
 
 [build-dependencies]
 cc = "1.2.56"

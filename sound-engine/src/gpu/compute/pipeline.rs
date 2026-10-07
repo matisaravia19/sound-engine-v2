@@ -31,14 +31,6 @@ impl DescriptorBindingSpec {
             descriptor_count: 1,
         }
     }
-
-    /// Creates an array storage-buffer binding.
-    pub fn storage_buffer_array(binding: u32, descriptor_count: u32) -> Self {
-        Self::StorageBuffer {
-            binding,
-            descriptor_count,
-        }
-    }
 }
 
 /// Push-constant byte range available to a compute shader.
@@ -132,7 +124,8 @@ impl ComputeContext {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Compute pipelines lock is poisoned"))?;
 
-        let pool_sizes_template = aggregate_pool_sizes(&descriptor_bindings);
+        let descriptor_pools =
+            DescriptorPools::new(self.device_context.clone(), &descriptor_bindings);
 
         let id = PipelineId(
             self.next_pipeline_id
@@ -154,35 +147,12 @@ impl ComputeContext {
                 layout,
                 descriptor_set_layout,
                 push_constant_ranges,
-                pool_sizes_template: pool_sizes_template,
-                descriptor_pools: Vec::new(),
+                descriptor_pools,
             },
         );
         cleanup.disarm();
         Ok(id)
     }
-}
-
-/// Aggregates descriptor counts by type for descriptor-pool creation.
-pub(super) fn aggregate_pool_sizes(
-    bindings: &[vk::DescriptorSetLayoutBinding<'_>],
-) -> Vec<vk::DescriptorPoolSize> {
-    let mut pool_sizes = Vec::<vk::DescriptorPoolSize>::new();
-    for binding in bindings {
-        if let Some(existing) = pool_sizes
-            .iter_mut()
-            .find(|entry| entry.ty == binding.descriptor_type)
-        {
-            existing.descriptor_count += binding.descriptor_count;
-        } else {
-            pool_sizes.push(
-                vk::DescriptorPoolSize::default()
-                    .ty(binding.descriptor_type)
-                    .descriptor_count(binding.descriptor_count),
-            );
-        }
-    }
-    pool_sizes
 }
 
 fn build_vk_descriptor_bindings(

@@ -3,50 +3,22 @@ use std::path::PathBuf;
 mod build_support;
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/ffi.cpp");
-    println!("cargo:rerun-if-changed=src/vulkan_memory.hpp");
-    println!("cargo:rerun-if-changed=src/vulkan_init.hpp");
-    println!("cargo:rerun-if-changed=src/vulkan_compiler.hpp");
-    println!("cargo:rerun-if-changed=src/ffi_guard.hpp");
-    println!("cargo:rerun-if-changed=src/vulkan_memory_tests.cpp");
-    println!("cargo:rerun-if-changed=src/vulkan_compiler_tests.cpp");
-    println!("cargo:rerun-if-changed=src/vulkan_lut_tests.cpp");
-    println!("cargo:rerun-if-changed=src/lut_storage.hpp");
-    println!("cargo:rerun-if-changed=src/lut_layout.hpp");
-    println!("cargo:rerun-if-changed=src/lut_layout_tests.hpp");
-    println!("cargo:rerun-if-changed=src/lut_sharing.hpp");
-    println!("cargo:rerun-if-changed=src/lut_sharing_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_tests.cpp");
-    println!("cargo:rerun-if-changed=src/codegen_format.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_names.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_permutation.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_storage.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_temporary.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_stage_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_stage_layout.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_stage_policy.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_stage_policy_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_rader_layout.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_rader_layout_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_stages.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_retry.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_retry_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_arithmetic.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_arithmetic_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_sizes.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_sizes_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_extents.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_extents_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_padding.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_padding_tests.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_limits.hpp");
-    println!("cargo:rerun-if-changed=src/scheduler_limits_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_radix_stage_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_permutation_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_name_tests.hpp");
-    println!("cargo:rerun-if-changed=src/codegen_registers.hpp");
-    println!("cargo:rerun-if-changed=src/recursive_init_tests.hpp");
+    let native_tests = env::var_os("CARGO_FEATURE_NATIVE_TESTS").is_some();
+    for entry in std::fs::read_dir("src").unwrap() {
+        let path = entry.unwrap().path();
+        let is_native = matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("cpp" | "hpp")
+        );
+        let is_test = path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("_tests");
+        if is_native && (native_tests || !is_test) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     println!("cargo:rerun-if-changed=patches");
     println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=lib/vkfft/vkFFT");
@@ -232,11 +204,14 @@ fn main() {
     let mut build = cc::Build::new();
     build.cpp(true);
     build.file("src/ffi.cpp");
-    // Separate archive objects are linked only by Rust's CPU regression tests.
-    build.file("src/vulkan_memory_tests.cpp");
-    build.file("src/vulkan_compiler_tests.cpp");
-    build.file("src/vulkan_lut_tests.cpp");
-    build.file("src/codegen_tests.cpp");
+    if native_tests {
+        build.files([
+            "src/vulkan_memory_tests.cpp",
+            "src/vulkan_compiler_tests.cpp",
+            "src/vulkan_lut_tests.cpp",
+            "src/codegen_tests.cpp",
+        ]);
+    }
 
     build
         .include(&vulkan_include)

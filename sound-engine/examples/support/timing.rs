@@ -1,5 +1,8 @@
 //! Common latency conventions for benchmark output.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Each standalone example uses a different subset of these helpers."
+)]
 use std::time::Duration;
 
 /// Returns the upper empirical quantile at `ceil((n - 1) * fraction)`.

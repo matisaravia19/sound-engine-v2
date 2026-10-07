@@ -15,10 +15,9 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     };
     let material = Material {
         id: 1,
-        absorption_bands: vec![0.2],
+        absorption: 0.2,
         scattering: 0.0,
         roughness: 0.0,
-        transmission: None,
     };
     let object = SceneObject {
         id: 10,
@@ -50,7 +49,7 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     let edge_buffer = initial.diffraction_edge_buffer().buffer;
 
     let mut absorbing = material.clone();
-    absorbing.absorption_bands[0] = 0.75;
+    absorbing.absorption = 0.75;
     let resources = update(
         &gpu,
         &mut scene,

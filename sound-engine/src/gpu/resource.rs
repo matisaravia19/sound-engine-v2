@@ -95,7 +95,7 @@ pub(crate) fn validate_pipeline_layout(
             storage_count += binding.descriptor_count as u64;
         }
     }
-    if descriptor_count > u32::MAX as u64 / 64
+    if descriptor_count > u32::MAX as u64 / super::descriptor::DESCRIPTOR_SETS_PER_POOL as u64
         || storage_count > limits.max_descriptor_set_storage_buffers as u64
     {
         return Err(SoundError::invalid_argument(
@@ -155,7 +155,7 @@ pub(crate) fn validate_storage_descriptor(
     limits: &vk::PhysicalDeviceLimits,
 ) -> SoundResult<()> {
     if buffer == vk::Buffer::null()
-        || offset % limits.min_storage_buffer_offset_alignment.max(1) != 0
+        || !offset.is_multiple_of(limits.min_storage_buffer_offset_alignment.max(1))
         || range == 0
         || (range != vk::WHOLE_SIZE
             && (range > limits.max_storage_buffer_range as u64
@@ -180,7 +180,7 @@ pub(crate) fn push_constant_stages(
     let end = u32::try_from(size)
         .ok()
         .and_then(|size| offset.checked_add(size));
-    if offset % 4 != 0 || size % 4 != 0 || end.is_none() {
+    if !offset.is_multiple_of(4) || !size.is_multiple_of(4) || end.is_none() {
         return Err(SoundError::invalid_argument(
             "Push constant writes must be aligned and fit 32-bit offsets",
         ));

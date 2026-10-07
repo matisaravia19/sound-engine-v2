@@ -41,7 +41,9 @@ def read_ir(path: Path) -> tuple[dict[str, str], list[float], dict[str, list[flo
         raise ValueError("IR CSV is missing a header row")
 
     channel_names = ["left", "right"]
-    missing_columns = [name for name in ("time_seconds", *channel_names) if name not in reader.fieldnames]
+    missing_columns = [
+        name for name in ("time_seconds", *channel_names) if name not in reader.fieldnames
+    ]
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise ValueError(f"IR CSV is missing required column(s): {missing}")
@@ -108,8 +110,14 @@ def main() -> None:
     parser.add_argument("ir_csv", type=Path, help="CSV file exported by the debug IR exporter")
     parser.add_argument("--output", "-o", type=Path, help="Optional image output path")
     smoothing = parser.add_mutually_exclusive_group()
-    smoothing.add_argument("--bin-samples", type=positive_int, help="Plot one aggregate point per N samples")
-    smoothing.add_argument("--bin-ms", type=positive_float, help="Plot one aggregate point per time bin in milliseconds")
+    smoothing.add_argument(
+        "--bin-samples", type=positive_int, help="Plot one aggregate point per N samples"
+    )
+    smoothing.add_argument(
+        "--bin-ms",
+        type=positive_float,
+        help="Plot one aggregate point per time bin in milliseconds",
+    )
     parser.add_argument(
         "--bin-mode",
         choices=("rms", "mean", "peak"),
@@ -126,7 +134,10 @@ def main() -> None:
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError:
-        print("matplotlib is required to plot IR files. Install it with: python -m pip install matplotlib", file=sys.stderr)
+        print(
+            "matplotlib is required to plot IR files. Install it with: python -m pip install matplotlib",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     _, axis = plt.subplots(figsize=(12, 5))
@@ -139,9 +150,13 @@ def main() -> None:
     axis.plot(times_ms, channels["left"], linewidth=1.0, label="left", color="tab:blue")
     axis.plot(times_ms, channels["right"], linewidth=1.0, label="right", color="tab:orange")
     axis.legend()
-    axis.set_title(f"Impulse response query={query_id}, sample_rate={sample_rate} Hz, energy={energy}")
+    axis.set_title(
+        f"Impulse response query={query_id}, sample_rate={sample_rate} Hz, energy={energy}"
+    )
     axis.set_xlabel("Time (ms)")
-    axis.set_ylabel(f"Amplitude ({args.bin_mode} bins)" if args.bin_ms or args.bin_samples else "Amplitude")
+    axis.set_ylabel(
+        f"Amplitude ({args.bin_mode} bins)" if args.bin_ms or args.bin_samples else "Amplitude"
+    )
     axis.grid(True, alpha=0.3)
 
     if args.output:

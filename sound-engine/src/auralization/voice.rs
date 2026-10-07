@@ -68,17 +68,13 @@ impl Voice {
     pub(crate) fn transition_impulse_response(
         &mut self,
         impulse_response: Arc<ImpulseResponse>,
-        tail_size: usize,
-        fft_size: usize,
         output_samples: usize,
         transition_frames: usize,
     ) {
-        debug_assert_eq!(self.convolution.tail.len(), tail_size);
         // The overlap tail summarizes every dry sample emitted before this IR
         // update. Both transition branches must retain it; only contributions
         // from new dry samples should diverge between the old and new filters.
-        let next =
-            VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution, fft_size);
+        let next = VoiceConvolutionState::with_carried_tail(impulse_response, &self.convolution);
         let previous = std::mem::replace(&mut self.convolution, next);
         self.ir_transition = Some(VoiceIrTransition {
             previous,
@@ -92,21 +88,13 @@ impl Voice {
     pub(crate) fn queue_impulse_response_transition(
         &mut self,
         impulse_response: Arc<ImpulseResponse>,
-        tail_size: usize,
-        fft_size: usize,
         output_samples: usize,
         transition_frames: usize,
     ) {
         if self.ir_transition.is_some() {
             self.pending_impulse_response = Some(impulse_response);
         } else {
-            self.transition_impulse_response(
-                impulse_response,
-                tail_size,
-                fft_size,
-                output_samples,
-                transition_frames,
-            );
+            self.transition_impulse_response(impulse_response, output_samples, transition_frames);
         }
     }
 }
@@ -164,16 +152,12 @@ impl VoiceConvolutionState {
     }
 
     /// Creates a replacement filter while preserving pre-update overlap history.
-    fn with_carried_tail(
-        impulse_response: Arc<ImpulseResponse>,
-        previous: &Self,
-        fft_size: usize,
-    ) -> Self {
+    fn with_carried_tail(impulse_response: Arc<ImpulseResponse>, previous: &Self) -> Self {
         Self {
             impulse_response,
             tail: previous.tail.clone(),
             tail_position: previous.tail_position,
-            complex_cpu_buffer: vec![[0.0, 0.0]; fft_size],
+            complex_cpu_buffer: vec![[0.0, 0.0]; previous.complex_cpu_buffer.len()],
         }
     }
 }

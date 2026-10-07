@@ -50,11 +50,9 @@ struct UploadedMesh {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuMaterial {
-    // Authored energy fractions are converted before upload; transport only
-    // consumes broad-band pressure gains (the first optional band).
+    // Convert authored energy fractions into broadband pressure gains before upload.
     specular_pressure: f32,
     rough_pressure: f32,
-    transmission_pressure: f32,
     roughness: f32,
 }
 
@@ -342,20 +340,7 @@ fn upload_scene_buffers(
 
 // Bound the coherent scalar reflection mixture by the authored pressure loss.
 fn gpu_material(material: &super::types::Material) -> GpuMaterial {
-    let absorption = material
-        .absorption_bands
-        .first()
-        .copied()
-        .unwrap_or(0.0)
-        .clamp(0.0, 1.0);
-    let transmission = material
-        .transmission
-        .as_ref()
-        .and_then(|bands| bands.first().copied())
-        .unwrap_or(0.0)
-        .clamp(0.0, 1.0)
-        .min(1.0 - absorption);
-    let reflection = (1.0 - absorption - transmission).max(0.0);
+    let reflection = 1.0 - material.absorption.clamp(0.0, 1.0);
     let scattering = material.scattering.clamp(0.0, 1.0);
     // The transport sums these lobes as pressure, not independent energies.
     // Normalize their relative amplitudes so branch sampling cannot multiply
@@ -366,7 +351,6 @@ fn gpu_material(material: &super::types::Material) -> GpuMaterial {
     GpuMaterial {
         specular_pressure: reflection_pressure * specular,
         rough_pressure: reflection_pressure * rough,
-        transmission_pressure: transmission.sqrt(),
         roughness: material.roughness.clamp(0.0, 1.0),
     }
 }
@@ -388,7 +372,6 @@ fn gpu_materials(store: &SceneStore) -> (Vec<GpuMaterial>, HashMap<MaterialId, u
         materials.push(GpuMaterial {
             specular_pressure: 0.0,
             rough_pressure: 0.0,
-            transmission_pressure: 0.0,
             roughness: 0.0,
         });
     }
@@ -543,36 +526,28 @@ mod tests {
     #[test]
     fn uploaded_reflection_mixture_has_no_scattering_gain() {
         for absorption in [0.0_f32, 0.2, 0.75, 1.0] {
-            for transmission in [0.0_f32, 0.3, 1.0] {
-                for scattering in [0.0_f32, 0.4, 1.0] {
-                    let material = super::super::types::Material {
-                        id: 1,
-                        absorption_bands: vec![absorption],
-                        scattering,
-                        roughness: 0.2,
-                        transmission: Some(vec![transmission]),
-                    };
-                    let gpu = gpu_material(&material);
-                    let reflected = (gpu.specular_pressure + gpu.rough_pressure).powi(2);
-                    assert!(
-                        (reflected + gpu.transmission_pressure.powi(2) - (1.0 - absorption)).abs()
-                            < 1e-6
-                    );
-                    assert!(
-                        (gpu.transmission_pressure.powi(2) - transmission.min(1.0 - absorption))
-                            .abs()
-                            < 1e-6
-                    );
-                    let separate_energy =
-                        gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
-                    assert!(separate_energy <= reflected + 1e-6);
-                    assert!(
-                        (gpu.rough_pressure.powi(2) - separate_energy * scattering).abs() < 1e-6
-                    );
-                }
+            for scattering in [0.0_f32, 0.4, 1.0] {
+                let material = super::super::types::Material {
+                    id: 1,
+                    absorption,
+                    scattering,
+                    roughness: 0.2,
+                };
+                let gpu = gpu_material(&material);
+                let reflected = (gpu.specular_pressure + gpu.rough_pressure).powi(2);
+                assert!((reflected - (1.0 - absorption)).abs() < 1e-6);
+                let separate_energy = gpu.specular_pressure.powi(2) + gpu.rough_pressure.powi(2);
+                assert!(separate_energy <= reflected + 1e-6);
+                assert!((gpu.rough_pressure.powi(2) - separate_energy * scattering).abs() < 1e-6);
             }
         }
-        assert_eq!(size_of::<GpuMaterial>(), 16);
+    }
+
+    #[test]
+    fn material_gpu_record_matches_std430_layout() {
+        assert_eq!(size_of::<GpuMaterial>(), 12);
+        assert_eq!(align_of::<GpuMaterial>(), 4);
+        assert_eq!(std::mem::offset_of!(GpuMaterial, roughness), 8);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Sound engine prototype with GPU acceleration for convolution and ray tracing.
+//! Spatial audio with Vulkan ray tracing and streaming GPU convolution.
+#![warn(missing_docs)]
 
 /// Acoustic queries and impulse-response generation.
 pub mod acoustics;
@@ -6,11 +7,14 @@ pub mod acoustics;
 pub mod auralization;
 /// Shared configuration, errors, and debug exports.
 pub mod core;
+/// Synchronous rendering and background playback orchestration.
 pub mod engine;
+/// Vulkan resource ownership, compute dispatch, and ray tracing.
 pub mod gpu;
 #[cfg(feature = "playback")]
 /// Audio-device playback and real-time output integration.
 pub mod playback;
+/// Scene geometry, materials, updates, and lazy GPU synchronization.
 pub mod scene;
 
 pub use engine::{ListenerPose, PlaySpatialSoundRequest, PointSource, SoundEngine, SoundSourceId};
