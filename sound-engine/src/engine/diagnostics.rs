@@ -1,5 +1,6 @@
 //! Optional runtime diagnostics with bounded retention and off-thread file I/O.
 
+use super::direct::RenderMetrics;
 use crate::playback::SoundPlayer;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -59,9 +60,7 @@ impl<'a> RuntimeDiagnostics<'a> {
         &mut self,
         samples: &[f32],
         render_started: Instant,
-        stages: [f64; 3],
-        spatial_status: (u64, f64),
-        spatial_deferred: bool,
+        metrics: RenderMetrics,
     ) {
         let Some(recorder) = &mut self.recorder else {
             return;
@@ -83,10 +82,7 @@ impl<'a> RuntimeDiagnostics<'a> {
                     elapsed,
                     render_ms,
                     rms: squares.map(|sum| (sum / frames as f64).sqrt()),
-                    stages,
-                    spatial_updates: spatial_status.0,
-                    spatial_update_age_ms: spatial_status.1,
-                    spatial_deferred,
+                    metrics,
                 }
             });
             BlockRecord {
@@ -123,7 +119,15 @@ impl Drop for RuntimeDiagnostics<'_> {
         let result = std::fs::write(
             summary_path,
             format!(
-                "{{\"underrun_callbacks\":{underruns},\"missing_frames\":{missing},\"first_underrun_seconds_since_player_creation\":{},\"last_underrun_seconds_since_player_creation\":{},\"diagnostic_blocks_written\":{},\"diagnostic_blocks_omitted\":{omitted},\"capture_samples_written\":{},\"capture_truncated\":{},\"diagnostic_write_failed\":{}}}\n",
+                "{{\"underrun_callbacks\":{underruns},\
+                 \"missing_frames\":{missing},\
+                 \"first_underrun_seconds_since_player_creation\":{},\
+                 \"last_underrun_seconds_since_player_creation\":{},\
+                 \"diagnostic_blocks_written\":{},\
+                 \"diagnostic_blocks_omitted\":{omitted},\
+                 \"capture_samples_written\":{},\
+                 \"capture_truncated\":{},\
+                 \"diagnostic_write_failed\":{}}}\n",
                 starvation_times.map_or_else(|| "null".to_owned(), |(first, _)| first.to_string()),
                 starvation_times.map_or_else(|| "null".to_owned(), |(_, last)| last.to_string()),
                 summary.blocks_written,
@@ -213,10 +217,7 @@ struct BlockMeasurement {
     elapsed: f64,
     render_ms: f64,
     rms: [f64; 2],
-    stages: [f64; 3],
-    spatial_updates: u64,
-    spatial_update_age_ms: f64,
-    spatial_deferred: bool,
+    metrics: RenderMetrics,
 }
 
 struct BlockRecord {
@@ -351,11 +352,22 @@ struct OutputWriter {
 
 impl OutputWriter {
     fn new(paths: &OutputPaths, sample_rate: u32, channels: usize) -> io::Result<Self> {
-        let timing = paths.timing.as_ref().map(|path| {
-            let mut file = BufWriter::new(File::create(path)?);
-            writeln!(file, "block,elapsed_seconds,render_ms,left_rms,right_rms,trace_ms,ir_prepare_ms,convolution_ms,spatial_updates,spatial_update_age_ms,spatial_deferred")?;
-            Ok::<_, io::Error>(file)
-        }).transpose()?;
+        let timing = paths
+            .timing
+            .as_ref()
+            .map(|path| {
+                let mut file = BufWriter::new(File::create(path)?);
+                writeln!(
+                    file,
+                    concat!(
+                        "block,elapsed_seconds,render_ms,left_rms,right_rms,",
+                        "trace_ms,ir_prepare_ms,convolution_ms,",
+                        "spatial_updates,spatial_update_age_ms,spatial_deferred",
+                    )
+                )?;
+                Ok::<_, io::Error>(file)
+            })
+            .transpose()?;
         let capture = paths
             .capture
             .as_ref()
@@ -405,12 +417,12 @@ impl OutputWriter {
                 block.render_ms,
                 block.rms[0],
                 block.rms[1],
-                block.stages[0],
-                block.stages[1],
-                block.stages[2],
-                block.spatial_updates,
-                block.spatial_update_age_ms,
-                u8::from(block.spatial_deferred)
+                block.metrics.trace_ms,
+                block.metrics.ir_prepare_ms,
+                block.metrics.convolution_ms,
+                block.metrics.spatial_updates,
+                block.metrics.spatial_update_age_ms,
+                u8::from(block.metrics.spatial_deferred)
             )?;
         }
         self.summary.blocks_written += 1;

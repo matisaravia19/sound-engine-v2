@@ -328,7 +328,13 @@ fn scalar_updates_preserve_pressure_and_refresh_all_voices() {
     let mut output = vec![0.0; 2048];
 
     core.set_listener_pose(second).unwrap();
-    core.render_realtime_block(&mut output, false).unwrap();
+    let metrics = core.render_realtime_block(&mut output, false).unwrap();
+    assert!(metrics.spatial_deferred);
+    assert_eq!(metrics.trace_ms, 0.0);
+    assert_eq!(metrics.ir_prepare_ms, 0.0);
+    assert!(metrics.convolution_ms.is_finite() && metrics.convolution_ms >= 0.0);
+    assert_eq!(metrics.spatial_updates, 0);
+    assert_eq!(metrics.spatial_update_age_ms, 0.0);
     assert!(core.spatial_voices[&voice].refresh_requested_at.is_some());
     assert!(Arc::ptr_eq(
         &original,

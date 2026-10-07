@@ -38,10 +38,14 @@ fn record(samples: Vec<f32>) -> BlockRecord {
             elapsed: 0.5,
             render_ms: 1.0,
             rms: [0.25, 0.5],
-            stages: [0.0, 0.0, 1.0],
-            spatial_updates: 2,
-            spatial_update_age_ms: 3.0,
-            spatial_deferred: false,
+            metrics: RenderMetrics {
+                trace_ms: 0.1,
+                ir_prepare_ms: 0.2,
+                convolution_ms: 0.3,
+                spatial_updates: 2,
+                spatial_update_age_ms: 3.0,
+                spatial_deferred: false,
+            },
         }),
         samples,
     }
@@ -94,8 +98,8 @@ fn asynchronous_writer_flushes_complete_timing_and_audio() {
     let rows = csv.lines().collect::<Vec<_>>();
     assert_eq!(rows.len(), 3);
     assert!(rows[0].starts_with("block,elapsed_seconds,render_ms"));
-    assert!(rows[1].starts_with("0,0.5,1,0.25,0.5,"));
-    assert!(rows[2].starts_with("1,0.5,1,0.25,0.5,"));
+    assert_eq!(rows[1], "0,0.5,1,0.25,0.5,0.1,0.2,0.3,2,3,0");
+    assert_eq!(rows[2], "1,0.5,1,0.25,0.5,0.1,0.2,0.3,2,3,0");
     let mut wav = hound::WavReader::open(paths.capture.unwrap()).unwrap();
     assert_eq!(wav.spec().sample_rate, 48_000);
     assert_eq!(wav.spec().channels, 2);

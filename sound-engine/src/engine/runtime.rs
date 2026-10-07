@@ -460,21 +460,15 @@ fn runtime_loop(
             let spatial_deferred = !render_debt.is_zero();
             let rendered = core.render_realtime_block(&mut output_block, !spatial_deferred);
             status.publish(core);
-            let stages = match rendered {
-                Ok(stages) => stages,
+            let metrics = match rendered {
+                Ok(metrics) => metrics,
                 Err(error) => {
                     let _ = player.stop();
                     return Err(error);
                 }
             };
             render_debt = (render_debt + started.elapsed()).saturating_sub(block_duration);
-            diagnostics.record(
-                &output_block,
-                started,
-                stages,
-                core.spatial_update_status(),
-                spatial_deferred,
-            );
+            diagnostics.record(&output_block, started, metrics);
 
             match player.push_block(&output_block) {
                 Ok(true) => {}

@@ -1,4 +1,5 @@
 //! Interactive playground state and frame loop.
+mod audio;
 mod config;
 mod controls;
 mod geometry;
@@ -6,10 +7,11 @@ mod poses;
 mod render;
 
 use crate::scenes;
+use audio::AudioSession;
 use config::Options;
 use controls::{
-    frame_selected_pair, handle_config_keys, handle_scene_menu, play_source_sound,
-    start_sound_requested, sync_camera_listener_if_changed, sync_red_sphere_listener,
+    frame_selected_pair, handle_config_keys, handle_scene_menu, start_sound_requested,
+    sync_camera_listener_if_changed, sync_red_sphere_listener,
 };
 use geometry::{PlaygroundScene, SceneConfig, build_scene, from_glam, scene_description, to_glam};
 use glam::Vec3;
@@ -20,17 +22,18 @@ use poses::{
 };
 use raylib::prelude::*;
 use render::{draw_overlay, draw_scene, draw_scene_menu};
+use sound_engine::auralization::VoiceId;
 use sound_engine::core::error::SoundResult;
-use sound_engine::playback::{PlaybackConfig, SoundPlayer};
+use sound_engine::playback::SoundPlayer;
 use sound_engine::scene::SceneDescription;
-use sound_engine::{ListenerPose, PointSource, SoundEngine, SoundSourceId};
+use sound_engine::{ListenerPose, PointSource, SoundEngine};
 use std::time::Instant;
 
 const LISTENER_SPIN_RADIANS_PER_SECOND: f32 = std::f32::consts::PI * 0.125;
 
 struct UiState {
     status: String,
-    last_voice: Option<u64>,
+    last_voice: Option<VoiceId>,
     show_bisector_planes: bool,
     /// Wire view exposes sources and receivers inside closed benchmark rooms.
     benchmark_wireframe: bool,
@@ -66,7 +69,6 @@ struct PlaygroundState {
     last_camera_listener_pose: Option<ListenerPose>,
     last_camera_listener_sync: Option<Instant>,
     source_index: usize,
-    sound_source_id: Option<SoundSourceId>,
     ui: UiState,
 }
 
@@ -96,7 +98,6 @@ impl PlaygroundState {
             last_camera_listener_pose: None,
             last_camera_listener_sync: None,
             source_index: 0,
-            sound_source_id: None,
             ui: UiState {
                 status: "Ready".to_owned(),
                 last_voice: None,
@@ -274,13 +275,7 @@ pub(crate) fn run() -> SoundResult<()> {
     let mut engine = SoundEngine::new(config)?;
     engine.load_scene(playback_scene(&state))?;
     engine.set_listener_pose(state.red_sphere_listener_pose())?;
-    let sound_source_id = engine.create_sound_source(state.point_source())?;
-    state.sound_source_id = Some(sound_source_id);
-    let sound_id = engine.load_wav_sound(&options.sound)?;
-    engine.start_sound_player(PlaybackConfig {
-        prefill_blocks: 3,
-        max_queue_seconds: 0.064,
-    })?;
+    let mut audio = AudioSession::new(engine, state.point_source(), &options.sound, playback_gain)?;
 
     let (mut rl, thread) = raylib::init()
         .size(1280, 720)
@@ -307,8 +302,8 @@ pub(crate) fn run() -> SoundResult<()> {
         camera.position = Vector3::new(7.0, 2.0, 0.0);
         camera.target = Vector3::new(0.0, 1.0, 0.0);
         state.listener_mode = ListenerMode::Camera;
-        sync_camera_listener_if_changed(&mut engine, &mut state, &camera, true);
-        let voice_id = play_source_sound(&mut engine, sound_id, &state, &camera, playback_gain)?;
+        sync_camera_listener_if_changed(&mut audio, &mut state, &camera, true);
+        let voice_id = audio.play(state.active_listener_pose(&camera))?;
         state.ui.last_voice = Some(voice_id);
     }
     let camera_stress = options
@@ -334,22 +329,22 @@ pub(crate) fn run() -> SoundResult<()> {
         } else if !state.scene_menu {
             rl.update_camera(&mut camera, CameraMode::CAMERA_FREE);
         }
-        handle_scene_menu(&mut rl, &mut engine, &mut state, &mut camera);
+        handle_scene_menu(&mut rl, &mut audio, &mut state, &mut camera);
         if !state.scene_menu {
-            handle_config_keys(&rl, &mut engine, &mut state, &camera);
+            handle_config_keys(&rl, &mut audio, &mut state, &camera);
         }
         if state.listener_mode == ListenerMode::Camera {
-            sync_camera_listener_if_changed(&mut engine, &mut state, &camera, false);
+            sync_camera_listener_if_changed(&mut audio, &mut state, &camera, false);
         }
         if state.update_listener_spin(rl.get_frame_time())
             && state.listener_mode == ListenerMode::RedSphere
         {
-            sync_red_sphere_listener(&mut engine, &mut state, "listener spin");
+            sync_red_sphere_listener(&mut audio, &mut state, "listener spin");
         }
 
         if !state.scene_menu && start_sound_requested(&rl) {
             state.ui.status = "Building IR and starting sound...".to_owned();
-            match play_source_sound(&mut engine, sound_id, &state, &camera, playback_gain) {
+            match audio.play(state.active_listener_pose(&camera)) {
                 Ok(voice_id) => {
                     state.ui.last_voice = Some(voice_id);
                     state.ui.status = format!("Started voice {voice_id}");
@@ -378,8 +373,8 @@ pub(crate) fn run() -> SoundResult<()> {
         }
     }
 
-    engine.stop_sound_player()?;
-    drop(engine);
+    audio.engine.stop_sound_player()?;
+    drop(audio);
     if let Some(path) = &options.frame_report {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);

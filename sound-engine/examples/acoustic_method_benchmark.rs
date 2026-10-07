@@ -51,7 +51,6 @@ struct Options {
     seed_repeats: u32,
     warm_repeats: usize,
     case_filter: Option<String>,
-    drop_backend: bool,
     output: Option<PathBuf>,
 }
 
@@ -141,7 +140,7 @@ struct TimeDomainMetrics {
 fn main() -> SoundResult<()> {
     if env::args().any(|arg| arg == "--help") {
         println!(
-            "acoustic_method_benchmark [--rays 65536] [--seed 7] [--seed-repeats 1] [--warm-repeats 5] [--case NAME] [--output FILE] [--drop-backend]\nUse --list-cases for available controls. Timings are synchronous host wall times."
+            "acoustic_method_benchmark [--rays 65536] [--seed 7] [--seed-repeats 1] [--warm-repeats 5] [--case NAME] [--output FILE]\nUse --list-cases for available controls. Timings are synchronous host wall times."
         );
         return Ok(());
     }
@@ -169,13 +168,7 @@ fn main() -> SoundResult<()> {
         Some(path) => Box::new(BufWriter::new(File::create(path)?)),
         None => Box::new(BufWriter::new(std::io::stdout())),
     };
-    let result = run_benchmarks(&gpu, &options, gpu_setup, cases, output);
-    if options.drop_backend {
-        // Preserve the diagnostic flag: an explicit drop makes teardown occur
-        // before the benchmark result is returned instead of at scope exit.
-        drop(gpu);
-    }
-    result
+    run_benchmarks(&gpu, &options, gpu_setup, cases, output)
 }
 
 fn run_benchmarks(
@@ -355,7 +348,6 @@ fn parse_options() -> SoundResult<Options> {
         seed_repeats: 1,
         warm_repeats: 5,
         case_filter: None,
-        drop_backend: false,
         output: None,
     };
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -385,9 +377,6 @@ fn parse_options() -> SoundResult<Options> {
                         .ok_or_else(|| SoundError::invalid_argument("--case needs a name"))?
                         .clone(),
                 );
-            }
-            "--drop-backend" => {
-                options.drop_backend = true;
             }
             "--output" => {
                 index += 1;
@@ -462,7 +451,6 @@ mod tests {
                     seed_repeats: 1,
                     warm_repeats: 1,
                     case_filter: None,
-                    drop_backend: false,
                     output: None,
                 };
                 let result = trace_case(&gpu, &options, &case)?;
@@ -529,7 +517,6 @@ mod tests {
                     seed_repeats: 1,
                     warm_repeats: 1,
                     case_filter: None,
-                    drop_backend: false,
                     output: None,
                 };
                 let result = trace_case(&gpu, &options, &case)?;

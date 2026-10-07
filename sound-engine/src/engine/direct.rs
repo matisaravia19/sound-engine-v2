@@ -74,6 +74,23 @@ struct SpatialVoice {
     refresh_requested_at: Option<std::time::Instant>,
 }
 
+/// Timing and spatial-update counters captured after one realtime render.
+#[cfg(any(feature = "playback", test))]
+pub(super) struct RenderMetrics {
+    /// Synchronous acoustic trace time for this block, in milliseconds.
+    pub(super) trace_ms: f64,
+    /// IR transform and registration time for this block, in milliseconds.
+    pub(super) ir_prepare_ms: f64,
+    /// Voice convolution and finished-voice cleanup time, in milliseconds.
+    pub(super) convolution_ms: f64,
+    /// Complete spatial IR replacements published since engine creation.
+    pub(super) spatial_updates: u64,
+    /// Last replacement's request-to-registration age, excluding its crossfade.
+    pub(super) spatial_update_age_ms: f64,
+    /// Whether the scheduler deferred spatial work to repay earlier render cost.
+    pub(super) spatial_deferred: bool,
+}
+
 impl EngineCore {
     /// Observes final device release without extending its lifetime in lifecycle tests.
     #[cfg(all(test, feature = "playback"))]
@@ -281,7 +298,7 @@ impl EngineCore {
         &mut self,
         output_block: &mut [f32],
         advance_spatial: bool,
-    ) -> SoundResult<[f64; 3]> {
+    ) -> SoundResult<RenderMetrics> {
         self.auralization.validate_output_block(output_block)?;
         let (trace_ms, prepare_ms) = if advance_spatial {
             self.advance_spatial_update()?
@@ -291,11 +308,14 @@ impl EngineCore {
         let started = std::time::Instant::now();
         self.auralization.render_block(output_block)?;
         self.cleanup_finished_spatial_voices();
-        Ok([
+        Ok(RenderMetrics {
             trace_ms,
-            prepare_ms,
-            started.elapsed().as_secs_f64() * 1000.0,
-        ])
+            ir_prepare_ms: prepare_ms,
+            convolution_ms: started.elapsed().as_secs_f64() * 1000.0,
+            spatial_updates: self.spatial_updates,
+            spatial_update_age_ms: self.spatial_update_age_ms,
+            spatial_deferred: !advance_spatial,
+        })
     }
 
     /// Rebuilds one dirty voice IR per block, rotating fairly between active voices.
@@ -315,13 +335,6 @@ impl EngineCore {
         };
         self.last_spatial_voice = voice_id;
         self.refresh_spatial_voice(voice_id)
-    }
-
-    /// Returns replacement count and request-to-registration age for diagnostics.
-    /// This excludes time in the device queue and the subsequent crossfade.
-    #[cfg(feature = "playback")]
-    pub(super) fn spatial_update_status(&self) -> (u64, f64) {
-        (self.spatial_updates, self.spatial_update_age_ms)
     }
 
     /// Returns whether any voices are still active or flushing tails.
