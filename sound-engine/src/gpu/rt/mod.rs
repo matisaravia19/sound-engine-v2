@@ -21,7 +21,6 @@ pub use acceleration::{AabbBlasBuildSpec, BlasBuildSpec, BlasId, TlasBuildSpec, 
 pub use dispatch::{RtDescriptorWrite, RtTraceSpec};
 pub use pipeline::{
     RtDescriptorBindingSpec, RtPipelineId, RtPipelineSpec, RtPushConstantSpec, RtShaderGroupSpec,
-    RtShaderStageSpec,
 };
 pub use scene::{RtAabbBuffers, RtAabbSpec, RtInstanceSpec, RtMeshBuffers, RtMeshSpec};
 

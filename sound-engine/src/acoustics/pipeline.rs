@@ -9,7 +9,7 @@ use crate::gpu::compute::BufferBarrierSpec;
 use crate::gpu::rt::{
     BlasBuildSpec, BlasId, OwnedBlas, OwnedRtPipeline, OwnedTlas, RtDescriptorBindingSpec,
     RtDescriptorWrite, RtInstanceSpec, RtMeshBuffers, RtMeshSpec, RtPipelineSpec,
-    RtPushConstantSpec, RtShaderGroupSpec, RtShaderStageSpec, RtTraceSpec, TlasBuildSpec, TlasId,
+    RtPushConstantSpec, RtShaderGroupSpec, RtTraceSpec, TlasBuildSpec, TlasId,
 };
 use crate::gpu::shader::ShaderStage;
 use crate::scene::{GpuSceneResources, SceneManager};
@@ -106,13 +106,13 @@ impl AcousticPipeline {
 
         let listener_pipeline = gpu.rt().create_pipeline(RtPipelineSpec {
             shaders: vec![
-                RtShaderStageSpec::new(raygen),
-                RtShaderStageSpec::new(continuation_miss),
-                RtShaderStageSpec::new(visibility_miss),
-                RtShaderStageSpec::new(surface_closest_hit),
-                RtShaderStageSpec::new(visibility_closest_hit),
-                RtShaderStageSpec::new(diffraction_closest_hit),
-                RtShaderStageSpec::new(diffraction_intersection),
+                raygen,
+                continuation_miss,
+                visibility_miss,
+                surface_closest_hit,
+                visibility_closest_hit,
+                diffraction_closest_hit,
+                diffraction_intersection,
             ],
             // Surface continuation uses record zero and visibility adds one.
             groups: vec![

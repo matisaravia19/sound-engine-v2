@@ -1,7 +1,6 @@
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use ash::vk;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -21,14 +20,15 @@ pub const SHADER_ENTRY_POINT: &str = "main";
 /// alive until the library is dropped.
 pub struct ShaderLibrary {
     device_context: Arc<VkDeviceContext>,
-    shaders: Mutex<HashMap<ShaderId, ShaderRecord>>,
+    // Records are append-only, so handles remain stable without a keyed registry.
+    shaders: Mutex<Vec<ShaderRecord>>,
     #[cfg(test)]
     compile_count: std::sync::atomic::AtomicUsize,
 }
 
-/// Stable handle to a shader module stored in `ShaderLibrary`.
+/// Library-local handle to a shader module retained by its `ShaderLibrary`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShaderId(pub u32);
+pub struct ShaderId(usize);
 
 /// Shader stages supported by the engine shader compiler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +71,7 @@ impl ShaderLibrary {
     pub(super) fn new(device_context: Arc<VkDeviceContext>) -> Self {
         Self {
             device_context,
-            shaders: Mutex::new(HashMap::new()),
+            shaders: Mutex::new(Vec::new()),
             #[cfg(test)]
             compile_count: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -104,11 +104,11 @@ impl ShaderLibrary {
             .lock()
             .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
         if let Some(source) = bundled_source
-            && let Some((id, _)) = shaders.iter().find(|(_, shader)| {
+            && let Some(index) = shaders.iter().position(|shader| {
                 shader.stage == stage && shader.bundled_sources.contains(&source)
             })
         {
-            return Ok(*id);
+            return Ok(ShaderId(index));
         }
         #[cfg(test)]
         self.compile_count
@@ -116,18 +116,17 @@ impl ShaderLibrary {
         let spirv_words = compiler::compile(&source_path, stage, bundled_source)?;
         // Recreating an engine on a shared backend must not accumulate identical
         // modules. Compiled bytes also reflect changes in included GLSL files.
-        if let Some((id, shader)) = shaders
+        if let Some((index, shader)) = shaders
             .iter_mut()
+            .enumerate()
             .find(|(_, shader)| shader.stage == stage && shader.spirv == spirv_words)
         {
             if let Some(source) = bundled_source {
                 shader.bundled_sources.push(source);
             }
-            return Ok(*id);
+            return Ok(ShaderId(index));
         }
-        let id = ShaderId(u32::try_from(shaders.len()).map_err(|_| {
-            SoundError::resource_allocation_failed("Shader identifier space exhausted")
-        })?);
+        let id = ShaderId(shaders.len());
         let module = create_shader_module(&self.device_context.device, &spirv_words)?;
         let record = ShaderRecord {
             module,
@@ -136,7 +135,7 @@ impl ShaderLibrary {
             bundled_sources: bundled_source.into_iter().collect(),
         };
 
-        shaders.insert(id, record);
+        shaders.push(record);
         Ok(id)
     }
 
@@ -148,7 +147,7 @@ impl ShaderLibrary {
             .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
 
         let shader = shaders
-            .get(&shader_id)
+            .get(shader_id.0)
             .ok_or_else(|| SoundError::not_found(format!("Invalid shader id {}", shader_id.0)))?;
 
         Ok(shader.module)
@@ -162,7 +161,7 @@ impl ShaderLibrary {
             .map_err(|_| SoundError::poisoned_lock("Shader library lock is poisoned"))?;
 
         let shader = shaders
-            .get(&shader_id)
+            .get(shader_id.0)
             .ok_or_else(|| SoundError::not_found(format!("Invalid shader id {}", shader_id.0)))?;
 
         Ok(shader.stage)
@@ -212,13 +211,13 @@ fn verify_shader_source(path: &Path, expected: &str) -> SoundResult<()> {
 
 impl Drop for ShaderLibrary {
     fn drop(&mut self) {
-        let mut shaders = self
+        let shaders = self
             .shaders
-            .lock()
+            .get_mut()
             .unwrap_or_else(|error| error.into_inner());
 
         unsafe {
-            for (_, shader) in shaders.drain() {
+            for shader in shaders.drain(..) {
                 self.device_context
                     .device
                     .destroy_shader_module(shader.module, None);

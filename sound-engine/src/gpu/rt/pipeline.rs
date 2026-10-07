@@ -9,8 +9,8 @@ pub struct RtPipelineId(pub u32);
 
 /// Description used to create a Vulkan ray tracing pipeline and SBT.
 pub struct RtPipelineSpec {
-    /// Shader stages in the order referenced by shader groups.
-    pub shaders: Vec<RtShaderStageSpec>,
+    /// Loaded shader IDs in the order referenced by shader groups.
+    pub shaders: Vec<ShaderId>,
     /// Shader groups used by the SBT.
     pub groups: Vec<RtShaderGroupSpec>,
     /// Descriptor set layout bindings used during trace recording.
@@ -19,13 +19,6 @@ pub struct RtPipelineSpec {
     pub push_constant_ranges: Vec<RtPushConstantSpec>,
     /// Maximum ray recursion depth passed to Vulkan.
     pub max_ray_recursion_depth: u32,
-}
-
-/// One shader stage in an RT pipeline.
-#[derive(Debug, Clone, Copy)]
-pub struct RtShaderStageSpec {
-    /// Shader module ID previously loaded through `ShaderLibrary`.
-    pub shader_id: ShaderId,
 }
 
 /// Shader group entry used to build the RT pipeline and SBT regions.
@@ -85,15 +78,6 @@ pub struct RtPushConstantSpec {
     pub stage_flags: vk::ShaderStageFlags,
 }
 
-impl RtShaderStageSpec {
-    /// Creates a shader stage spec from an existing shader ID.
-    pub fn new(shader_id: ShaderId) -> Self {
-        Self {
-            shader_id,
-        }
-    }
-}
-
 impl RtDescriptorBindingSpec {
     /// Creates a single acceleration-structure binding visible to RT stages.
     pub fn acceleration_structure(binding: u32) -> Self {
@@ -142,7 +126,7 @@ impl RtContext {
         let stages = spec
             .shaders
             .iter()
-            .map(|stage| self.pipeline_shader_stage(*stage, &entry))
+            .map(|shader| self.pipeline_shader_stage(*shader, &entry))
             .collect::<SoundResult<Vec<_>>>()?;
         validate_groups(&stages, &spec.groups)?;
 
@@ -232,14 +216,14 @@ impl RtContext {
 
     fn pipeline_shader_stage<'a>(
         &self,
-        spec: RtShaderStageSpec,
+        shader_id: ShaderId,
         entry: &'a CString,
     ) -> SoundResult<vk::PipelineShaderStageCreateInfo<'a>> {
-        let stage = self.shaders.shader_stage(spec.shader_id)?;
+        let stage = self.shaders.shader_stage(shader_id)?;
         let vk_stage = shader_stage_to_vk(stage)?;
         Ok(vk::PipelineShaderStageCreateInfo::default()
             .stage(vk_stage)
-            .module(self.shaders.shader_module(spec.shader_id)?)
+            .module(self.shaders.shader_module(shader_id)?)
             .name(entry.as_c_str()))
     }
 }

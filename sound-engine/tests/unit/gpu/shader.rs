@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
-fn audit_verified_bundled_shader_skips_recompilation() {
+fn bundled_shaders_reuse_modules_and_preserve_handles_after_appends() {
     let gpu = crate::gpu::backend::VkBackend::new().unwrap();
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auralization/shaders/multiply.comp.glsl");
@@ -24,6 +24,47 @@ fn audit_verified_bundled_shader_skips_recompilation() {
             .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
+
+    let first_module = gpu.shaders().shader_module(first).unwrap();
+    let miss = gpu
+        .shaders()
+        .load_glsl_file(
+            ShaderStage::RayMiss,
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/acoustics/shaders/visibility.rmiss.glsl"),
+        )
+        .unwrap();
+    assert_ne!(first, miss);
+    assert_ne!(first_module, gpu.shaders().shader_module(miss).unwrap());
+    assert_eq!(
+        gpu.shaders().shader_stage(miss).unwrap(),
+        ShaderStage::RayMiss
+    );
+    assert_eq!(
+        gpu.shaders().shader_stage(first).unwrap(),
+        ShaderStage::Compute
+    );
+    assert_eq!(gpu.shaders().shader_module(first).unwrap(), first_module);
+    assert_eq!(
+        gpu.shaders()
+            .load_glsl_file(ShaderStage::Compute, &path)
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        gpu.shaders()
+            .compile_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    let missing = ShaderId(usize::MAX);
+    for error in [
+        gpu.shaders().shader_module(missing).unwrap_err(),
+        gpu.shaders().shader_stage(missing).unwrap_err(),
+    ] {
+        assert_eq!(error.code(), crate::core::error::ErrorCode::NotFound);
+    }
 }
 
 #[test]
