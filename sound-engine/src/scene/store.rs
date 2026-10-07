@@ -167,11 +167,6 @@ impl SceneStore {
         self.meshes.values().map(|mesh| mesh.asset.as_ref())
     }
 
-    /// Returns immutable geometry without exposing the transaction's shared owner.
-    pub(super) fn mesh(&self, id: MeshId) -> Option<&MeshAsset> {
-        self.meshes.get(&id).map(|mesh| mesh.asset.as_ref())
-    }
-
     /// Returns the geometry revision used to decide whether a BLAS is reusable.
     pub(super) fn mesh_revision(&self, id: MeshId) -> Option<SceneVersion> {
         self.meshes.get(&id).map(|mesh| mesh.revision)

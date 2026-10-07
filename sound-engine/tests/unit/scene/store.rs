@@ -6,7 +6,7 @@ use glam::{Mat4, vec3};
 fn object_edits_share_geometry_and_keep_cloned_scenes_unchanged() {
     let mut store = populated_store();
     let before = store.clone();
-    let vertex_pointer = store.mesh(1).unwrap().vertices.as_ptr();
+    let vertex_pointer = store.meshes[&1].asset.vertices.as_ptr();
     let transform = Mat4::from_translation(vec3(2.0, 0.0, 0.0));
     store
         .apply_updates(SceneUpdates {
@@ -16,7 +16,7 @@ fn object_edits_share_geometry_and_keep_cloned_scenes_unchanged() {
             }],
         })
         .unwrap();
-    assert_eq!(store.mesh(1).unwrap().vertices.as_ptr(), vertex_pointer);
+    assert_eq!(store.meshes[&1].asset.vertices.as_ptr(), vertex_pointer);
     assert_eq!(store.mesh_revision(1), Some(1));
     assert_eq!(store.objects[&10].transform, transform);
     assert_eq!(before.objects[&10].transform, Mat4::IDENTITY);
@@ -27,8 +27,8 @@ fn object_edits_share_geometry_and_keep_cloned_scenes_unchanged() {
             updates: vec![SceneUpdate::ReplaceMesh(mesh(1))],
         })
         .unwrap();
-    assert_ne!(store.mesh(1).unwrap().vertices.as_ptr(), vertex_pointer);
-    assert_eq!(before.mesh(1).unwrap().vertices.as_ptr(), vertex_pointer);
+    assert_ne!(store.meshes[&1].asset.vertices.as_ptr(), vertex_pointer);
+    assert_eq!(before.meshes[&1].asset.vertices.as_ptr(), vertex_pointer);
     assert_eq!(store.mesh_revision(1), Some(3));
 }
 
@@ -36,7 +36,7 @@ fn object_edits_share_geometry_and_keep_cloned_scenes_unchanged() {
 fn failed_batch_rolls_back_geometry_revisions_and_object_changes() {
     let mut store = populated_store();
     let revisions = store.revisions();
-    let vertex_pointer = store.mesh(1).unwrap().vertices.as_ptr();
+    let vertex_pointer = store.meshes[&1].asset.vertices.as_ptr();
     assert!(
         store
             .apply_updates(SceneUpdates {
@@ -56,7 +56,7 @@ fn failed_batch_rolls_back_geometry_revisions_and_object_changes() {
     assert_eq!(store.revisions(), revisions);
     assert!(store.diffraction_edges().next().is_none());
     assert_eq!(store.mesh_revision(1), Some(1));
-    assert_eq!(store.mesh(1).unwrap().vertices.as_ptr(), vertex_pointer);
+    assert_eq!(store.meshes[&1].asset.vertices.as_ptr(), vertex_pointer);
     assert!(store.objects[&10].active);
 }
 

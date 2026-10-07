@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 ash = "0.38.0"
-bytemuck = "1.24.0"
+bytemuck = { version = "1.24.0", features = ["derive"] }
 cpal = { version = "0.15", optional = true }
 glam = { version = "0.33.1", features = ["bytemuck"] }
 hound = "3.5.1"

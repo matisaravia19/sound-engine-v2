@@ -1,6 +1,6 @@
 use super::*;
 use crate::scene::*;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 #[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
@@ -112,6 +112,7 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     let translated_tlas = resources.tlas_id();
     let mut replacement = mesh;
     replacement.vertices[1].x = 2.0;
+    replacement.indices = vec![0, 1, 2];
     let resources = update(
         &gpu,
         &mut scene,
@@ -120,10 +121,21 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     assert_ne!(resources.instances()[0].blas_id, blas);
     assert_ne!(resources.tlas_id(), translated_tlas);
     assert_eq!(resources.diffraction_blas_id(), diffraction);
+    let uploaded_object = read_records::<GpuObject>(&gpu, resources.object_buffer())[0];
+    assert_eq!(uploaded_object.indexed, 1);
+    assert_eq!(
+        uploaded_object.index_address,
+        resources.geometry.uploaded_meshes[&1]
+            .buffers
+            .index_buffer
+            .as_ref()
+            .unwrap()
+            .device_address()
+    );
     assert_eq!(
         read_records::<GpuObject>(&gpu, resources.object_buffer())[0].vertex_address,
         resources.geometry.uploaded_meshes[&1]
-            ._buffers
+            .buffers
             .vertex_buffer
             .device_address()
     );
