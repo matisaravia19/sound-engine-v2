@@ -6,7 +6,7 @@ use crate::gpu::shader::ShaderLibrary;
 use ash::vk;
 use ash::{Entry, Instance};
 use std::ffi::CString;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Owns the Vulkan device and the GPU subsystems built on top of it.
 ///
@@ -85,7 +85,16 @@ impl VkBackend {
     /// Device selection requires KHR acceleration structures, ray tracing
     /// pipelines, deferred host operations, and buffer device addresses.
     pub fn new() -> SoundResult<Self> {
-        let entry = unsafe { Entry::load()? };
+        // Keep the loader resident between backend lifetimes. Unloading and
+        // reloading it can stall later device creation on the Windows RT driver.
+        static ENTRY: OnceLock<Entry> = OnceLock::new();
+        let entry = match ENTRY.get() {
+            Some(entry) => entry.clone(),
+            None => {
+                let loaded = unsafe { Entry::load()? };
+                ENTRY.get_or_init(|| loaded).clone()
+            }
+        };
         let instance = Self::create_instance(&entry)?;
 
         // Pick a single compute-capable queue family that can also run RT work.
