@@ -1,55 +1,5 @@
+use super::test_support::{TestDirectory, metrics, record};
 use super::*;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-struct TestDirectory(PathBuf);
-
-impl TestDirectory {
-    fn new() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "sound-diagnostics-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-
-    fn paths(&self) -> OutputPaths {
-        OutputPaths {
-            timing: Some(self.0.join("timing.csv")),
-            capture: Some(self.0.join("capture.wav")),
-        }
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        for name in ["timing.csv", "capture.wav"] {
-            let _ = std::fs::remove_file(self.0.join(name));
-        }
-        let _ = std::fs::remove_dir(&self.0);
-    }
-}
-
-fn record(samples: Vec<f32>) -> BlockRecord {
-    BlockRecord {
-        measurement: Some(BlockMeasurement {
-            elapsed: 0.5,
-            render_ms: 1.0,
-            rms: [0.25, 0.5],
-            metrics: RenderMetrics {
-                trace_ms: 0.1,
-                ir_prepare_ms: 0.2,
-                convolution_ms: 0.3,
-                spatial_updates: 2,
-                spatial_update_age_ms: 3.0,
-                spatial_deferred: false,
-            },
-        }),
-        samples,
-    }
-}
 
 #[test]
 fn full_diagnostic_queue_stops_at_a_prefix_without_waiting_or_resuming() {
@@ -110,33 +60,6 @@ fn asynchronous_writer_flushes_complete_timing_and_audio() {
 }
 
 #[test]
-fn wav_capacity_keeps_complete_frames_and_continues_timing() {
-    let dir = TestDirectory::new();
-    let paths = dir.paths();
-    let mut writer = OutputWriter::new(&paths, 48_000, 2).unwrap();
-    writer.max_capture_samples = 3;
-    writer.write(record(vec![0.25, -0.25])).unwrap();
-    writer.write(record(vec![0.5, -0.5])).unwrap();
-    writer.write(record(vec![0.75, -0.75])).unwrap();
-    writer.finish().unwrap();
-    assert!(writer.summary.capture_truncated);
-    assert_eq!(writer.summary.capture_samples_written, 2);
-    assert_eq!(writer.summary.blocks_written, 3);
-    let mut wav = hound::WavReader::open(paths.capture.unwrap()).unwrap();
-    assert_eq!(
-        wav.samples::<f32>().collect::<Result<Vec<_>, _>>().unwrap(),
-        [0.25, -0.25]
-    );
-    assert_eq!(
-        std::fs::read_to_string(paths.timing.unwrap())
-            .unwrap()
-            .lines()
-            .count(),
-        4
-    );
-}
-
-#[test]
 fn invalid_layout_and_oversized_capture_blocks_fail_before_opening_outputs() {
     let dir = TestDirectory::new();
     for (channels, samples) in [
@@ -153,48 +76,82 @@ fn invalid_layout_and_oversized_capture_blocks_fail_before_opening_outputs() {
 }
 
 #[test]
-fn output_open_failure_is_reported() {
-    let dir = TestDirectory::new();
-    let paths = OutputPaths {
-        timing: Some(dir.0.join("missing/record.csv")),
-        capture: None,
-    };
-    assert!(Recorder::new(paths, 48_000, 2, 2).is_err());
-}
+fn runtime_records_optional_outputs_and_saves_metadata_after_flushing() {
+    for (channels, timing, capture) in [(1, true, false), (2, false, true), (2, true, true)] {
+        let dir = TestDirectory::new();
+        let mut paths = dir.paths();
+        if !timing {
+            paths.timing = None;
+        }
+        if !capture {
+            paths.capture = None;
+        }
+        let samples = if channels == 1 {
+            [0.25, -0.25, 0.25, -0.25]
+        } else {
+            [0.25, -0.5, 0.25, -0.5]
+        };
+        let (player, _control) = SoundPlayer::test_player(samples.len());
+        let mut diagnostics = RuntimeDiagnostics {
+            player: &player,
+            recorder: Some(Recorder::new(paths.clone(), 48_000, channels, samples.len()).unwrap()),
+            started: Instant::now(),
+            channels,
+        };
+        diagnostics.record(&samples, Instant::now(), metrics());
+        drop(diagnostics);
 
-#[test]
-fn colliding_destinations_are_rejected_without_truncating_existing_files() {
-    let dir = TestDirectory::new();
-    let path = dir.0.join("timing.csv");
-    std::fs::write(&path, "keep this content").unwrap();
-    let aliases = OutputPaths {
-        timing: Some(path.clone()),
-        capture: Some(dir.0.join("./timing.csv")),
-    };
-    assert!(Recorder::new(aliases, 48_000, 2, 2).is_err());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this content");
-    let metadata_collision = OutputPaths {
-        timing: Some(path.clone()),
-        capture: Some(path.with_extension("audio.json")),
-    };
-    assert!(Recorder::new(metadata_collision, 48_000, 2, 2).is_err());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this content");
-}
-
-#[test]
-fn timing_flush_error_still_finalizes_the_audio_header() {
-    let dir = TestDirectory::new();
-    let paths = dir.paths();
-    let mut writer = OutputWriter::new(&paths, 48_000, 2).unwrap();
-    writer.timing.as_mut().unwrap().flush().unwrap();
-    writer.timing = Some(BufWriter::new(
-        File::open(paths.timing.as_ref().unwrap()).unwrap(),
-    ));
-    writer.write(record(vec![0.25, -0.25])).unwrap();
-    assert!(writer.finish().is_err());
-    let mut wav = hound::WavReader::open(paths.capture.unwrap()).unwrap();
-    assert_eq!(
-        wav.samples::<f32>().collect::<Result<Vec<_>, _>>().unwrap(),
-        [0.25, -0.25]
-    );
+        let metadata = std::fs::read_to_string(paths.summary_path()).unwrap();
+        let captured_samples = if capture {
+            samples.len()
+        } else {
+            0
+        };
+        assert_eq!(
+            metadata,
+            format!(
+                "{{\"underrun_callbacks\":0,\"missing_frames\":0,\
+                 \"first_underrun_seconds_since_player_creation\":null,\
+                 \"last_underrun_seconds_since_player_creation\":null,\
+                 \"diagnostic_blocks_written\":1,\"diagnostic_blocks_omitted\":0,\
+                 \"capture_samples_written\":{captured_samples},\
+                 \"capture_truncated\":false,\"diagnostic_write_failed\":false}}\n"
+            )
+        );
+        if let Some(path) = paths.timing {
+            let csv = std::fs::read_to_string(path).unwrap();
+            let rows = csv.lines().collect::<Vec<_>>();
+            assert_eq!(rows.len(), 2);
+            let values = rows[1]
+                .split(',')
+                .map(|value| value.parse::<f64>().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(values[0], 0.0);
+            assert!(
+                values[1..3]
+                    .iter()
+                    .all(|time| time.is_finite() && *time >= 0.0)
+            );
+            let right_rms = if channels == 1 {
+                0.0
+            } else {
+                0.5
+            };
+            assert_eq!(
+                &values[3..],
+                [0.25, right_rms, 0.1, 0.2, 0.3, 2.0, 3.0, 0.0]
+            );
+        }
+        if let Some(path) = paths.capture {
+            let mut wav = hound::WavReader::open(path).unwrap();
+            assert_eq!(wav.spec().channels as usize, channels);
+            assert_eq!(wav.spec().sample_rate, 48_000);
+            assert_eq!(
+                wav.samples::<f32>().collect::<Result<Vec<_>, _>>().unwrap(),
+                samples
+            );
+        }
+        assert_eq!(dir.paths().timing.unwrap().exists(), timing);
+        assert_eq!(dir.paths().capture.unwrap().exists(), capture);
+    }
 }

@@ -1,10 +1,12 @@
 //! Optional runtime diagnostics with bounded retention and off-thread file I/O.
 
+mod output;
+
 use super::direct::RenderMetrics;
 use crate::playback::SoundPlayer;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use output::{OutputPaths, OutputWriter, WriterSummary};
+use std::io;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -12,15 +14,17 @@ use std::time::Instant;
 // Include space for the record being produced and the one being written.
 const QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_QUEUED_BLOCKS: usize = 1024;
-// RIFF uses 32-bit chunk sizes; reserve ample room for hound's format headers.
-const MAX_WAV_SAMPLES: u64 = (u32::MAX as u64 - 4096) / size_of::<f32>() as u64;
 
 /// Owns a diagnostic writer while borrowing the player's final underrun counters.
 /// Dropping closes its bounded queue and joins the writer before saving metadata.
 pub(super) struct RuntimeDiagnostics<'a> {
+    /// Callback counters remain available until the diagnostic writer has joined.
     player: &'a SoundPlayer,
+    /// Bounded recording session, absent when disabled or initialization failed.
     recorder: Option<Recorder>,
+    /// Monotonic origin for block timing rows.
     started: Instant,
+    /// Validated channel count used to measure each interleaved block.
     channels: usize,
 }
 
@@ -104,7 +108,11 @@ impl Drop for RuntimeDiagnostics<'_> {
         };
         // Snapshot before joining: device callbacks can still run while files flush.
         let (underruns, missing) = self.player.starvation_counts();
-        let starvation_times = self.player.starvation_time_range_seconds();
+        let playback = PlaybackSummary {
+            underruns,
+            missing,
+            starvation_times: self.player.starvation_time_range_seconds(),
+        };
         let summary_path = recorder.paths.summary_path();
         let (summary, omitted, error) = recorder.finish();
         if let Some(error) = &error {
@@ -116,101 +124,18 @@ impl Drop for RuntimeDiagnostics<'_> {
                 summary.capture_truncated
             );
         }
-        let result = std::fs::write(
-            summary_path,
-            format!(
-                "{{\"underrun_callbacks\":{underruns},\
-                 \"missing_frames\":{missing},\
-                 \"first_underrun_seconds_since_player_creation\":{},\
-                 \"last_underrun_seconds_since_player_creation\":{},\
-                 \"diagnostic_blocks_written\":{},\
-                 \"diagnostic_blocks_omitted\":{omitted},\
-                 \"capture_samples_written\":{},\
-                 \"capture_truncated\":{},\
-                 \"diagnostic_write_failed\":{}}}\n",
-                starvation_times.map_or_else(|| "null".to_owned(), |(first, _)| first.to_string()),
-                starvation_times.map_or_else(|| "null".to_owned(), |(_, last)| last.to_string()),
-                summary.blocks_written,
-                summary.capture_samples_written,
-                summary.capture_truncated,
-                error.is_some(),
-            ),
-        );
+        let result = summary.write_metadata(&summary_path, playback, omitted, error.is_some());
         if let Err(error) = result {
             eprintln!("Could not save runtime diagnostic metadata: {error}");
         }
     }
 }
 
-#[derive(Clone)]
-struct OutputPaths {
-    timing: Option<PathBuf>,
-    capture: Option<PathBuf>,
-}
-
-impl OutputPaths {
-    fn validate(&self) -> io::Result<()> {
-        if self.timing.is_none() && self.capture.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "No diagnostic output configured",
-            ));
-        }
-        let mut paths = Vec::new();
-        for path in self
-            .timing
-            .iter()
-            .chain(self.capture.iter())
-            .chain(std::iter::once(&self.summary_path()))
-        {
-            let key = output_path_key(path)?;
-            if paths.contains(&key) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Timing, WAV and metadata destinations must be distinct",
-                ));
-            }
-            paths.push(key);
-        }
-        Ok(())
-    }
-
-    fn summary_path(&self) -> PathBuf {
-        self.timing
-            .as_ref()
-            .or(self.capture.as_ref())
-            .expect("one diagnostic output is enabled")
-            .with_extension("audio.json")
-    }
-}
-
-// Resolve existing files and existing parent directories before any output is
-// truncated. Windows destinations must also compare without case distinctions.
-fn output_path_key(path: &Path) -> io::Result<String> {
-    let absolute = std::path::absolute(path)?;
-    let normalized = match absolute.canonicalize() {
-        Ok(existing) => existing,
-        Err(_) => {
-            let parent = absolute.parent().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Diagnostic destination has no parent",
-                )
-            })?;
-            let name = absolute.file_name().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Diagnostic destination must be a file",
-                )
-            })?;
-            parent.canonicalize()?.join(name)
-        }
-    };
-    Ok(if cfg!(windows) {
-        normalized.to_string_lossy().to_lowercase()
-    } else {
-        normalized.to_string_lossy().into_owned()
-    })
+/// Callback counters sampled before joining, while the device stream is still alive.
+struct PlaybackSummary {
+    underruns: u64,
+    missing: u64,
+    starvation_times: Option<(f64, f64)>,
 }
 
 struct BlockMeasurement {
@@ -247,6 +172,7 @@ impl RecordQueue {
     }
 }
 
+/// Owns the bounded producer queue and joins its file writer when recording finishes.
 struct Recorder {
     paths: OutputPaths,
     queue: RecordQueue,
@@ -293,20 +219,18 @@ impl Recorder {
                 "One diagnostic block exceeds the recording memory budget",
             ));
         }
-        paths.validate()?;
         // Opening files happens before playback produces blocks, not in its callback.
         let mut outputs = OutputWriter::new(&paths, sample_rate, channels)?;
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let worker = thread::Builder::new()
             .name("sound-engine-diagnostics".into())
             .spawn(move || {
-                let result = (|| {
-                    for record in receiver {
-                        outputs.write(record)?;
-                    }
-                    outputs.finish()
-                })();
-                (outputs.summary, result)
+                let result = receiver
+                    .into_iter()
+                    .try_for_each(|record| outputs.write(record));
+                // Finalize both outputs even when a preceding block write failed.
+                let finalized = outputs.finish();
+                (outputs.summary, result.and(finalized))
             })?;
         Ok(Self {
             paths,
@@ -336,110 +260,10 @@ impl Recorder {
     }
 }
 
-#[derive(Default)]
-struct WriterSummary {
-    blocks_written: u64,
-    capture_samples_written: u64,
-    capture_truncated: bool,
-}
-
-struct OutputWriter {
-    timing: Option<BufWriter<File>>,
-    capture: Option<hound::WavWriter<BufWriter<File>>>,
-    summary: WriterSummary,
-    max_capture_samples: u64,
-}
-
-impl OutputWriter {
-    fn new(paths: &OutputPaths, sample_rate: u32, channels: usize) -> io::Result<Self> {
-        let timing = paths
-            .timing
-            .as_ref()
-            .map(|path| {
-                let mut file = BufWriter::new(File::create(path)?);
-                writeln!(
-                    file,
-                    concat!(
-                        "block,elapsed_seconds,render_ms,left_rms,right_rms,",
-                        "trace_ms,ir_prepare_ms,convolution_ms,",
-                        "spatial_updates,spatial_update_age_ms,spatial_deferred",
-                    )
-                )?;
-                Ok::<_, io::Error>(file)
-            })
-            .transpose()?;
-        let capture = paths
-            .capture
-            .as_ref()
-            .map(|path| {
-                hound::WavWriter::create(
-                    path,
-                    hound::WavSpec {
-                        channels: channels as u16,
-                        sample_rate,
-                        bits_per_sample: 32,
-                        sample_format: hound::SampleFormat::Float,
-                    },
-                )
-                .map_err(io::Error::other)
-            })
-            .transpose()?;
-        Ok(Self {
-            timing,
-            capture,
-            summary: WriterSummary::default(),
-            max_capture_samples: MAX_WAV_SAMPLES,
-        })
-    }
-
-    fn write(&mut self, record: BlockRecord) -> io::Result<()> {
-        if let Some(capture) = &mut self.capture {
-            if record.samples.len() as u64
-                > self
-                    .max_capture_samples
-                    .saturating_sub(self.summary.capture_samples_written)
-            {
-                self.summary.capture_truncated = true;
-            }
-            if !self.summary.capture_truncated {
-                for sample in record.samples {
-                    capture.write_sample(sample).map_err(io::Error::other)?;
-                }
-                self.summary.capture_samples_written = capture.len() as u64;
-            }
-        }
-        if let (Some(file), Some(block)) = (&mut self.timing, record.measurement) {
-            writeln!(
-                file,
-                "{},{},{},{},{},{},{},{},{},{},{}",
-                self.summary.blocks_written,
-                block.elapsed,
-                block.render_ms,
-                block.rms[0],
-                block.rms[1],
-                block.metrics.trace_ms,
-                block.metrics.ir_prepare_ms,
-                block.metrics.convolution_ms,
-                block.metrics.spatial_updates,
-                block.metrics.spatial_update_age_ms,
-                u8::from(block.metrics.spatial_deferred)
-            )?;
-        }
-        self.summary.blocks_written += 1;
-        Ok(())
-    }
-
-    fn finish(&mut self) -> io::Result<()> {
-        // Attempt both flushes even if one output has failed.
-        let timing = self.timing.as_mut().map_or(Ok(()), Write::flush);
-        let capture = self
-            .capture
-            .take()
-            .map_or(Ok(()), |writer| writer.finalize().map_err(io::Error::other));
-        timing.and(capture)
-    }
-}
-
 #[cfg(test)]
 #[path = "../../tests/unit/engine/diagnostics.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/diagnostics.rs"]
+mod test_support;
