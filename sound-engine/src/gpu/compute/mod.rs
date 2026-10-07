@@ -113,35 +113,6 @@ impl ComputeContext {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    fn drop_command_pool(&self) {
-        if let Ok(mut available) = self.available_command_buffers.lock() {
-            available.clear();
-        }
-
-        {
-            let queue = self
-                .queue
-                .write()
-                .unwrap_or_else(|error| error.into_inner());
-            unsafe {
-                self.device_context
-                    .device
-                    .queue_wait_idle(queue.handle)
-                    .ok();
-                self.device_context
-                    .device
-                    .destroy_command_pool(queue.command_pool, None);
-            }
-        }
-    }
-
-    fn drop_pipelines(&self) {
-        self.pipelines
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-    }
-
     /// Releases a private synchronous user's pipeline after its final dispatch.
     pub(crate) fn release_pipeline(&self, id: PipelineId) {
         self.pipelines
@@ -186,33 +157,20 @@ impl ComputeContext {
 
 impl Drop for ComputeContext {
     fn drop(&mut self) {
-        // Device loss and poisoned locks must not turn cleanup into a second
-        // panic. A lost device still permits Vulkan object destruction.
+        // Draining recycles every tracked fence and descriptor set even after
+        // device loss. Field-owned pipelines retain the device through their drop.
         let _ = self.wait_for_all();
         let queue = self
             .queue
             .get_mut()
             .unwrap_or_else(|error| error.into_inner());
         unsafe {
+            // Native FFT initialization also uses this queue outside the submission registry.
             let _ = self.device_context.device.queue_wait_idle(queue.handle);
+            self.device_context
+                .device
+                .destroy_command_pool(queue.command_pool, None);
         }
-        let submissions: Vec<_> = self
-            .in_flight
-            .get_mut()
-            .unwrap_or_else(|error| error.into_inner())
-            .drain()
-            .map(|(_, value)| value)
-            .collect();
-        for submission in submissions {
-            unsafe {
-                self.device_context
-                    .device
-                    .destroy_fence(submission.fence, None);
-            }
-            let _ = self.release_descriptor_sets(submission.command_buffer);
-        }
-        self.drop_pipelines();
-        self.drop_command_pool();
     }
 }
 

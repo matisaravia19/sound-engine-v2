@@ -1,6 +1,9 @@
 use super::*;
 use crate::core::error::ErrorCode;
+use crate::gpu::StorageBufferWrite;
 use crate::gpu::backend::VkBackend;
+use crate::gpu::compute::{ComputePipelineSpec, DispatchSpec, PushConstantSpec};
+use crate::gpu::shader::ShaderStage;
 
 #[test]
 fn buffer_usage_rejects_disabled_extensions_and_unknown_bits() {
@@ -29,6 +32,82 @@ fn audit_buffer_retains_device_after_backend_drop() {
     drop(gpu);
     assert!(device.upgrade().is_some());
     drop(buffer);
+    assert!(device.upgrade().is_none());
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
+fn context_teardown_completes_discarded_submissions_before_releasing_pipelines() {
+    let gpu = VkBackend::new().unwrap();
+    let compute = gpu.memory().compute.clone();
+    let compute_owner = Arc::downgrade(&compute);
+    let device = Arc::downgrade(&gpu.device_context());
+    let signal = gpu
+        .memory()
+        .create_host_device_address_buffer(8, vk::BufferUsageFlags::STORAGE_BUFFER)
+        .unwrap();
+    let filter = gpu
+        .memory()
+        .create_host_device_address_buffer(8, vk::BufferUsageFlags::STORAGE_BUFFER)
+        .unwrap();
+    gpu.memory()
+        .write_mapped_bytes(&signal, bytemuck::cast_slice(&[1.0_f32, 2.0]))
+        .unwrap();
+    gpu.memory()
+        .write_mapped_bytes(&filter, bytemuck::cast_slice(&[3.0_f32, 4.0]))
+        .unwrap();
+    let shader_id = gpu
+        .shaders()
+        .load_glsl_file(
+            ShaderStage::Compute,
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/auralization/shaders/multiply.comp.glsl"
+            ),
+        )
+        .unwrap();
+    let pipeline_id = compute
+        .create_pipeline(ComputePipelineSpec {
+            shader_id,
+            storage_buffer_bindings: vec![0, 1],
+            push_constant_ranges: vec![PushConstantSpec::new(0, size_of::<u32>() as u32)],
+        })
+        .unwrap();
+
+    // Isolate ComputeContext's destructor from the RT context's earlier drain.
+    drop(gpu);
+    let dispatch = DispatchSpec {
+        pipeline_id,
+        storage_buffers: vec![
+            StorageBufferWrite::new(0, signal.buffer),
+            StorageBufferWrite::new(1, filter.buffer),
+        ],
+        push_constants: 1_u32.to_ne_bytes().to_vec(),
+        push_constant_offset: 0,
+        groups: [1, 1, 1],
+    };
+    // Discard the completion handle but retain both buffers through context teardown.
+    let _ =
+        unsafe { compute.submit_compute(|command| compute.record_dispatch(command, &dispatch)) }
+            .unwrap();
+    drop(compute);
+
+    assert!(compute_owner.upgrade().is_none());
+    assert!(device.upgrade().is_some());
+    signal
+        .allocator
+        .invalidate_allocation(&signal.allocation, 0, signal.size)
+        .unwrap();
+    let mapped = signal
+        .allocator
+        .get_allocation_info(&signal.allocation)
+        .mapped_data;
+    assert!(!mapped.is_null());
+    // Teardown completed the shader-to-host dependency before this mapped read.
+    let result = unsafe { mapped.cast::<[f32; 2]>().read_unaligned() };
+    assert_eq!(result, [-5.0, 10.0]);
+    drop(signal);
+    drop(filter);
     assert!(device.upgrade().is_none());
 }
 

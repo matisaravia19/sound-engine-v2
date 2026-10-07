@@ -83,20 +83,9 @@ impl RtContext {
 
 impl Drop for RtContext {
     fn drop(&mut self) {
+        // Registry entries retain their dependent storage and device. Once traces
+        // finish, normal field destruction releases them in dependency-safe order.
         let _ = self.compute.wait_for_all();
-
-        self.pipelines
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.tlas
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.blas
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
     }
 }
 

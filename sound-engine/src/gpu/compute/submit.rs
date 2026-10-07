@@ -188,7 +188,7 @@ impl ComputeContext {
         wait_error.map_or(Ok(()), |error| Err(error.into()))
     }
 
-    /// Completes tracked submissions without losing ownership after a failed wait.
+    /// Completes and recycles tracked submissions, returning the first error after draining all.
     pub(crate) fn wait_for_all(&self) -> SoundResult<()> {
         let mut first_error = None;
         loop {
