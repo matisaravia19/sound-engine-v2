@@ -122,11 +122,10 @@ fn audit_scene_sync_reuses_independent_geometry_and_updates_gpu_records() {
     assert_eq!(resources.diffraction_blas_id(), diffraction);
     assert_eq!(
         read_records::<GpuObject>(&gpu, resources.object_buffer())[0].vertex_address,
-        gpu.memory().buffer_device_address(
-            &resources.geometry.uploaded_meshes[&1]
-                ._buffers
-                .vertex_buffer
-        )
+        resources.geometry.uploaded_meshes[&1]
+            ._buffers
+            .vertex_buffer
+            .device_address()
     );
     let tlas = resources.tlas_id();
     let object_buffer = resources.object_buffer().buffer;

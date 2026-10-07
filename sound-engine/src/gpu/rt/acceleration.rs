@@ -68,7 +68,7 @@ impl RtContext {
             ));
         }
         // Geometry build inputs reference buffers by device address, not descriptors.
-        let vertex_address = self.memory.buffer_device_address(&spec.mesh.vertex_buffer);
+        let vertex_address = spec.mesh.vertex_buffer.device_address();
         let mut triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vk::DeviceOrHostAddressConstKHR {
@@ -80,7 +80,7 @@ impl RtContext {
         let primitive_count = if let Some(index_buffer) = &spec.mesh.index_buffer {
             triangles = triangles.index_type(vk::IndexType::UINT32).index_data(
                 vk::DeviceOrHostAddressConstKHR {
-                    device_address: self.memory.buffer_device_address(index_buffer),
+                    device_address: index_buffer.device_address(),
                 },
             );
             spec.mesh.index_count / 3
@@ -132,7 +132,7 @@ impl RtContext {
 
         let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
             .data(vk::DeviceOrHostAddressConstKHR {
-                device_address: self.memory.buffer_device_address(&spec.aabbs.aabb_buffer),
+                device_address: spec.aabbs.aabb_buffer.device_address(),
             })
             .stride(AABB_STRIDE);
 
@@ -181,11 +181,9 @@ impl RtContext {
             std::mem::size_of_val(instances.as_slice()) as vk::DeviceSize,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
         )?;
-        self.memory.write_mapped_bytes(
-            &instance_buffer,
-            acceleration_instances_as_bytes(instances.as_slice()),
-        )?;
-        let instance_address = self.memory.buffer_device_address(&instance_buffer);
+        instance_buffer
+            .write_mapped_bytes(acceleration_instances_as_bytes(instances.as_slice()))?;
+        let instance_address = instance_buffer.device_address();
 
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::default()
             .array_of_pointers(false)
@@ -337,13 +335,10 @@ impl RtContext {
             scratch_allocation_size,
             vk::BufferUsageFlags::STORAGE_BUFFER,
         )?;
-        let scratch_address = align_device_address(
-            self.memory.buffer_device_address(&scratch),
-            scratch_alignment,
-        )
-        .ok_or_else(|| {
-            SoundError::invalid_state("Acceleration-structure scratch address overflow")
-        })?;
+        let scratch_address = align_device_address(scratch.device_address(), scratch_alignment)
+            .ok_or_else(|| {
+                SoundError::invalid_state("Acceleration-structure scratch address overflow")
+            })?;
 
         let create_info = vk::AccelerationStructureCreateInfoKHR::default()
             .buffer(storage.buffer)

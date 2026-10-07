@@ -303,14 +303,12 @@ fn upload_scene_buffers(
             material_index,
             indexed: u32::from(!mesh.indices.is_empty()),
             _pad: [0; 2],
-            vertex_address: gpu
-                .memory()
-                .buffer_device_address(&uploaded._buffers.vertex_buffer),
+            vertex_address: uploaded._buffers.vertex_buffer.device_address(),
             index_address: uploaded
                 ._buffers
                 .index_buffer
                 .as_ref()
-                .map_or(0, |buffer| gpu.memory().buffer_device_address(buffer)),
+                .map_or(0, BufferHandle::device_address),
             object_to_world: object.transform.to_cols_array_2d(),
         });
     }

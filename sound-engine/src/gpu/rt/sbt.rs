@@ -69,7 +69,7 @@ impl ShaderBindingTable {
             total_size as vk::DeviceSize,
             vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR,
         )?;
-        let allocation_address = memory.buffer_device_address(&sbt);
+        let allocation_address = sbt.device_address();
         let base_address = allocation_address
             .checked_add(base_alignment as u64 - 1)
             .map(|address| address & !(base_alignment as u64 - 1))
@@ -83,7 +83,7 @@ impl ShaderBindingTable {
                 .copy_from_slice(&handles[src_offset..src_offset + handle_size]);
         }
 
-        memory.write_mapped_bytes(&sbt, &sbt_bytes)?;
+        sbt.write_mapped_bytes(&sbt_bytes)?;
 
         Ok(Self {
             _buffer: sbt,

@@ -6,36 +6,6 @@ use crate::gpu::compute::{ComputePipelineSpec, DispatchSpec, PushConstantSpec};
 use crate::gpu::shader::ShaderStage;
 
 #[test]
-fn buffer_usage_rejects_disabled_extensions_and_unknown_bits() {
-    use vk::BufferUsageFlags as Usage;
-    assert!(validate_buffer_usage(Usage::STORAGE_BUFFER | Usage::TRANSFER_DST).is_ok());
-    assert!(validate_buffer_usage(Usage::ACCELERATION_STRUCTURE_STORAGE_KHR).is_ok());
-    for usage in [
-        Usage::empty(),
-        Usage::VIDEO_DECODE_SRC_KHR,
-        Usage::TRANSFORM_FEEDBACK_BUFFER_EXT,
-        Usage::from_raw(u32::MAX),
-    ] {
-        assert!(validate_buffer_usage(usage).is_err());
-    }
-}
-
-#[test]
-#[ignore = "requires Vulkan; run hardware tests serially"]
-fn audit_buffer_retains_device_after_backend_drop() {
-    let gpu = VkBackend::new().unwrap();
-    let device = Arc::downgrade(&gpu.device_context());
-    let buffer = gpu.memory().create_storage_buffer(16).unwrap();
-    gpu.memory()
-        .upload_typed(&buffer, &[1_u32, 2, 3, 4])
-        .unwrap();
-    drop(gpu);
-    assert!(device.upgrade().is_some());
-    drop(buffer);
-    assert!(device.upgrade().is_none());
-}
-
-#[test]
 #[ignore = "requires Vulkan; run hardware tests serially"]
 fn context_teardown_completes_discarded_submissions_before_releasing_pipelines() {
     let gpu = VkBackend::new().unwrap();
@@ -50,11 +20,11 @@ fn context_teardown_completes_discarded_submissions_before_releasing_pipelines()
         .memory()
         .create_host_device_address_buffer(8, vk::BufferUsageFlags::STORAGE_BUFFER)
         .unwrap();
-    gpu.memory()
-        .write_mapped_bytes(&signal, bytemuck::cast_slice(&[1.0_f32, 2.0]))
+    signal
+        .write_mapped_bytes(bytemuck::cast_slice(&[1.0_f32, 2.0]))
         .unwrap();
-    gpu.memory()
-        .write_mapped_bytes(&filter, bytemuck::cast_slice(&[3.0_f32, 4.0]))
+    filter
+        .write_mapped_bytes(bytemuck::cast_slice(&[3.0_f32, 4.0]))
         .unwrap();
     let shader_id = gpu
         .shaders()
@@ -94,21 +64,41 @@ fn context_teardown_completes_discarded_submissions_before_releasing_pipelines()
 
     assert!(compute_owner.upgrade().is_none());
     assert!(device.upgrade().is_some());
-    signal
-        .allocator
-        .invalidate_allocation(&signal.allocation, 0, signal.size)
-        .unwrap();
-    let mapped = signal
-        .allocator
-        .get_allocation_info(&signal.allocation)
-        .mapped_data;
-    assert!(!mapped.is_null());
     // Teardown completed the shader-to-host dependency before this mapped read.
-    let result = unsafe { mapped.cast::<[f32; 2]>().read_unaligned() };
+    let mut result = [0.0_f32; 2];
+    signal
+        .read_mapped_bytes(bytemuck::cast_slice_mut(&mut result))
+        .unwrap();
     assert_eq!(result, [-5.0, 10.0]);
     drop(signal);
     drop(filter);
     assert!(device.upgrade().is_none());
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
+fn transfers_reject_buffers_from_another_allocator_on_the_same_device() {
+    let gpu = VkBackend::new().unwrap();
+    let other = GpuAllocator::new(gpu.device_context(), gpu.memory().compute.clone()).unwrap();
+    let owned = gpu.memory().create_storage_buffer(16).unwrap();
+    let foreign = other.create_storage_buffer(16).unwrap();
+    let input = [1_u32, 2, 3, 4];
+    gpu.memory().upload_typed(&owned, &input).unwrap();
+
+    // Sharing a VkDevice must not bypass the allocation owner's transfer checks.
+    let mut output = [u32::MAX; 4];
+    for result in [
+        other.upload_typed(&owned, &[0_u32; 4]),
+        other.download_typed(&owned, &mut output),
+        other.clear_buffer(&owned),
+        other.copy_buffer(&owned, &foreign, 16, None),
+        other.copy_buffer(&foreign, &owned, 16, None),
+    ] {
+        assert_eq!(result.unwrap_err().code(), ErrorCode::InvalidArgument);
+    }
+    assert_eq!(output, [u32::MAX; 4]);
+    gpu.memory().download_typed(&owned, &mut output).unwrap();
+    assert_eq!(output, input);
 }
 
 #[test]

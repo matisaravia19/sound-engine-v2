@@ -1,12 +1,16 @@
+//! Buffer allocation entry points and serialized staging transfers.
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkDeviceContext;
 use crate::gpu::compute::{BufferBarrierSpec, ComputeContext};
 use ash::vk;
 use bytemuck::Pod;
 use std::sync::{Arc, Mutex};
-use vk_mem::{
-    Alloc, Allocation, AllocationCreateFlags, Allocator, AllocatorCreateFlags, MemoryUsage,
-};
+use vk_mem::{AllocationCreateFlags, MemoryUsage};
+
+mod buffer;
+
+use buffer::AllocatorOwner;
+pub use buffer::{BufferHandle, BufferInfo};
 
 const STAGING_BUFFER_INITIAL_SIZE: vk::DeviceSize = 16 * 1024 * 1024; // 16 MB
 
@@ -21,72 +25,13 @@ pub struct GpuAllocator {
     staging_buffer: Mutex<BufferHandle>,
 }
 
-/// Owns a VMA buffer, its allocator, and the device/loader required for destruction.
-/// Submitted work must finish before the buffer is released or mapped on the host.
-pub struct BufferHandle {
-    info: BufferInfo,
-    allocation: Allocation,
-    allocator: Arc<AllocatorOwner>,
-    mapped_access: Mutex<()>,
-    usage: vk::BufferUsageFlags,
-}
-
-/// Read-only allocation metadata exposed by `BufferHandle` through `Deref`.
-/// Mutating a separate copy cannot alter the owner's bounds or destruction handle.
-pub struct BufferInfo {
-    /// Raw Vulkan buffer handle used in descriptors and command recording.
-    pub buffer: vk::Buffer,
-    /// Buffer size in bytes.
-    pub size: vk::DeviceSize,
-}
-
-impl std::ops::Deref for BufferHandle {
-    type Target = BufferInfo;
-
-    fn deref(&self) -> &BufferInfo {
-        &self.info
-    }
-}
-
-// VMA copies raw Vulkan handles; its Arc alone does not retain their owners.
-// Declaration order keeps the device alive through vmaDestroyAllocator.
-struct AllocatorOwner {
-    allocator: Allocator,
-    device_context: Arc<VkDeviceContext>,
-}
-
-impl std::ops::Deref for AllocatorOwner {
-    type Target = Allocator;
-
-    fn deref(&self) -> &Allocator {
-        &self.allocator
-    }
-}
-
 impl GpuAllocator {
     /// Owns device-address-capable allocation state and shares serialized transfers.
     pub(super) fn new(
         device_context: Arc<VkDeviceContext>,
         compute: Arc<ComputeContext>,
     ) -> SoundResult<Self> {
-        let mut allocator_info = vk_mem::AllocatorCreateInfo::new(
-            &device_context.instance,
-            &device_context.device,
-            device_context.physical_device,
-        );
-        allocator_info.flags |= AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
-        allocator_info.vulkan_api_version = vk::API_VERSION_1_3;
-        let allocator = unsafe {
-            Arc::new(AllocatorOwner {
-                allocator: Allocator::new(allocator_info).map_err(|e| {
-                    SoundError::resource_allocation_failed(format!(
-                        "GPU allocator creation failed: {e:?}"
-                    ))
-                })?,
-                device_context: device_context.clone(),
-            })
-        };
-
+        let allocator = AllocatorOwner::new(device_context.clone())?;
         let staging_buffer = Self::create_staging_buffer(&allocator, STAGING_BUFFER_INITIAL_SIZE)?;
 
         Ok(Self {
@@ -146,55 +91,6 @@ impl GpuAllocator {
             MemoryUsage::AutoPreferHost,
             AllocationCreateFlags::MAPPED | AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
         )
-    }
-
-    /// Returns the Vulkan device address for a buffer created with address usage.
-    /// Panics if the buffer belongs to another allocator or lacks address usage.
-    pub fn buffer_device_address(&self, buffer: &BufferHandle) -> vk::DeviceAddress {
-        self.validate_owner(buffer)
-            .expect("Device address buffer belongs to another allocator");
-        assert!(
-            buffer
-                .usage
-                .contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS),
-            "Buffer lacks SHADER_DEVICE_ADDRESS usage"
-        );
-        let info = vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer);
-        unsafe { self.device_context.device.get_buffer_device_address(&info) }
-    }
-
-    /// Writes bytes directly into a mapped buffer and flushes the written range.
-    pub fn write_mapped_bytes(&self, destination: &BufferHandle, data: &[u8]) -> SoundResult<()> {
-        self.validate_owner(destination)?;
-        let _access = destination
-            .mapped_access
-            .lock()
-            .map_err(|_| SoundError::poisoned_lock("Mapped buffer lock is poisoned"))?;
-        if data.len() as vk::DeviceSize > destination.size {
-            return Err(SoundError::invalid_argument(format!(
-                "Mapped write size {} exceeds destination buffer size {}",
-                data.len(),
-                destination.size
-            )));
-        }
-
-        let mapped_ptr = self
-            .allocator
-            .get_allocation_info(&destination.allocation)
-            .mapped_data;
-        if mapped_ptr.is_null() {
-            return Err(SoundError::invalid_state(
-                "Destination buffer is not mapped",
-            ));
-        }
-
-        // Mapped VMA allocations expose host memory; flush makes writes visible to the GPU.
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), mapped_ptr as *mut u8, data.len());
-        }
-        self.allocator
-            .flush_allocation(&destination.allocation, 0, data.len() as u64)?;
-        Ok(())
     }
 
     /// Fills the whole buffer with zero using the compute queue transfer path.
@@ -257,7 +153,7 @@ impl GpuAllocator {
 
         // Grow staging lazily so large scene uploads do not require a fixed cap.
         self.ensure_staging_capacity(&mut staging_buffer, copy_size)?;
-        self.write_mapped_bytes(&staging_buffer, data)?;
+        staging_buffer.write_mapped_bytes(data)?;
         self.copy_buffer(&staging_buffer, destination, copy_size, None)?;
         Ok(())
     }
@@ -297,7 +193,7 @@ impl GpuAllocator {
                 staging_buffer.buffer,
             )),
         )?;
-        self.download_from_staging(&staging_buffer, output)
+        staging_buffer.read_mapped_bytes(output)
     }
 
     /// Fills `output` with POD elements from the source buffer's prefix.
@@ -335,33 +231,6 @@ impl GpuAllocator {
         // allocation can drop here. Doubling amortizes repeated upload growth.
         let new_size = staging_buffer.size.saturating_mul(2).max(required_size);
         *staging_buffer = Self::create_staging_buffer(&self.allocator, new_size)?;
-        Ok(())
-    }
-
-    fn download_from_staging(
-        &self,
-        staging_buffer: &BufferHandle,
-        output: &mut [u8],
-    ) -> SoundResult<()> {
-        let mapped_ptr = self
-            .allocator
-            .get_allocation_info(&staging_buffer.allocation)
-            .mapped_data;
-
-        if mapped_ptr.is_null() {
-            return Err(SoundError::invalid_state("Staging buffer is not mapped"));
-        }
-
-        self.allocator
-            .invalidate_allocation(&staging_buffer.allocation, 0, output.len() as u64)?;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                mapped_ptr as *const u8,
-                output.as_mut_ptr(),
-                output.len(),
-            );
-        }
         Ok(())
     }
 
@@ -448,7 +317,7 @@ impl GpuAllocator {
         Ok(())
     }
 
-    /// Rejects cross-device buffers before calling VMA or Vulkan with their handles.
+    /// Rejects buffers from another allocator before recording work on this queue.
     pub(crate) fn validate_owner(&self, buffer: &BufferHandle) -> SoundResult<()> {
         if !Arc::ptr_eq(&self.allocator, &buffer.allocator) {
             return Err(SoundError::invalid_argument(
@@ -456,92 +325,6 @@ impl GpuAllocator {
             ));
         }
         Ok(())
-    }
-}
-
-impl AllocatorOwner {
-    fn allocate_buffer(
-        self: &Arc<Self>,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        memory_usage: MemoryUsage,
-        allocation_flags: AllocationCreateFlags,
-    ) -> SoundResult<BufferHandle> {
-        validate_buffer_usage(usage)?;
-        if size == 0 {
-            return Err(SoundError::invalid_argument(
-                "Vulkan buffers must have non-zero size",
-            ));
-        }
-        if usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER)
-            && size > self.device_context.limits.max_storage_buffer_range as u64
-        {
-            return Err(SoundError::invalid_argument(
-                "Storage buffer exceeds maxStorageBufferRange",
-            ));
-        }
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let allocation_info = vk_mem::AllocationCreateInfo {
-            usage: memory_usage,
-            flags: allocation_flags,
-            ..Default::default()
-        };
-
-        let (buffer, allocation) = unsafe {
-            self.allocator
-                .create_buffer(&buffer_info, &allocation_info)
-                .map_err(|e| {
-                    SoundError::resource_allocation_failed(format!(
-                        "Buffer allocation failed: {e:?}"
-                    ))
-                })?
-        };
-        Ok(BufferHandle {
-            info: BufferInfo {
-                buffer,
-                size,
-            },
-            allocation,
-            allocator: self.clone(),
-            mapped_access: Mutex::new(()),
-            usage,
-        })
-    }
-}
-
-// Only usages supported by the features/extensions enabled in VkBackend are legal.
-fn validate_buffer_usage(usage: vk::BufferUsageFlags) -> SoundResult<()> {
-    let supported = vk::BufferUsageFlags::TRANSFER_SRC
-        | vk::BufferUsageFlags::TRANSFER_DST
-        | vk::BufferUsageFlags::UNIFORM_TEXEL_BUFFER
-        | vk::BufferUsageFlags::STORAGE_TEXEL_BUFFER
-        | vk::BufferUsageFlags::UNIFORM_BUFFER
-        | vk::BufferUsageFlags::STORAGE_BUFFER
-        | vk::BufferUsageFlags::INDEX_BUFFER
-        | vk::BufferUsageFlags::VERTEX_BUFFER
-        | vk::BufferUsageFlags::INDIRECT_BUFFER
-        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-        | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
-        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR;
-    if usage.is_empty() || !(usage & !supported).is_empty() {
-        return Err(SoundError::unsupported_feature(
-            "Buffer usage requires disabled extensions or contains unknown bits",
-        ));
-    }
-    Ok(())
-}
-
-impl Drop for BufferHandle {
-    fn drop(&mut self) {
-        unsafe {
-            self.allocator
-                .destroy_buffer(self.info.buffer, &mut self.allocation);
-        }
     }
 }
 
