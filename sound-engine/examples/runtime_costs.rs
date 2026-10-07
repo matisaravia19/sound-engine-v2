@@ -8,6 +8,7 @@ use sound_engine::core::config::*;
 use sound_engine::core::error::SoundResult;
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::*;
+use sound_engine::{ListenerPose, PointSource};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
@@ -104,15 +105,19 @@ fn measure_gpu() -> SoundResult<()> {
         )?);
         Ok(())
     })?;
-    let mut acoustic = sound_engine::acoustics::AcousticPipeline::new(&gpu, config)?;
+    let mut acoustic = sound_engine::acoustics::AcousticPipeline::new(
+        &gpu,
+        sound_engine::acoustics::AcousticPipelineConfig {
+            sound: config.sound,
+            tracing: config.acoustics,
+            binaural: config.binaural,
+        },
+    )?;
     let mut scene = SceneManager::new();
     let query = sound_engine::acoustics::AcousticQuery {
         query_id: 1,
-        source_position: Vec3::X,
-        listener_position: Vec3::ZERO,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(Vec3::X),
+        listener: ListenerPose::new(Vec3::ZERO, -Vec3::Z, Vec3::Y),
     };
     measure("empty_scene_ir_1024_samples", 16, || {
         black_box(acoustic.build_ir_gpu(&gpu, &mut scene, query)?);

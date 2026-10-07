@@ -91,7 +91,15 @@ impl EngineCore {
     /// Creates a direct scalar engine core with an empty scene and sound bank.
     pub(super) fn new(config: EngineConfig) -> SoundResult<Self> {
         let gpu = Arc::new(VkBackend::new()?);
-        let acoustics = AcousticsEngine::new(gpu.as_ref(), config)?;
+        let acoustics = AcousticsEngine::new(
+            gpu.as_ref(),
+            crate::acoustics::AcousticPipelineConfig {
+                sound: config.sound,
+                tracing: config.acoustics,
+                binaural: config.binaural,
+            },
+            config.cache,
+        )?;
         let auralization = AuralizationEngine::new(gpu.clone(), config.sound, config.auralization)?;
 
         Ok(Self {

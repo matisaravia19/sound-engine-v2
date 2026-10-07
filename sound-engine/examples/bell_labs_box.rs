@@ -1,5 +1,7 @@
 //! Reproducible CGA02 geometry and ray-traced early IR exports.
 //! Run with --help for parameters. No measured waveforms are synthesized here.
+use sound_engine::acoustics::AcousticPipelineConfig;
+use sound_engine::{ListenerPose, PointSource};
 #[path = "support/provenance.rs"]
 mod provenance;
 #[path = "support/timing.rs"]
@@ -67,42 +69,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for seed in 7..seed_end {
             let mut scene = SceneManager::new();
             scene.load(bell_box::scene(baffle, diffraction, absorption, radius))?;
-            let config = EngineConfig {
+            let config = AcousticPipelineConfig {
                 sound: SoundConfig {
                     output_channels: OutputChannels::Mono,
                     sample_rate: 48_000,
                     ir_num_samples: 2048,
                 },
-                acoustics: AcousticsConfig {
+                tracing: AcousticsConfig {
                     listener_ray_count: rays,
                     max_bounces: bounces,
                     maximum_path_length: 343.0 * 2048.0 / 48_000.0,
                     minimum_throughput: 0.0,
                     sampling_seed: seed,
                 },
-                cache: IrCacheConfig::default(),
                 binaural: BinauralConfig::default(),
-                auralization: AuralizationConfig {
-                    block_size: 1024,
-                },
             };
             let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
             let query = AcousticQuery {
                 query_id: seed,
-                source_position: if baffle {
+                source: PointSource::new(if baffle {
                     bell_box::BAFFLE_SOURCE
                 } else {
                     bell_box::EMPTY_SOURCE
-                },
-                listener_position: if baffle {
-                    bell_box::BAFFLE_LISTENER
-                } else {
-                    bell_box::EMPTY_LISTENER
-                },
-                listener_forward: -Vec3::Z,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                }),
+                listener: ListenerPose::new(
+                    if baffle {
+                        bell_box::BAFFLE_LISTENER
+                    } else {
+                        bell_box::EMPTY_LISTENER
+                    },
+                    -Vec3::Z,
+                    Vec3::Y,
+                ),
             };
             let start = Instant::now();
             let mut ir = pipeline.build_ir_gpu(&gpu, &mut scene, query)?;

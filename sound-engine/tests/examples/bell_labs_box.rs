@@ -1,5 +1,7 @@
 use super::*;
 use acoustic_fixtures::geometry;
+use sound_engine::acoustics::AcousticPipelineConfig;
+use sound_engine::{ListenerPose, PointSource};
 
 // Backend setup shares process-wide Vulkan state; serialize GPU fixtures.
 static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -9,34 +11,27 @@ static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn diffraction_requires_visible_ray_traced_geometry() {
     let _guard = GPU_TEST_LOCK.lock().unwrap();
     let gpu = VkBackend::new().unwrap();
-    let config = EngineConfig {
+    let config = AcousticPipelineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
             sample_rate: 48_000,
             ir_num_samples: 2048,
         },
-        acoustics: AcousticsConfig {
+        tracing: AcousticsConfig {
             listener_ray_count: 262_144,
             max_bounces: 1,
             maximum_path_length: 14.0,
             minimum_throughput: 0.0,
             sampling_seed: 7,
         },
-        cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig {
-            block_size: 1024,
-        },
     };
     let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
 
     let query = AcousticQuery {
         query_id: 1,
-        source_position: bell_box::BAFFLE_SOURCE,
-        listener_position: bell_box::BAFFLE_LISTENER,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(bell_box::BAFFLE_SOURCE),
+        listener: ListenerPose::new(bell_box::BAFFLE_LISTENER, -Vec3::Z, Vec3::Y),
     };
     for variant in 0..3 {
         let mut description = bell_box::scene(true, true, 1.0, 0.05);
@@ -87,24 +82,20 @@ fn multiple_edge_paths_require_each_event_and_preserve_source_scale() {
     use glam::vec3;
     use sound_engine::scene::DiffractionEdge;
     let gpu = VkBackend::new().unwrap();
-    let mut config = EngineConfig {
+    let mut config = AcousticPipelineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
             sample_rate: 48_000,
             ir_num_samples: 8192,
         },
-        acoustics: AcousticsConfig {
+        tracing: AcousticsConfig {
             listener_ray_count: 1_048_576,
             max_bounces: 2,
             maximum_path_length: 50.0,
             minimum_throughput: 0.0,
             sampling_seed: 7,
         },
-        cache: IrCacheConfig::default(),
         binaural: BinauralConfig::default(),
-        auralization: AuralizationConfig {
-            block_size: 1024,
-        },
     };
     for edge_count in [2, 3] {
         let mut reference = Vec::<f32>::new();
@@ -153,7 +144,7 @@ fn multiple_edge_paths_require_each_event_and_preserve_source_scale() {
             }
             let mut scene = SceneManager::new();
             scene.load(description).unwrap();
-            config.acoustics.max_bounces = bounces;
+            config.tracing.max_bounces = bounces;
             let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
             let ir = pipeline
                 .build_ir(
@@ -161,19 +152,19 @@ fn multiple_edge_paths_require_each_event_and_preserve_source_scale() {
                     &mut scene,
                     AcousticQuery {
                         query_id: index,
-                        source_position: vec3(
-                            if edge_count % 2 == 0 {
-                                -0.5
-                            } else {
-                                0.5
-                            },
-                            0.0,
-                            4.0 * edge_count as f32 + 2.0,
-                        ),
-                        listener_position: vec3(0.5, 0.0, 0.0),
-                        listener_forward: Vec3::Z,
-                        listener_up: Vec3::Y,
-                        source_amplitude: amplitude,
+                        source: PointSource {
+                            position: vec3(
+                                if edge_count % 2 == 0 {
+                                    -0.5
+                                } else {
+                                    0.5
+                                },
+                                0.0,
+                                4.0 * edge_count as f32 + 2.0,
+                            ),
+                            amplitude: amplitude,
+                        },
+                        listener: ListenerPose::new(vec3(0.5, 0.0, 0.0), Vec3::Z, Vec3::Y),
                     },
                 )
                 .unwrap();

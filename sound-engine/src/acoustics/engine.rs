@@ -1,8 +1,8 @@
 use crate::acoustics::{
-    AcousticPipeline, AcousticQuery, GpuIrSnapshot, IrCache, IrCacheQuery, IrSnapshot,
-    ListenerPose, PointSource, canonicalize_listener, validate_source,
+    AcousticPipeline, AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrCache, IrSnapshot,
+    ListenerPose, PointSource,
 };
-use crate::core::config::EngineConfig;
+use crate::core::config::IrCacheConfig;
 use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
 use crate::scene::{SceneDescription, SceneManager, SceneUpdates, SceneVersion};
@@ -23,11 +23,15 @@ pub struct AcousticsEngine {
 
 impl AcousticsEngine {
     /// Creates the scalar acoustic engine with an empty scene and IR cache.
-    pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
+    pub fn new(
+        gpu: &VkBackend,
+        config: AcousticPipelineConfig,
+        cache: IrCacheConfig,
+    ) -> SoundResult<Self> {
         Ok(Self {
             scene: SceneManager::new(),
             pipeline: AcousticPipeline::new(gpu, config)?,
-            cache: IrCache::new(config.cache),
+            cache: IrCache::new(cache),
         })
     }
 
@@ -67,47 +71,22 @@ impl AcousticsEngine {
         listener: ListenerPose,
     ) -> SoundResult<GpuIrSnapshot> {
         self.pipeline.validate_backend(gpu)?;
-        validate_source(source)?;
-        let listener = canonicalize_listener(listener)?;
-
-        let cache_query = cache_query(self.scene.version(), source, listener);
-        if let Some(snapshot) = self.cache.get_ir(cache_query) {
+        let query = AcousticQuery {
+            query_id: 0,
+            source,
+            listener,
+        }
+        .canonicalized()?;
+        let scene_version = self.scene.version();
+        if let Some(snapshot) = self.cache.get_ir(scene_version, query) {
             return Ok(snapshot);
         }
 
         // Building an IR can update scene-side acceleration data, so the scene
         // manager remains mutable even though the acoustic query is read-only.
-        let snapshot = self.pipeline.build_ir_gpu(
-            gpu,
-            &mut self.scene,
-            AcousticQuery {
-                query_id: cache_query.query_id,
-                source_position: source.position,
-                listener_position: listener.position,
-                listener_forward: listener.forward,
-                listener_up: listener.up,
-                source_amplitude: source.amplitude,
-            },
-        )?;
-        self.cache.insert_ir(cache_query, snapshot.clone());
+        let snapshot = self.pipeline.build_ir_gpu(gpu, &mut self.scene, query)?;
+        self.cache.insert_ir(scene_version, query, snapshot.clone());
         Ok(snapshot)
-    }
-}
-
-/// Builds the impulse-response cache key for the current acoustic endpoints.
-fn cache_query(
-    scene_version: SceneVersion,
-    source: PointSource,
-    listener: ListenerPose,
-) -> IrCacheQuery {
-    IrCacheQuery {
-        scene_version,
-        query_id: 0,
-        source_position: source.position,
-        source_amplitude: source.amplitude,
-        listener_position: listener.position,
-        listener_forward: listener.forward,
-        listener_up: listener.up,
     }
 }
 

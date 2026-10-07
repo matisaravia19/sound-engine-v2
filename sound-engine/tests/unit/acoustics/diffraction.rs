@@ -1,12 +1,13 @@
 //! Hardware regressions for the proxy measure on edge and mirror/edge paths.
 
-use super::{AcousticPipeline, AcousticQuery};
+use super::{AcousticPipeline, AcousticPipelineConfig, AcousticQuery};
 use crate::core::config::*;
 use crate::core::error::SoundResult;
 use crate::gpu::backend::VkBackend;
 use crate::scene::{
     DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
 };
+use crate::{ListenerPose, PointSource};
 use glam::{Mat4, Vec3, vec3};
 
 fn alternating_screens(scale: f32, first_radius: f32, last_radius: f32) -> SceneDescription {
@@ -84,24 +85,20 @@ fn consecutive_edges_preserve_proxy_measure_and_scene_scale() -> SoundResult<()>
     let mut pressures = [0.0_f64; 7];
 
     for seed in [31, 32, 33, 34] {
-        let config = EngineConfig {
+        let config = AcousticPipelineConfig {
             sound: SoundConfig {
                 output_channels: OutputChannels::Mono,
                 sample_rate: 48_000,
                 ir_num_samples: 65_536,
             },
-            acoustics: AcousticsConfig {
+            tracing: AcousticsConfig {
                 listener_ray_count: 8_388_608,
                 max_bounces: 2,
                 maximum_path_length: 800.0,
                 minimum_throughput: 0.0,
                 sampling_seed: seed,
             },
-            cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig {
-                block_size: 1024,
-            },
         };
         let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
@@ -110,11 +107,8 @@ fn consecutive_edges_preserve_proxy_measure_and_scene_scale() -> SoundResult<()>
             manager.load(alternating_screens(scale, first_radius, last_radius))?;
             let query = AcousticQuery {
                 query_id: index as u32 + 1,
-                source_position: vec3(-0.5, 0.0, 10.0) * scale,
-                listener_position: vec3(0.5, 0.0, 0.0) * scale,
-                listener_forward: Vec3::Z,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(vec3(-0.5, 0.0, 10.0) * scale),
+                listener: ListenerPose::new(vec3(0.5, 0.0, 0.0) * scale, Vec3::Z, Vec3::Y),
             };
             let ir = pipeline.build_ir(&gpu, &mut manager, query)?;
             assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));
@@ -227,13 +221,13 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
     for seed in [41, 42, 43, 44] {
         for (mode, mode_pressures) in pressures.iter_mut().enumerate() {
             let floor = mode == 0;
-            let config = EngineConfig {
+            let config = AcousticPipelineConfig {
                 sound: SoundConfig {
                     output_channels: OutputChannels::Mono,
                     sample_rate: 48_000,
                     ir_num_samples: 32_768,
                 },
-                acoustics: AcousticsConfig {
+                tracing: AcousticsConfig {
                     listener_ray_count: 4_194_304,
                     max_bounces: if floor {
                         2
@@ -244,11 +238,7 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
                     minimum_throughput: 0.0,
                     sampling_seed: seed,
                 },
-                cache: IrCacheConfig::default(),
                 binaural: BinauralConfig::default(),
-                auralization: AuralizationConfig {
-                    block_size: 1024,
-                },
             };
             let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
@@ -257,19 +247,20 @@ fn initial_mirror_then_edge_matches_unfolded_reference() -> SoundResult<()> {
                 manager.load(screen_with_listener_side_floor(radius, floor))?;
                 let query = AcousticQuery {
                     query_id: index as u32,
-                    source_position: vec3(-2.0, 0.5, 0.0),
-                    listener_position: vec3(
-                        3.0,
-                        if mode == 2 {
-                            -0.8
-                        } else {
-                            0.8
-                        },
-                        0.0,
+                    source: PointSource::new(vec3(-2.0, 0.5, 0.0)),
+                    listener: ListenerPose::new(
+                        vec3(
+                            3.0,
+                            if mode == 2 {
+                                -0.8
+                            } else {
+                                0.8
+                            },
+                            0.0,
+                        ),
+                        -Vec3::X,
+                        Vec3::Y,
                     ),
-                    listener_forward: -Vec3::X,
-                    listener_up: Vec3::Y,
-                    source_amplitude: 1.0,
                 };
                 let ir = pipeline.build_ir(&gpu, &mut manager, query)?;
                 assert!(ir.samples.iter().all(|sample| sample.left.is_finite()));

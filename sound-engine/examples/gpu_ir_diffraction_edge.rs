@@ -1,14 +1,14 @@
 use glam::{Mat4, Vec3, vec3};
+use sound_engine::acoustics::AcousticPipelineConfig;
 use sound_engine::acoustics::export_ir;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AcousticsConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{
     DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
 };
+use sound_engine::{ListenerPose, PointSource};
 
 const BASELINE_IR_EXPORT_PATH: &str = "target/gpu_ir_diffraction_baseline_ir.csv";
 const DIFFRACTION_IR_EXPORT_PATH: &str = "target/gpu_ir_diffraction_edge_ir.csv";
@@ -197,7 +197,7 @@ fn doorway_position_sweep(
 ) -> SoundResult<(f64, f64, f64, f64)> {
     let mut scene = SceneManager::new();
     scene.load(doorway_scene())?;
-    let mut pipeline = AcousticPipeline::new(gpu, engine_config())?;
+    let mut pipeline = AcousticPipeline::new(gpu, acoustic_config())?;
     let mut levels = Vec::new();
 
     const SWEEP_START: f32 = -3.0;
@@ -209,11 +209,8 @@ fn doorway_position_sweep(
             &mut scene,
             AcousticQuery {
                 query_id: 100 + step,
-                source_position,
-                listener_position,
-                listener_forward: -Vec3::X,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(source_position),
+                listener: ListenerPose::new(listener_position, -Vec3::X, Vec3::Y),
             },
         )?;
         if !ir.energy.is_finite()
@@ -287,11 +284,8 @@ fn doorway_position_sweep(
             &mut scene,
             AcousticQuery {
                 query_id: 1_000 + step,
-                source_position,
-                listener_position,
-                listener_forward: -Vec3::X,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(source_position),
+                listener: ListenerPose::new(listener_position, -Vec3::X, Vec3::Y),
             },
         )?;
         boundary_levels.push(10.0 * (ir.energy as f64).max(1.0e-24).log10());
@@ -345,45 +339,41 @@ fn trace_scene_with_bounces(
 ) -> SoundResult<sound_engine::acoustics::IrSnapshot> {
     let mut scene = SceneManager::new();
     scene.load(scene_description)?;
-    let mut pipeline = AcousticPipeline::new(gpu, engine_config_with_bounces(max_bounces))?;
+    let mut pipeline = AcousticPipeline::new(gpu, acoustic_config_with_bounces(max_bounces))?;
 
     pipeline.build_ir(
         gpu,
         &mut scene,
         AcousticQuery {
             query_id,
-            source_position,
-            listener_position,
-            listener_forward: -Vec3::Z,
-            listener_up: Vec3::Y,
-            source_amplitude: 2_000.0,
+            source: PointSource {
+                position: source_position,
+                amplitude: 2_000.0,
+            },
+            listener: ListenerPose::new(listener_position, -Vec3::Z, Vec3::Y),
         },
     )
 }
 
-fn engine_config() -> EngineConfig {
-    engine_config_with_bounces(1)
+fn acoustic_config() -> AcousticPipelineConfig {
+    acoustic_config_with_bounces(1)
 }
 
-fn engine_config_with_bounces(max_bounces: u32) -> EngineConfig {
-    EngineConfig {
+fn acoustic_config_with_bounces(max_bounces: u32) -> AcousticPipelineConfig {
+    AcousticPipelineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
             sample_rate: SAMPLE_RATE,
             ir_num_samples: IR_SAMPLES,
         },
-        acoustics: AcousticsConfig {
+        tracing: AcousticsConfig {
             listener_ray_count: 131_072,
             max_bounces,
             maximum_path_length: 343.0,
             minimum_throughput: 1.0e-6,
             sampling_seed: 0,
         },
-        cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: 1024,
-        },
     }
 }
 

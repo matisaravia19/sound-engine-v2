@@ -4,6 +4,8 @@
 //! references live in `acoustic_method/reference.rs`; runtime transport is always
 //! evaluated through AcousticPipeline. CSV timing includes synchronous submission.
 
+use sound_engine::acoustics::AcousticPipelineConfig;
+use sound_engine::{ListenerPose, PointSource};
 #[path = "support/timing.rs"]
 mod timing;
 use acoustic_fixtures::geometry;
@@ -14,9 +16,7 @@ use glam::{Vec3, vec3};
 #[path = "support/provenance.rs"]
 mod provenance;
 use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, IrSample, IrSnapshot};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
-};
+use sound_engine::core::config::{AcousticsConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{SceneDescription, SceneManager};
@@ -274,17 +274,17 @@ fn trace_case(
     scene.load(case.scene.clone())?;
     let mut pipeline = AcousticPipeline::new(
         gpu,
-        engine_config(options.rays, options.seed, case.max_bounces),
+        acoustic_config(options.rays, options.seed, case.max_bounces),
     )?;
     let setup = setup_start.elapsed();
 
     let query = AcousticQuery {
         query_id: 1,
-        source_position: case.source,
-        listener_position: case.listener,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: SOURCE_AMPLITUDE,
+        source: PointSource {
+            position: case.source,
+            amplitude: SOURCE_AMPLITUDE,
+        },
+        listener: ListenerPose::new(case.listener, -Vec3::Z, Vec3::Y),
     };
 
     let cold_start = Instant::now();
@@ -319,25 +319,25 @@ fn trace_case(
     })
 }
 
-fn engine_config(listener_ray_count: u32, sampling_seed: u32, max_bounces: u32) -> EngineConfig {
-    EngineConfig {
+fn acoustic_config(
+    listener_ray_count: u32,
+    sampling_seed: u32,
+    max_bounces: u32,
+) -> AcousticPipelineConfig {
+    AcousticPipelineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
             sample_rate: SAMPLE_RATE,
             ir_num_samples: SAMPLE_COUNT,
         },
-        acoustics: AcousticsConfig {
+        tracing: AcousticsConfig {
             listener_ray_count,
             max_bounces,
             maximum_path_length: MAXIMUM_PATH_LENGTH as f32,
             minimum_throughput: 0.0,
             sampling_seed,
         },
-        cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: 1024,
-        },
     }
 }
 

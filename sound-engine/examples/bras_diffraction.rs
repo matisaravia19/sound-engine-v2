@@ -1,5 +1,7 @@
 //! Measured BRAS RS5/RS6 geometry: every exported propagation IR comes from rays.
 //! Preparation and calibration: scripts/bras_reference.py; citations: references.md.
+use sound_engine::acoustics::AcousticPipelineConfig;
+use sound_engine::{ListenerPose, PointSource};
 #[path = "support/provenance.rs"]
 mod provenance;
 #[path = "support/timing.rs"]
@@ -100,24 +102,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut scene = SceneManager::new();
         let description = bras::scene(setup, radius, diffraction);
         scene.load(description)?;
-        let config = EngineConfig {
+        let config = AcousticPipelineConfig {
             sound: SoundConfig {
                 output_channels: OutputChannels::Mono,
                 sample_rate: 44_100,
                 ir_num_samples: 11_025,
             },
-            acoustics: AcousticsConfig {
+            tracing: AcousticsConfig {
                 listener_ray_count: rays,
                 max_bounces: bounces,
                 maximum_path_length: 343.0 * 0.04,
                 minimum_throughput: 0.0,
                 sampling_seed: seed,
             },
-            cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig {
-                block_size: 1024,
-            },
         };
         let mut pipeline = AcousticPipeline::new(&gpu, config)?;
 
@@ -130,16 +128,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let mut query = AcousticQuery {
                 query_id: index as u32,
-                source_position: pair.source,
-                listener_position: pair.listener,
-                listener_forward: -Vec3::X,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(pair.source),
+                listener: ListenerPose::new(pair.listener, -Vec3::X, Vec3::Y),
             };
             // Reciprocity diagnostics swap endpoints without changing geometry,
             // source gain, or calibration; the runs CSV records this explicitly.
             if reverse {
-                std::mem::swap(&mut query.source_position, &mut query.listener_position);
+                std::mem::swap(&mut query.source.position, &mut query.listener.position);
             }
             let mut last_ir = None;
             let mut timings = Vec::with_capacity(repeats);
@@ -149,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for repetition in 0..1 + warmups + repeats {
                 let mut traced_query = query;
                 let step = repetition.saturating_sub(1 + warmups);
-                traced_query.listener_position.y += motion_height
+                traced_query.listener.position.y += motion_height
                     * (std::f32::consts::TAU * step as f32 / repeats.max(2) as f32).sin();
                 let start = Instant::now();
                 last_ir = Some(pipeline.build_ir(&gpu, &mut scene, traced_query)?);
@@ -163,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         trace_readback_ms,
                         total_ms - trace_readback_ms,
                         total_ms,
-                        traced_query.listener_position.y,
+                        traced_query.listener.position.y,
                     ));
                 }
             }

@@ -3,8 +3,28 @@
 use crate::core::error::{SoundError, SoundResult};
 use glam::Vec3;
 
+/// Source/listener pair that should produce one impulse response.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AcousticQuery {
+    /// Application-defined identifier copied into the returned IR snapshot.
+    pub query_id: u32,
+    /// Source position and reference pressure amplitude.
+    pub source: PointSource,
+    /// Listener position and orientation in world space.
+    pub listener: ListenerPose,
+}
+
+impl AcousticQuery {
+    /// Validates the source and returns an orthonormal listener basis.
+    pub(crate) fn canonicalized(mut self) -> SoundResult<Self> {
+        validate_source(self.source)?;
+        self.listener = canonicalize_listener(self.listener)?;
+        Ok(self)
+    }
+}
+
 /// Listener pose used for spatial acoustic queries.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListenerPose {
     /// Listener position in world meters.
     pub position: Vec3,
@@ -50,7 +70,7 @@ impl ListenerPose {
 }
 
 /// Point sound source rendered through the current acoustic scene.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointSource {
     /// Source position in world meters.
     pub position: Vec3,

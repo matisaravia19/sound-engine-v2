@@ -9,25 +9,22 @@ fn audit_cache_hits_reject_a_foreign_backend() {
     let foreign = VkBackend::new().unwrap();
     let mut engine = AcousticsEngine::new(
         &gpu,
-        EngineConfig {
+        AcousticPipelineConfig {
             sound: SoundConfig {
                 sample_rate: 48_000,
                 output_channels: OutputChannels::Stereo,
                 ir_num_samples: 1024,
             },
-            acoustics: AcousticsConfig {
+            tracing: AcousticsConfig {
                 listener_ray_count: 1,
                 max_bounces: 0,
                 maximum_path_length: 100.0,
                 minimum_throughput: 0.0,
                 sampling_seed: 0,
             },
-            cache: Default::default(),
             binaural: Default::default(),
-            auralization: AuralizationConfig {
-                block_size: 64,
-            },
         },
+        IrCacheConfig::default(),
     )
     .unwrap();
     let source = PointSource::new(Vec3::X);
@@ -46,27 +43,4 @@ fn audit_cache_hits_reject_a_foreign_backend() {
             .build_impulse_response_gpu(&gpu, source, listener)
             .is_ok()
     );
-}
-
-#[test]
-fn builds_cache_query_from_listener_and_source() {
-    let listener = ListenerPose {
-        position: Vec3::new(1.0, 2.0, 3.0),
-        forward: -Vec3::Z,
-        up: Vec3::Y,
-    };
-    let source = PointSource {
-        position: Vec3::new(4.0, 5.0, 6.0),
-        amplitude: 0.75,
-    };
-
-    let query = cache_query(9, source, listener);
-
-    assert_eq!(query.scene_version, 9);
-    assert_eq!(query.query_id, 0);
-    assert_eq!(query.source_position, source.position);
-    assert_eq!(query.source_amplitude, source.amplitude);
-    assert_eq!(query.listener_position, listener.position);
-    assert_eq!(query.listener_forward, listener.forward);
-    assert_eq!(query.listener_up, listener.up);
 }

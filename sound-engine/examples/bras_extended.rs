@@ -3,10 +3,11 @@
 
 use acoustic_fixtures::{read_positions, read_scene};
 use glam::Vec3;
-use sound_engine::acoustics::{AcousticPipeline, AcousticQuery};
+use sound_engine::acoustics::{AcousticPipeline, AcousticPipelineConfig, AcousticQuery};
 use sound_engine::core::config::*;
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::SceneManager;
+use sound_engine::{ListenerPose, PointSource};
 use std::{
     collections::BTreeMap,
     fs,
@@ -62,24 +63,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let gpu = VkBackend::new()?;
     for seed in 7..7 + seeds {
-        let config = EngineConfig {
+        let config = AcousticPipelineConfig {
             sound: SoundConfig {
                 output_channels: OutputChannels::Mono,
                 sample_rate: 44_100,
                 ir_num_samples: (duration * 44_100.0).ceil() as u32,
             },
-            acoustics: AcousticsConfig {
+            tracing: AcousticsConfig {
                 listener_ray_count: rays,
                 max_bounces: bounces,
                 maximum_path_length: 343.0 * duration,
                 minimum_throughput: 0.0,
                 sampling_seed: seed,
             },
-            cache: IrCacheConfig::default(),
             binaural: BinauralConfig::default(),
-            auralization: AuralizationConfig {
-                block_size: 1024,
-            },
         };
         let mut pipeline = AcousticPipeline::new(&gpu, config)?;
         let mut scene = SceneManager::new();
@@ -90,11 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let query = AcousticQuery {
                 query_id: index as u32,
-                source_position: pair.source,
-                listener_position: pair.listener,
-                listener_forward: -Vec3::X,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(pair.source),
+                listener: ListenerPose::new(pair.listener, -Vec3::X, Vec3::Y),
             };
             let mut times = Vec::new();
             let mut result = None;

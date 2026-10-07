@@ -60,3 +60,23 @@ fn listener_relative_lateral_direction_is_rotation_invariant() {
 
     assert!((rotated_lateral - lateral).abs() < 1.0e-6);
 }
+
+#[test]
+fn rejects_invalid_acoustic_query_orientation() {
+    let original = AcousticQuery {
+        query_id: 1,
+        source: PointSource::new(Vec3::Z),
+        listener: ListenerPose::default(),
+    };
+    let mut query = original;
+    query.listener.forward = Vec3::ZERO;
+    assert!(query.canonicalized().is_err());
+
+    query = original;
+    query.listener.up = query.listener.forward;
+    assert!(query.canonicalized().is_err());
+
+    query = original;
+    query.listener.up = Vec3::splat(f32::NAN);
+    assert!(query.canonicalized().is_err());
+}

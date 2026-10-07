@@ -1,5 +1,7 @@
-use crate::acoustics::{GpuIrSnapshot, IrSample, IrSnapshot};
-use crate::core::config::{EngineConfig, OutputChannels};
+use crate::acoustics::{
+    AcousticPipelineConfig, AcousticQuery, GpuIrSnapshot, IrSample, IrSnapshot,
+};
+use crate::core::config::OutputChannels;
 use crate::core::error::{SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::compute::BufferBarrierSpec;
@@ -23,30 +25,13 @@ const DIFFRACTION_INSTANCE_CUSTOM_INDEX: u32 = 0x00ff_fffe;
 const SURFACE_CONTINUATION_HIT_GROUP_OFFSET: u32 = 0;
 const DIFFRACTION_CONTINUATION_HIT_GROUP_OFFSET: u32 = 2;
 
-/// Source/listener pair that should produce one impulse response.
-#[derive(Debug, Clone, Copy)]
-pub struct AcousticQuery {
-    /// Application-defined query identifier copied into the returned IR snapshot.
-    pub query_id: u32,
-    /// Source position in world meters.
-    pub source_position: Vec3,
-    /// Listener position in world meters.
-    pub listener_position: Vec3,
-    /// Listener forward direction in world space.
-    pub listener_forward: Vec3,
-    /// Listener up direction in world space.
-    pub listener_up: Vec3,
-    /// Reference source pressure amplitude.
-    pub source_amplitude: f32,
-}
-
 /// Listener-originated acoustic path tracer that deposits pressure paths directly into a GPU IR.
 ///
 /// The ray-generation invocation owns all path state and performs sequential
 /// continuation and source-visibility traces. The RT pipeline has recursion
 /// depth one because hit shaders only report compact traversal results.
 pub struct AcousticPipeline {
-    config: EngineConfig,
+    config: AcousticPipelineConfig,
     listener_pipeline: OwnedRtPipeline,
     // One query TLAS for the latest geometry; its registry record retains every BLAS.
     query_tlas: Option<CachedQueryTlas>,
@@ -93,8 +78,8 @@ impl AcousticPipeline {
     }
 
     /// Creates the listener-originated RT pipeline and the empty-scene sentinel BLAS.
-    pub fn new(gpu: &VkBackend, config: EngineConfig) -> SoundResult<Self> {
-        validate_config(config)?;
+    pub fn new(gpu: &VkBackend, config: AcousticPipelineConfig) -> SoundResult<Self> {
+        config.validate()?;
 
         let raygen = load_shader(
             gpu,
@@ -213,11 +198,11 @@ impl AcousticPipeline {
         query: AcousticQuery,
     ) -> SoundResult<GpuIrSnapshot> {
         self.validate_backend(gpu)?;
-        validate_query(query)?;
-        let ray_count = if self.config.acoustics.max_bounces == 0 || query.source_amplitude == 0.0 {
+        let query = query.canonicalized()?;
+        let ray_count = if self.config.tracing.max_bounces == 0 || query.source.amplitude == 0.0 {
             1
         } else {
-            self.config.acoustics.listener_ray_count
+            self.config.tracing.listener_ray_count
         };
 
         let profile = std::env::var_os("SOUND_ENGINE_TRACE_PROFILE").is_some();
@@ -232,24 +217,19 @@ impl AcousticPipeline {
         let allocation_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         let constants = ListenerTracePushConstants {
-            source_position: query.source_position.to_array(),
-            source_amplitude: query.source_amplitude,
-            listener_position: query.listener_position.to_array(),
+            source_position: query.source.position.to_array(),
+            source_amplitude: query.source.amplitude,
+            listener_position: query.listener.position.to_array(),
             speed_of_sound: SPEED_OF_SOUND_METERS_PER_SECOND,
-            listener_right: query
-                .listener_forward
-                .normalize()
-                .cross(query.listener_up.normalize())
-                .normalize_or_zero()
-                .to_array(),
-            maximum_path_length: self.config.acoustics.maximum_path_length,
-            listener_ray_count: self.config.acoustics.listener_ray_count,
-            max_bounces: self.config.acoustics.max_bounces,
+            listener_right: query.listener.right().to_array(),
+            maximum_path_length: self.config.tracing.maximum_path_length,
+            listener_ray_count: self.config.tracing.listener_ray_count,
+            max_bounces: self.config.tracing.max_bounces,
             sample_rate: self.config.sound.sample_rate,
             sample_count: self.config.sound.ir_num_samples,
             output_channels: output_channels_to_shader(self.config.sound.output_channels),
-            sampling_seed: self.config.acoustics.sampling_seed,
-            minimum_throughput: self.config.acoustics.minimum_throughput,
+            sampling_seed: self.config.tracing.sampling_seed,
+            minimum_throughput: self.config.tracing.minimum_throughput,
             head_radius_meters: self.config.binaural.head_radius_meters,
             max_ild_db: self.config.binaural.max_ild_db,
         };
@@ -432,69 +412,6 @@ fn load_shader(
 
 fn shader_path(file: &str) -> PathBuf {
     PathBuf::from(SHADER_DIR).join(file)
-}
-
-fn validate_config(config: EngineConfig) -> SoundResult<()> {
-    if config.sound.sample_rate == 0 || config.sound.ir_num_samples == 0 {
-        return Err(SoundError::invalid_argument(
-            "IR sample rate and sample count must be non-zero",
-        ));
-    }
-    if config.acoustics.listener_ray_count == 0 {
-        return Err(SoundError::invalid_argument(
-            "listener_ray_count must be non-zero",
-        ));
-    }
-    if !config.acoustics.maximum_path_length.is_finite()
-        || config.acoustics.maximum_path_length <= 0.0
-    {
-        return Err(SoundError::invalid_argument(
-            "maximum_path_length must be finite and positive",
-        ));
-    }
-    if !config.acoustics.minimum_throughput.is_finite() || config.acoustics.minimum_throughput < 0.0
-    {
-        return Err(SoundError::invalid_argument(
-            "minimum_throughput must be finite and non-negative",
-        ));
-    }
-    if !config.binaural.head_radius_meters.is_finite() || config.binaural.head_radius_meters <= 0.0
-    {
-        return Err(SoundError::invalid_argument(
-            "binaural head radius must be finite and positive",
-        ));
-    }
-    if !config.binaural.max_ild_db.is_finite() || config.binaural.max_ild_db < 0.0 {
-        return Err(SoundError::invalid_argument(
-            "binaural maximum ILD must be finite and non-negative",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_query(query: AcousticQuery) -> SoundResult<()> {
-    if !query.source_position.is_finite()
-        || !query.listener_position.is_finite()
-        || !query.listener_forward.is_finite()
-        || !query.listener_up.is_finite()
-    {
-        return Err(SoundError::invalid_argument(
-            "acoustic query vectors must be finite",
-        ));
-    }
-    let forward = query.listener_forward.normalize_or_zero();
-    let up = query.listener_up.normalize_or_zero();
-    if forward == Vec3::ZERO || up == Vec3::ZERO || forward.cross(up).length_squared() <= 1.0e-8 {
-        return Err(SoundError::invalid_argument(
-            "listener forward and up vectors must be non-zero and non-collinear",
-        ));
-    }
-    if !query.source_amplitude.is_finite() || query.source_amplitude < 0.0 {
-        return Err(SoundError::invalid_argument(
-            "source amplitude must be finite and non-negative",
-        ));
-    }
-    Ok(())
 }
 
 fn ir_buffer_size(sample_count: u32) -> usize {

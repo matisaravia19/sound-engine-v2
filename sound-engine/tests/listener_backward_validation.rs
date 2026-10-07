@@ -1,13 +1,14 @@
 use glam::{Mat4, Vec3, vec3};
-use sound_engine::acoustics::{AcousticPipeline, AcousticQuery, IrSnapshot};
-use sound_engine::core::config::{
-    AcousticsConfig, AuralizationConfig, EngineConfig, IrCacheConfig, OutputChannels, SoundConfig,
+use sound_engine::acoustics::{
+    AcousticPipeline, AcousticPipelineConfig, AcousticQuery, IrSnapshot,
 };
+use sound_engine::core::config::{AcousticsConfig, OutputChannels, SoundConfig};
 use sound_engine::core::error::{SoundError, SoundResult};
 use sound_engine::gpu::backend::VkBackend;
 use sound_engine::scene::{
     DiffractionEdge, Material, MeshAsset, SceneDescription, SceneManager, SceneObject,
 };
+use sound_engine::{ListenerPose, PointSource};
 
 const SAMPLE_RATE: u32 = 48_000;
 const IR_SAMPLES: u32 = SAMPLE_RATE;
@@ -27,11 +28,8 @@ fn listener_transport_matches_reference() -> SoundResult<()> {
 fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> {
     let query = AcousticQuery {
         query_id: 1,
-        source_position: Vec3::ZERO,
-        listener_position: Vec3::X,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(Vec3::ZERO),
+        listener: ListenerPose::new(Vec3::X, -Vec3::Z, Vec3::Y),
     };
     let low = trace(gpu, empty_scene(), config(64, 0), query)?;
     let high = trace(gpu, empty_scene(), config(16_384, 0), query)?;
@@ -59,11 +57,8 @@ fn validate_direct_and_ray_count_invariance(gpu: &VkBackend) -> SoundResult<()> 
 fn validate_occlusion(gpu: &VkBackend) -> SoundResult<()> {
     let query = AcousticQuery {
         query_id: 2,
-        source_position: vec3(-1.0, 0.0, 0.0),
-        listener_position: vec3(1.0, 0.0, 0.0),
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(vec3(-1.0, 0.0, 0.0)),
+        listener: ListenerPose::new(vec3(1.0, 0.0, 0.0), -Vec3::Z, Vec3::Y),
     };
     let ir = trace(gpu, occluding_wall_scene(), config(4_096, 0), query)?;
     require(
@@ -92,15 +87,12 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
             });
             let mut settings = config(65_536, 1);
             settings.sound.ir_num_samples = 2_048;
-            settings.acoustics.maximum_path_length = 10.0;
-            settings.acoustics.sampling_seed = seed;
+            settings.tracing.maximum_path_length = 10.0;
+            settings.tracing.sampling_seed = seed;
             let query = AcousticQuery {
                 query_id: 3,
-                source_position: source,
-                listener_position: listener,
-                listener_forward: -Vec3::Z,
-                listener_up: Vec3::Y,
-                source_amplitude: 1.0,
+                source: PointSource::new(source),
+                listener: ListenerPose::new(listener, -Vec3::Z, Vec3::Y),
             };
             let ir = trace(gpu, scene, settings, query)?;
             let reflected_distance = vec3(-source.x, source.y, source.z).distance(listener);
@@ -139,11 +131,8 @@ fn validate_reflection(gpu: &VkBackend) -> SoundResult<()> {
 fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<()> {
     let query = AcousticQuery {
         query_id: 4,
-        source_position: vec3(1.0, 0.0, -1.0),
-        listener_position: vec3(-1.0, 0.0, 0.5),
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(vec3(1.0, 0.0, -1.0)),
+        listener: ListenerPose::new(vec3(-1.0, 0.0, 0.5), -Vec3::Z, Vec3::Y),
     };
     let baseline = trace(gpu, diffraction_scene(None), config(65_536, 1), query)?;
     require(
@@ -182,7 +171,7 @@ fn validate_diffraction_convergence_and_radius(gpu: &VkBackend) -> SoundResult<(
 fn trace(
     gpu: &VkBackend,
     description: SceneDescription,
-    config: EngineConfig,
+    config: AcousticPipelineConfig,
     query: AcousticQuery,
 ) -> SoundResult<IrSnapshot> {
     let mut scene = SceneManager::new();
@@ -191,25 +180,21 @@ fn trace(
     pipeline.build_ir(gpu, &mut scene, query)
 }
 
-fn config(listener_ray_count: u32, max_bounces: u32) -> EngineConfig {
-    EngineConfig {
+fn config(listener_ray_count: u32, max_bounces: u32) -> AcousticPipelineConfig {
+    AcousticPipelineConfig {
         sound: SoundConfig {
             output_channels: OutputChannels::Mono,
             sample_rate: SAMPLE_RATE,
             ir_num_samples: IR_SAMPLES,
         },
-        acoustics: AcousticsConfig {
+        tracing: AcousticsConfig {
             listener_ray_count,
             max_bounces,
             maximum_path_length: 343.0,
             minimum_throughput: 1.0e-6,
             sampling_seed: 7,
         },
-        cache: IrCacheConfig::default(),
         binaural: Default::default(),
-        auralization: AuralizationConfig {
-            block_size: 1024,
-        },
     }
 }
 
@@ -375,14 +360,11 @@ mod reflection_tests {
         let gpu = VkBackend::new()?;
         let mut settings = config(64, 0);
         settings.sound.ir_num_samples = 2_048;
-        settings.acoustics.maximum_path_length = 10.0;
+        settings.tracing.maximum_path_length = 10.0;
         let query = AcousticQuery {
             query_id: 0,
-            source_position: Vec3::ZERO,
-            listener_position: Vec3::X,
-            listener_forward: -Vec3::Z,
-            listener_up: Vec3::Y,
-            source_amplitude: 1.0,
+            source: PointSource::new(Vec3::ZERO),
+            listener: ListenerPose::new(Vec3::X, -Vec3::Z, Vec3::Y),
         };
         let ir = trace(&gpu, empty_scene(), settings, query)?;
         require(
@@ -415,14 +397,11 @@ mod reflection_tests {
         let mut scene = wall_scene(vertices, 0.36, 0.15);
         let mut settings = config(4_194_304, 2);
         settings.sound.ir_num_samples = 2_048;
-        settings.acoustics.maximum_path_length = 12.0;
+        settings.tracing.maximum_path_length = 12.0;
         let query = AcousticQuery {
             query_id: 0,
-            source_position: vec3(4.0, 1.0, 0.0),
-            listener_position: vec3(2.0, 1.0, 1.0),
-            listener_forward: -Vec3::X,
-            listener_up: Vec3::Y,
-            source_amplitude: 1.0,
+            source: PointSource::new(vec3(4.0, 1.0, 0.0)),
+            listener: ListenerPose::new(vec3(2.0, 1.0, 1.0), -Vec3::X, Vec3::Y),
         };
         let reference = trace(&gpu, scene.clone(), settings, query)?;
         scene.diffraction_edges.push(DiffractionEdge {
@@ -439,7 +418,7 @@ mod reflection_tests {
             diffraction_radius: 40.0,
         });
         let exhausted = trace(&gpu, scene.clone(), settings, query)?;
-        settings.acoustics.max_bounces = 3;
+        settings.tracing.max_bounces = 3;
         let with_proxy = trace(&gpu, scene, settings, query)?;
         let late_start = (9.0 * SAMPLE_RATE as f32 / 343.0) as usize;
         require(
@@ -496,11 +475,8 @@ mod reflection_tests {
         );
         let query = AcousticQuery {
             query_id: 0,
-            source_position: vec3(2.0, 1.0, 0.0),
-            listener_position: vec3(2.0, 1.0, 1.0),
-            listener_forward: -Vec3::X,
-            listener_up: Vec3::Y,
-            source_amplitude: 1.0,
+            source: PointSource::new(vec3(2.0, 1.0, 0.0)),
+            listener: ListenerPose::new(vec3(2.0, 1.0, 1.0), -Vec3::X, Vec3::Y),
         };
         let reflected_distance = 17.0_f32.sqrt();
         let reflected_sample = (reflected_distance * SAMPLE_RATE as f32 / 343.0).round() as usize;
@@ -518,12 +494,12 @@ mod reflection_tests {
         // its mean over a fixed seed set, retaining the 3% pressure tolerance.
         // This is a convergence control, not the real-time benchmark budget.
         let mean_arrivals = |scene: &SceneDescription,
-                             mut settings: EngineConfig|
+                             mut settings: AcousticPipelineConfig|
          -> SoundResult<([f32; 2], [f32; 2])> {
             let mut direct = [0.0; 2];
             let mut reflected = [0.0; 2];
             for seed in 7..15 {
-                settings.acoustics.sampling_seed = seed;
+                settings.tracing.sampling_seed = seed;
                 let ir = trace(&gpu, scene.clone(), settings, query)?;
                 let sample_direct = pressure(&ir, direct_sample);
                 let sample_reflected = pressure(&ir, reflected_sample);
@@ -543,7 +519,7 @@ mod reflection_tests {
             let mut settings = config(8_388_608, 1);
             // Both arrivals fit in 43 ms; no long IR or playback queue is needed.
             settings.sound.ir_num_samples = 2_048;
-            settings.acoustics.maximum_path_length = 10.0;
+            settings.tracing.maximum_path_length = 10.0;
             settings.sound.output_channels = channels;
             let reference = trace(&gpu, scene.clone(), settings, query)?;
             let direct = pressure(&reference, direct_sample);
@@ -575,7 +551,7 @@ mod reflection_tests {
                 "a proxy must consume the sole interaction before the mirror wall",
             )?;
 
-            settings.acoustics.max_bounces = 2;
+            settings.tracing.max_bounces = 2;
             let (next_direct, next_reflected) = mean_arrivals(&scene, settings)?;
             eprintln!(
                 "{channels:?}: direct {direct:?} -> {next_direct:?}, reflected {reflected:?} -> {next_reflected:?}"
@@ -609,7 +585,7 @@ mod reflection_tests {
                 lost_reflected[0].hypot(lost_reflected[1]) < 1.0e-6,
                 "two straight proxies must exhaust two interactions before the wall",
             )?;
-            settings.acoustics.max_bounces = 3;
+            settings.tracing.max_bounces = 3;
             let (_, recovered) = mean_arrivals(&scene, settings)?;
             eprintln!("{channels:?}: two proxies, budget3 reflected {recovered:?}");
             for channel in 0..2 {

@@ -59,7 +59,16 @@ fn exercise_engine_lifecycle(gpu: &Arc<VkBackend>) {
             block_size: 64,
         },
     };
-    let mut acoustic = AcousticsEngine::new(gpu, config).unwrap();
+    let mut acoustic = AcousticsEngine::new(
+        gpu,
+        crate::acoustics::AcousticPipelineConfig {
+            sound: config.sound,
+            tracing: config.acoustics,
+            binaural: config.binaural,
+        },
+        config.cache,
+    )
+    .unwrap();
     let mesh = MeshAsset {
         id: 1,
         vertices: vec![

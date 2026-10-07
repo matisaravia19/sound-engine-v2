@@ -1,6 +1,7 @@
 //! CPU reference checks for acoustic transport and query validation.
 
 use super::*;
+use crate::{ListenerPose, PointSource};
 
 fn power_cosine_pdf(cosine: f32, exponent: f32) -> f32 {
     if !cosine.is_finite() || !exponent.is_finite() || cosine <= 0.0 || exponent < 0.0 {
@@ -111,36 +112,29 @@ fn analytic_binaural_estimate(
     ([half_itd_samples, -half_itd_samples], gains)
 }
 
-fn test_config() -> EngineConfig {
-    EngineConfig {
+fn test_config() -> AcousticPipelineConfig {
+    AcousticPipelineConfig {
         sound: crate::core::config::SoundConfig {
             output_channels: OutputChannels::Binaural,
             sample_rate: 48_000,
             ir_num_samples: 16_384,
         },
-        acoustics: crate::core::config::AcousticsConfig {
+        tracing: crate::core::config::AcousticsConfig {
             listener_ray_count: 1,
             max_bounces: 0,
             maximum_path_length: 343.0,
             minimum_throughput: 0.0,
             sampling_seed: 0,
         },
-        cache: crate::core::config::IrCacheConfig::default(),
         binaural: crate::core::config::BinauralConfig::default(),
-        auralization: crate::core::config::AuralizationConfig {
-            block_size: 1_024,
-        },
     }
 }
 
 fn test_query() -> AcousticQuery {
     AcousticQuery {
         query_id: 1,
-        source_position: Vec3::Z,
-        listener_position: Vec3::ZERO,
-        listener_forward: -Vec3::Z,
-        listener_up: Vec3::Y,
-        source_amplitude: 1.0,
+        source: PointSource::new(Vec3::Z),
+        listener: ListenerPose::new(Vec3::ZERO, -Vec3::Z, Vec3::Y),
     }
 }
 
@@ -191,8 +185,8 @@ fn audit_query_tlas_distinguishes_scene_owners_and_geometry_updates() {
     let gpu = VkBackend::new().unwrap();
     let mut config = test_config();
     config.sound.ir_num_samples = 1024;
-    config.acoustics.max_bounces = 1;
-    config.acoustics.listener_ray_count = 1024;
+    config.tracing.max_bounces = 1;
+    config.tracing.listener_ray_count = 1024;
     let mut pipeline = AcousticPipeline::new(&gpu, config).unwrap();
     let wall = SceneDescription {
         meshes: vec![MeshAsset {
@@ -550,38 +544,4 @@ fn fractional_deposition_clips_only_the_out_of_bounds_portion() {
     samples.fill(0.0);
     deposit_fractional(&mut samples, 1.25, 2.0);
     assert_eq!(samples, [0.0, 1.5]);
-}
-
-#[test]
-fn rejects_invalid_binaural_configuration() {
-    let mut config = test_config();
-    config.binaural.head_radius_meters = 0.0;
-    assert!(validate_config(config).is_err());
-
-    config = test_config();
-    config.binaural.head_radius_meters = f32::NAN;
-    assert!(validate_config(config).is_err());
-
-    config = test_config();
-    config.binaural.max_ild_db = -1.0;
-    assert!(validate_config(config).is_err());
-
-    config = test_config();
-    config.binaural.max_ild_db = f32::INFINITY;
-    assert!(validate_config(config).is_err());
-}
-
-#[test]
-fn rejects_invalid_acoustic_query_orientation() {
-    let mut query = test_query();
-    query.listener_forward = Vec3::ZERO;
-    assert!(validate_query(query).is_err());
-
-    query = test_query();
-    query.listener_up = query.listener_forward;
-    assert!(validate_query(query).is_err());
-
-    query = test_query();
-    query.listener_up = Vec3::splat(f32::NAN);
-    assert!(validate_query(query).is_err());
 }

@@ -83,10 +83,6 @@ pub struct AcousticsConfig {
 /// Runtime policy for acoustic impulse-response reuse.
 #[derive(Debug, Clone, Copy)]
 pub struct IrCacheConfig {
-    /// Position bucket size in world meters.
-    ///
-    /// Reuse remains governed by `reuse_distance_meters` across bucket boundaries.
-    pub position_cell_meters: f32,
     /// Maximum source/listener movement that may reuse an IR.
     pub reuse_distance_meters: f32,
     /// Dot-product tolerance applied to both listener orientation axes during reuse.
@@ -100,7 +96,6 @@ pub struct IrCacheConfig {
 impl Default for IrCacheConfig {
     fn default() -> Self {
         Self {
-            position_cell_meters: 0.25,
             reuse_distance_meters: 0.2,
             listener_orientation_dot_threshold: 0.98,
             max_entries: 32,
