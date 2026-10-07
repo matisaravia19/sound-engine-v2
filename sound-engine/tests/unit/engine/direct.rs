@@ -114,7 +114,7 @@ fn audit_spatial_preflight_rejects_invalid_sounds_without_gpu_resources() {
     let baseline = core.gpu.memory().live_allocation_stats().unwrap();
     let next_source = core.next_sound_source_id;
     for (sound, code) in [
-        (u64::MAX, crate::core::error::ErrorCode::NotFound),
+        (SoundId(u64::MAX), crate::core::error::ErrorCode::NotFound),
         (empty, crate::core::error::ErrorCode::InvalidArgument),
         (wrong_rate, crate::core::error::ErrorCode::InvalidArgument),
     ] {

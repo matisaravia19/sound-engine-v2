@@ -4,8 +4,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Identifier for a playable dry sound asset.
-pub type SoundId = u64;
+/// Opaque identifier for a dry asset in the sound bank that allocated it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SoundId(
+    /// Monotonic bank-local value; never reused after removal.
+    pub(crate) u64,
+);
+
+impl std::fmt::Display for SoundId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// Decoded mono sound data stored at the engine sample rate.
 ///
@@ -100,7 +110,7 @@ impl SoundAsset {
 /// playing when the corresponding bank entry is removed.
 #[derive(Debug)]
 pub struct SoundBank {
-    next_id: SoundId,
+    next_id: u64,
     assets: HashMap<SoundId, SoundAsset>,
 }
 
@@ -121,7 +131,7 @@ impl SoundBank {
 
     /// Inserts a decoded asset, or reports exhaustion without replacing a live id.
     pub fn insert(&mut self, asset: SoundAsset) -> SoundResult<SoundId> {
-        let id = crate::core::id::allocate_id(&mut self.next_id, "Sound")?;
+        let id = SoundId(crate::core::id::allocate_id(&mut self.next_id, "Sound")?);
         self.assets.insert(id, asset);
         Ok(id)
     }

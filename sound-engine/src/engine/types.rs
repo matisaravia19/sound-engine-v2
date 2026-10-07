@@ -4,8 +4,18 @@ use crate::acoustics::PointSource;
 use crate::auralization::SoundId;
 use glam::Vec3;
 
-/// Identifier for a tracked movable sound source.
-pub type SoundSourceId = u64;
+/// Opaque identifier for a tracked source in the engine that created it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SoundSourceId(
+    /// Monotonic engine-local value; never reused after source removal.
+    pub(crate) u64,
+);
+
+impl std::fmt::Display for SoundSourceId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// Request used by [`super::SoundEngine`] to play a sound at a world-space position.
 #[derive(Debug, Clone, Copy)]

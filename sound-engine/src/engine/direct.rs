@@ -26,7 +26,7 @@ pub(super) struct EngineCore {
     spatial_voices: HashMap<VoiceId, SpatialVoice>,
     /// Round-robin cursor prevents a moving voice from starving other dirty voices.
     #[cfg(any(feature = "playback", test))]
-    last_spatial_voice: VoiceId,
+    last_spatial_voice: Option<VoiceId>,
     /// Number of prepared spatial IR updates assigned to active voices.
     spatial_updates: u64,
     /// Age of the latest endpoint request when its prepared filter is assigned.
@@ -34,7 +34,7 @@ pub(super) struct EngineCore {
     /// Listener pose used by spatial play requests that do not supply one directly.
     listener: ListenerPose,
     /// Monotonic id assigned to tracked sound sources.
-    next_sound_source_id: SoundSourceId,
+    next_sound_source_id: u64,
     /// Shared Vulkan backend kept after every dependent GPU resource.
     ///
     /// Rust drops fields in declaration order, so this owner must remain last.
@@ -69,13 +69,13 @@ struct SpatialVoice {
 pub(super) struct RenderMetrics {
     /// Synchronous acoustic trace time for this block, in milliseconds.
     pub(super) trace_ms: f64,
-    /// IR transform and registration time for this block, in milliseconds.
+    /// IR transform and voice assignment time for this block, in milliseconds.
     pub(super) ir_prepare_ms: f64,
     /// Voice convolution and finished-voice cleanup time, in milliseconds.
     pub(super) convolution_ms: f64,
-    /// Complete spatial IR replacements published since engine creation.
+    /// Prepared spatial IR updates assigned since engine creation.
     pub(super) spatial_updates: u64,
-    /// Last replacement's request-to-registration age, excluding its crossfade.
+    /// Latest update's request-to-assignment age, excluding its crossfade.
     pub(super) spatial_update_age_ms: f64,
     /// Whether the scheduler deferred spatial work to repay earlier render cost.
     pub(super) spatial_deferred: bool,
@@ -102,7 +102,7 @@ impl EngineCore {
             sound_sources: HashMap::new(),
             spatial_voices: HashMap::new(),
             #[cfg(any(feature = "playback", test))]
-            last_spatial_voice: 0,
+            last_spatial_voice: None,
             spatial_updates: 0,
             spatial_update_age_ms: 0.0,
             listener: ListenerPose::default(),
@@ -148,7 +148,10 @@ impl EngineCore {
         source: PointSource,
     ) -> SoundResult<SoundSourceId> {
         validate_source(source)?;
-        let id = crate::core::id::allocate_id(&mut self.next_sound_source_id, "Sound source")?;
+        let id = SoundSourceId(crate::core::id::allocate_id(
+            &mut self.next_sound_source_id,
+            "Sound source",
+        )?);
         self.sound_sources.insert(id, source);
         Ok(id)
     }
@@ -316,13 +319,13 @@ impl EngineCore {
                 .filter_map(|(&id, voice)| voice.refresh_requested_at.map(|_| id))
         };
         let Some(voice_id) = dirty()
-            .filter(|&id| id > self.last_spatial_voice)
+            .filter(|&id| self.last_spatial_voice.is_none_or(|previous| id > previous))
             .min()
             .or_else(|| dirty().min())
         else {
             return Ok((0.0, 0.0));
         };
-        self.last_spatial_voice = voice_id;
+        self.last_spatial_voice = Some(voice_id);
         self.refresh_spatial_voice(voice_id)
     }
 

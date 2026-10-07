@@ -9,8 +9,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Identifier for a currently playing voice.
-pub type VoiceId = u64;
+/// Opaque identifier for a voice in the auralization engine that started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VoiceId(
+    /// Monotonic engine-local value; never reused after playback ends.
+    pub(crate) u64,
+);
+
+impl std::fmt::Display for VoiceId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// Request used to start a dry sound through a prepared impulse response.
 #[derive(Clone)]
@@ -43,7 +53,7 @@ pub struct AuralizationEngine {
     sound: SoundConfig,
     sound_bank: SoundBank,
     active_voices: HashMap<VoiceId, ActiveVoice>,
-    next_voice_id: VoiceId,
+    next_voice_id: u64,
     dry_block: Vec<f32>,
     wet_block: Vec<f32>,
     finished_voices: Vec<VoiceId>,
@@ -193,7 +203,10 @@ impl AuralizationEngine {
         let asset = self.playable_sound(request.sound_id)?.clone();
 
         let convolution = self.convolver.create_stream(request.impulse_response)?;
-        let voice_id = crate::core::id::allocate_id(&mut self.next_voice_id, "Voice")?;
+        let voice_id = VoiceId(crate::core::id::allocate_id(
+            &mut self.next_voice_id,
+            "Voice",
+        )?);
         self.active_voices.insert(
             voice_id,
             ActiveVoice {
