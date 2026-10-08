@@ -1,19 +1,17 @@
+//! Filter preparation and validated access to GPU convolution streams.
+
 mod gpu;
 mod stream;
 
 pub use stream::ConvolutionStream;
 
 use crate::acoustics::{GpuIrSnapshot, IrSample};
-use crate::core::config::{AuralizationConfig, OutputChannels, SoundConfig};
+use crate::core::config::{AuralizationConfig, SoundConfig};
 use crate::core::error::{ErrorCode, SoundError, SoundResult};
 use crate::gpu::backend::VkBackend;
 use crate::gpu::memory::BufferHandle;
 use gpu::GpuConvolution;
 use std::sync::Arc;
-use stream::FilterState;
-
-/// Number of input blocks used to ramp between live impulse responses.
-const IR_TRANSITION_BLOCKS: usize = 4;
 
 /// GPU-backed overlap-add FFT convolver for mono streams and stereo impulse responses.
 ///
@@ -116,7 +114,7 @@ impl FftConvolver {
             impulse_response,
             self.tail_size,
             self.fft_size,
-            self.sound.output_channels.count(),
+            self.sound.output_channels,
         ))
     }
 
@@ -129,11 +127,7 @@ impl FftConvolver {
     ) -> SoundResult<()> {
         self.validate_stream(stream)?;
         self.validate_impulse_response(&impulse_response)?;
-        stream.queue_impulse_response_transition(
-            impulse_response,
-            self.block_size * stream.output_channels,
-            self.block_size * IR_TRANSITION_BLOCKS,
-        );
+        stream.queue_impulse_response_transition(impulse_response, self.block_size);
         Ok(())
     }
 
@@ -148,16 +142,8 @@ impl FftConvolver {
     }
 
     fn validate_stream(&self, stream: &ConvolutionStream) -> SoundResult<()> {
-        self.validate_impulse_response(&stream.current.impulse_response)?;
-        if stream.current.complex_cpu_buffer.len() != self.fft_size
-            || stream.current.tail.len() != self.tail_size
-            || stream.output_channels != self.sound.output_channels.count()
-        {
-            return Err(SoundError::invalid_argument(
-                "Stream dimensions and output channels must match this convolver",
-            ));
-        }
-        Ok(())
+        self.validate_impulse_response(stream.impulse_response())?;
+        stream.validate_layout(self.fft_size, self.tail_size, self.sound.output_channels)
     }
 
     fn ir_capacity(&self) -> usize {
@@ -167,6 +153,7 @@ impl FftConvolver {
     }
 
     /// Processes one mono input block using this stream's filter and overlap history.
+    /// Returns an error after tail flushing begins, including when the tail is empty.
     pub fn process_block(
         &mut self,
         stream: &mut ConvolutionStream,
@@ -175,26 +162,7 @@ impl FftConvolver {
     ) -> SoundResult<()> {
         self.validate_block_lengths(input_block, output_block)?;
         self.validate_stream(stream)?;
-        self.start_pending_transition(stream);
-
-        self.process_state_block(&mut stream.current, input_block, output_block)?;
-
-        let transition_complete = if let Some(transition) = stream.ir_transition.as_mut() {
-            transition.output_buffer.fill(0.0);
-            self.process_state_block(
-                &mut transition.previous,
-                input_block,
-                &mut transition.output_buffer,
-            )?;
-            transition.blend_into(output_block, self.sound.output_channels.count())
-        } else {
-            false
-        };
-        if transition_complete {
-            stream.ir_transition = None;
-        }
-
-        Ok(())
+        stream.process_block(&mut self.gpu, input_block, output_block)
     }
 
     /// Drains the next block of already-computed overlap tail samples.
@@ -218,88 +186,7 @@ impl FftConvolver {
         );
 
         self.validate_stream(stream)?;
-        let mut any_tail = self.flush_state_block(&mut stream.current, output_block);
-        let transition_complete = if let Some(transition) = stream.ir_transition.as_mut() {
-            transition.output_buffer.fill(0.0);
-            let previous_has_tail =
-                self.flush_state_block(&mut transition.previous, &mut transition.output_buffer);
-            any_tail |= previous_has_tail;
-            transition.blend_into(output_block, output_channels) || !previous_has_tail
-        } else {
-            false
-        };
-        if transition_complete {
-            stream.ir_transition = None;
-        }
-        // No dry samples remain to seed a newly queued filter. Retaining a
-        // pending update here would extend the stream with a silent IR tail.
-        stream.pending_impulse_response = None;
-
-        Ok(any_tail)
-    }
-
-    /// Begins the newest coalesced IR update after the preceding ramp finishes.
-    fn start_pending_transition(&self, stream: &mut ConvolutionStream) {
-        if stream.ir_transition.is_some() {
-            return;
-        }
-        let Some(impulse_response) = stream.pending_impulse_response.take() else {
-            return;
-        };
-        stream.transition_impulse_response(
-            impulse_response,
-            self.block_size * self.sound.output_channels.count(),
-            self.block_size * IR_TRANSITION_BLOCKS,
-        );
-    }
-
-    /// Processes one block through a single IR and overlap state.
-    fn process_state_block(
-        &mut self,
-        convolution: &mut FilterState,
-        input_block: &[f32],
-        output_block: &mut [f32],
-    ) -> SoundResult<()> {
-        crate::validate!(
-            convolution.tail_position == 0,
-            ErrorCode::InvalidArgument,
-            "convolution stream has already started flushing its tail and cannot process more input blocks"
-        );
-
-        // Packing mono as the real component preserves both ears when multiplied
-        // by a complex IR whose real/imaginary components encode left/right.
-        convolution.complex_cpu_buffer.fill([0.0, 0.0]);
-        for (frame, &sample) in convolution.complex_cpu_buffer.iter_mut().zip(input_block) {
-            *frame = [sample, 0.0];
-        }
-        self.gpu.convolve(
-            &mut convolution.complex_cpu_buffer,
-            &convolution.impulse_response.buffer,
-        )?;
-        self.overlap_add(&mut convolution.complex_cpu_buffer, &mut convolution.tail);
-        self.copy_samples(
-            &convolution.complex_cpu_buffer[..self.block_size],
-            output_block,
-        );
-        Ok(())
-    }
-
-    /// Copies and advances one block of a single convolution state's tail.
-    fn flush_state_block(&self, convolution: &mut FilterState, output_block: &mut [f32]) -> bool {
-        output_block.fill(0.0);
-        if convolution.tail_position >= convolution.tail.len() {
-            return false;
-        }
-
-        let tail_remaining = convolution.tail.len() - convolution.tail_position;
-        let frames_to_copy = self.block_size.min(tail_remaining);
-        self.copy_samples(
-            &convolution.tail
-                [convolution.tail_position..convolution.tail_position + frames_to_copy],
-            output_block,
-        );
-        convolution.tail_position = convolution.tail_position.saturating_add(self.block_size);
-        true
+        Ok(stream.flush_tail_block(output_block))
     }
 
     /// Validates that input and output block sizes match expected channel layout and FFT capacity.
@@ -323,36 +210,6 @@ impl FftConvolver {
         );
 
         Ok(())
-    }
-
-    /// Applies overlap-add to combine FFT output with carried tail for seamless convolution.
-    ///
-    /// Adds the previous block's tail into the output head, then extracts and saves
-    /// the new tail for the next block. This ensures output continuity across blocks.
-    fn overlap_add(&self, output: &mut [[f32; 2]], tail: &mut [[f32; 2]]) {
-        for (frame, previous) in output.iter_mut().zip(tail.iter()) {
-            frame[0] += previous[0];
-            frame[1] += previous[1];
-        }
-
-        let tail_start = self.block_size;
-        let tail_end = tail_start + tail.len();
-        tail.copy_from_slice(&output[tail_start..tail_end]);
-    }
-
-    /// Unpacks time-domain complex frames into the configured channel layout.
-    fn copy_samples(&self, frames: &[[f32; 2]], output: &mut [f32]) {
-        match self.sound.output_channels {
-            OutputChannels::Mono => {
-                for (sample, frame) in output[..frames.len()].iter_mut().zip(frames) {
-                    *sample = frame[0];
-                }
-            }
-            OutputChannels::Stereo | OutputChannels::Binaural => {
-                // The real and imaginary components carry the left and right ears.
-                output[..frames.len() * 2].copy_from_slice(bytemuck::cast_slice(frames));
-            }
-        }
     }
 }
 

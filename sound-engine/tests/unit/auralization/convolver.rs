@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::config::OutputChannels;
 
 const SOUND_CONFIG: SoundConfig = SoundConfig {
     output_channels: OutputChannels::Stereo,
@@ -98,7 +99,7 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
     }
     let input = vec![0.0; 1024];
     let mut output = vec![0.0; 2048];
-    let mut malformed_stream = ConvolutionStream::new(ir.clone(), 0, 1, 2);
+    let mut malformed_stream = ConvolutionStream::new(ir.clone(), 0, 1, OutputChannels::Stereo);
     assert!(
         convolver
             .process_block(&mut malformed_stream, &input, &mut output)
@@ -116,9 +117,13 @@ fn audit_fft_initialization_and_ir_owner_lifetime() {
             .update_impulse_response(&mut stream, undersized_ir)
             .is_err()
     );
-    assert!(stream.ir_transition.is_none());
-    assert!(stream.pending_impulse_response.is_none());
-    assert!(Arc::ptr_eq(&stream.current.impulse_response, &ir));
+    assert!(std::ptr::eq(stream.impulse_response(), ir.as_ref()));
+    convolver
+        .process_block(&mut stream, &vec![1.0; 1024], &mut output)
+        .unwrap();
+    for frame in output.chunks_exact(2) {
+        assert!((frame[0] - 1.0).abs() < 1e-4 && (frame[1] - 0.5).abs() < 1e-4);
+    }
     drop(stream);
     drop(convolver);
     assert_eq!(gpu.compute().pipeline_count(), 0);
@@ -204,6 +209,64 @@ fn ir_capacity_reserves_padding_and_prevents_circular_wraparound() {
                 .flush_tail_block(&mut stream, &mut output)
                 .unwrap()
         );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; run hardware tests serially"]
+fn flushing_closes_input_even_when_the_filter_has_no_overlap_tail() {
+    let gpu = Arc::new(VkBackend::new().unwrap());
+    for (block_size, ir_num_samples) in [(4, 1), (4, 5), (3, 1)] {
+        let mut convolver = FftConvolver::new(
+            gpu.clone(),
+            SoundConfig {
+                ir_num_samples,
+                ..SOUND_CONFIG
+            },
+            AuralizationConfig {
+                block_size,
+            },
+        )
+        .unwrap();
+        let ir = convolver
+            .create_impulse_response(&[IrSample::new(1.0, 0.5)])
+            .unwrap();
+        let mut stream = convolver.create_stream(ir).unwrap();
+        let input = vec![1.0; block_size];
+        let mut output = vec![0.0; block_size * 2];
+        convolver
+            .process_block(&mut stream, &input, &mut output)
+            .unwrap();
+        assert_eq!(
+            convolver
+                .flush_tail_block(&mut stream, &mut output)
+                .unwrap(),
+            convolver.fft_size() > block_size
+        );
+
+        // An empty tail is still a completed stream, not permission to resume input.
+        for replace_filter in [false, true] {
+            if replace_filter {
+                let replacement = convolver
+                    .create_impulse_response(&[IrSample::new(0.5, 1.0)])
+                    .unwrap();
+                convolver
+                    .update_impulse_response(&mut stream, replacement)
+                    .unwrap();
+            }
+            output.fill(77.0);
+            let error = convolver
+                .process_block(&mut stream, &input, &mut output)
+                .expect_err("flushing must close the stream to further input");
+            assert_eq!(error.code(), ErrorCode::InvalidArgument);
+            assert!(output.iter().all(|&sample| sample == 77.0));
+        }
+        assert!(
+            !convolver
+                .flush_tail_block(&mut stream, &mut output)
+                .unwrap()
+        );
+        assert!(output.iter().all(|&sample| sample == 0.0));
     }
 }
 
